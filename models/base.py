@@ -39,6 +39,13 @@ class SegmentationHead(nn.Module):
         """
         Subclasses must override this call to map fused inputs to logits.
 
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (list[torch.Tensor]): Multiscale feature tensors.
+
+        Returns:
+            torch.Tensor: Logits tensor.
+
         >>> class EchoHead(SegmentationHead):
         ...     def forward(self, image, features):
         ...         return image.sum(dim=1, keepdim=True) + features[0]

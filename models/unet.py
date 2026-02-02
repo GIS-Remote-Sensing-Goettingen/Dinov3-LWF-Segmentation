@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import List
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from .base import SegmentationHead
 
@@ -29,6 +29,10 @@ class ConvBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         """
         Create the convolutional block.
+
+        Args:
+            in_channels (int): Input channel count.
+            out_channels (int): Output channel count.
 
         >>> ConvBlock(3, 3)
         ConvBlock(
@@ -57,6 +61,12 @@ class ConvBlock(nn.Module):
         """
         Apply the convolutional sub-network.
 
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+
         >>> block = ConvBlock(2, 2)
         >>> t = torch.ones(1, 2, 4, 4)
         >>> block(t).shape
@@ -81,6 +91,11 @@ class UpBlock(nn.Module):
         """
         Construct an upsampling block.
 
+        Args:
+            in_channels (int): Input channel count.
+            skip_channels (int): Skip connection channel count.
+            out_channels (int): Output channel count.
+
         >>> UpBlock(4, 2, 2)
         UpBlock(
           (up): ConvTranspose2d(4, 2, kernel_size=(2, 2), stride=(2, 2))
@@ -98,12 +113,21 @@ class UpBlock(nn.Module):
         """
 
         super().__init__()
-        self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+        self.up = nn.ConvTranspose2d(
+            in_channels, in_channels // 2, kernel_size=2, stride=2
+        )
         self.conv = ConvBlock(in_channels // 2 + skip_channels, out_channels)
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         """
         Upsample, align, concatenate, and refine the feature map.
+
+        Args:
+            x (torch.Tensor): Input feature map.
+            skip (torch.Tensor): Skip connection feature map.
+
+        Returns:
+            torch.Tensor: Output tensor.
 
         >>> up = UpBlock(4, 2, 2)
         >>> x = torch.randn(1, 4, 4, 4)
@@ -114,7 +138,9 @@ class UpBlock(nn.Module):
 
         x = self.up(x)
         if x.shape[-2:] != skip.shape[-2:]:
-            skip = F.interpolate(skip, size=x.shape[-2:], mode="bilinear", align_corners=False)
+            skip = F.interpolate(
+                skip, size=x.shape[-2:], mode="bilinear", align_corners=False
+            )
         x = torch.cat([x, skip], dim=1)
         return self.conv(x)
 
@@ -134,6 +160,10 @@ class DinoUNetHead(SegmentationHead):
     def __init__(self, num_classes: int, dino_channels: int) -> None:
         """
         Build the DinoUNet head.
+
+        Args:
+            num_classes (int): Number of classes.
+            dino_channels (int): DINO feature channel count.
 
         >>> head = DinoUNetHead(2, 512)
         >>> isinstance(head.final_conv, nn.Conv2d)
@@ -156,9 +186,18 @@ class DinoUNetHead(SegmentationHead):
             in_channels = out_channels
         self.final_conv = nn.Conv2d(decoder_channels[-1], num_classes, kernel_size=1)
 
-    def forward(self, image: torch.Tensor, features: List[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self, image: torch.Tensor, features: List[torch.Tensor]
+    ) -> torch.Tensor:
         """
         Fuse the DINO features and RGB image to obtain logits.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (List[torch.Tensor]): Multiscale DINO features.
+
+        Returns:
+            torch.Tensor: Logits tensor.
 
         >>> head = DinoUNetHead(2, 256)
         >>> img = torch.randn(1, 3, 32, 32)
@@ -169,7 +208,12 @@ class DinoUNetHead(SegmentationHead):
 
         features_reversed = features[::-1]
         x = self.bottleneck(features_reversed[0])
-        skip_connections = [features_reversed[1], features_reversed[2], features_reversed[3], image]
+        skip_connections = [
+            features_reversed[1],
+            features_reversed[2],
+            features_reversed[3],
+            image,
+        ]
         for idx, up_block in enumerate(self.up_blocks):
             x = up_block(x, skip_connections[idx])
         return self.final_conv(x)

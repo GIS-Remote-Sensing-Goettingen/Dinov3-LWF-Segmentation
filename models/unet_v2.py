@@ -7,8 +7,8 @@ from __future__ import annotations
 from typing import List
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from .base import SegmentationHead
 
@@ -27,6 +27,10 @@ class SpatialPriorModule(nn.Module):
     def __init__(self, in_channels: int = 3, base_channels: int = 32) -> None:
         """
         Initialize the SPM stack.
+
+        Args:
+            in_channels (int): Input channel count.
+            base_channels (int): Base channel width.
 
         >>> SpatialPriorModule(3, 4)
         SpatialPriorModule(
@@ -59,7 +63,9 @@ class SpatialPriorModule(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.layer2 = nn.Sequential(
-            nn.Conv2d(base_channels, base_channels * 2, 3, stride=2, padding=1, bias=False),
+            nn.Conv2d(
+                base_channels, base_channels * 2, 3, stride=2, padding=1, bias=False
+            ),
             nn.BatchNorm2d(base_channels * 2),
             nn.ReLU(inplace=True),
             nn.Conv2d(base_channels * 2, base_channels * 2, 3, padding=1, bias=False),
@@ -70,6 +76,12 @@ class SpatialPriorModule(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Produce feature maps at H/2 and H/4 resolution.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: H/2 and H/4 feature maps.
 
         >>> spm = SpatialPriorModule(3, 4)
         >>> img = torch.randn(1, 3, 64, 64)
@@ -97,6 +109,10 @@ class FidelityAwareProjection(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         """
         Build the projector and attention path.
+
+        Args:
+            in_channels (int): Input channel count.
+            out_channels (int): Output channel count.
 
         >>> FidelityAwareProjection(8, 4)
         FidelityAwareProjection(
@@ -128,6 +144,12 @@ class FidelityAwareProjection(nn.Module):
         """
         Apply projection and attention weighting.
 
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Projected tensor.
+
         >>> proj = FidelityAwareProjection(4, 4)
         >>> feat = torch.randn(1, 4, 4, 4)
         >>> proj(feat).shape
@@ -153,6 +175,10 @@ class DoubleConv(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         """
         Build the double convolution.
+
+        Args:
+            in_channels (int): Input channel count.
+            out_channels (int): Output channel count.
 
         >>> DoubleConv(3, 3)
         DoubleConv(
@@ -180,6 +206,12 @@ class DoubleConv(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Run the block over inputs.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
 
         >>> block = DoubleConv(2, 4)
         >>> x = torch.randn(1, 2, 4, 4)
@@ -210,6 +242,10 @@ class DinoUNetV2Head(SegmentationHead):
     def __init__(self, num_classes: int, dino_channels: int) -> None:
         """
         Build the V2 head.
+
+        Args:
+            num_classes (int): Number of classes.
+            dino_channels (int): DINO feature channel count.
 
         >>> DinoUNetV2Head(2, 32)  # doctest: +ELLIPSIS
         DinoUNetV2Head(
@@ -245,6 +281,13 @@ class DinoUNetV2Head(SegmentationHead):
         """
         Forward pass returning main logits and deep supervision head.
 
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (List[torch.Tensor]): Multiscale feature tensors.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Main logits and auxiliary logits.
+
         >>> head = DinoUNetV2Head(2, 64)
         >>> img = torch.randn(1, 3, 256, 256)
         >>> feats = [
@@ -276,9 +319,18 @@ class DinoUNetV2Head(SegmentationHead):
         logits = self.final_conv(self.final_up(x))
         return logits, ds_out
 
-    def forward(self, image: torch.Tensor, features: List[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self, image: torch.Tensor, features: List[torch.Tensor]
+    ) -> torch.Tensor:
         """
         Forward returning only the main logits to respect the base interface.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (List[torch.Tensor]): Multiscale feature tensors.
+
+        Returns:
+            torch.Tensor: Main logits tensor.
 
         >>> head = DinoUNetV2Head(2, 64)
         >>> img = torch.randn(1, 3, 256, 256)
@@ -298,8 +350,17 @@ class DinoUNetV2Head(SegmentationHead):
     def _concat(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         """
         Align spatial dimensions between tensors before concatenation.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            skip (torch.Tensor): Skip tensor.
+
+        Returns:
+            torch.Tensor: Concatenated tensor.
         """
 
         if x.shape[-2:] != skip.shape[-2:]:
-            skip = F.interpolate(skip, size=x.shape[-2:], mode="bilinear", align_corners=False)
+            skip = F.interpolate(
+                skip, size=x.shape[-2:], mode="bilinear", align_corners=False
+            )
         return torch.cat([x, skip], dim=1)

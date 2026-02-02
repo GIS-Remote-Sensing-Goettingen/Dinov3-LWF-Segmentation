@@ -3,7 +3,7 @@ Utility helpers for data preparation, optimization, and training glue.
 """
 
 from config import load_config
-from .logging import TimedBlock, VerbosityLogger
+
 from .data import (
     PrecomputedDataset,
     extract_multiscale_features,
@@ -11,9 +11,10 @@ from .data import (
     subset_label_to_image_bounds,
     verify_and_clean_dataset_fast,
 )
-from .optim import EarlyStopping, Muon, zeropower_via_newtonschulz5
+from .logging import TimedBlock, VerbosityLogger
 from .losses import SegmentationLoss
 from .metrics import SegmentationMetrics
+from .optim import EarlyStopping, Muon, zeropower_via_newtonschulz5
 
 __all__ = [
     "load_config",

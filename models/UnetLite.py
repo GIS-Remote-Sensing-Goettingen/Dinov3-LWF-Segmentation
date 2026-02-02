@@ -12,12 +12,11 @@ from __future__ import annotations
 from typing import List
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from .base import SegmentationHead
-from .unet_v2 import SpatialPriorModule, FidelityAwareProjection, DoubleConv
-
+from .unet_v2 import DoubleConv, FidelityAwareProjection, SpatialPriorModule
 
 # We assume SpatialPriorModule, FidelityAwareProjection, DoubleConv are defined
 # in the same module as in your snippet. If they live elsewhere, adjust imports.
@@ -54,6 +53,10 @@ class DinoUNetLiteHead(SegmentationHead):
           - FAP outputs: [128, 64, 32, 16] (was [512, 256, 128, 64]).
           - Decoder channels follow FAP widths, roughly halved / quartered.
           - Deep supervision kept, but on a 16-channel feature map.
+
+        Args:
+            num_classes (int): Number of classes.
+            dino_channels (int): DINO feature channel count.
         """
         super().__init__()
 
@@ -68,7 +71,7 @@ class DinoUNetLiteHead(SegmentationHead):
         self.fapm1 = FidelityAwareProjection(dino_channels, 128)  # deepest
         self.fapm2 = FidelityAwareProjection(dino_channels, 64)
         self.fapm3 = FidelityAwareProjection(dino_channels, 32)
-        self.fapm4 = FidelityAwareProjection(dino_channels, 16)   # shallowest
+        self.fapm4 = FidelityAwareProjection(dino_channels, 16)  # shallowest
 
         # --- 3) Bottleneck at the deepest resolution (e.g. 4x4) -------------
         # Reduced to 128 channels to cut cost while still allowing some
@@ -136,9 +139,9 @@ class DinoUNetLiteHead(SegmentationHead):
 
         # --- Project backbone features with fidelity-aware attention --------
         d_shallow = self.fapm4(features[0])  # H/8,  16ch
-        d_mid1    = self.fapm3(features[1])  # H/16, 32ch
-        d_mid2    = self.fapm2(features[2])  # H/32, 64ch
-        d_deep    = self.fapm1(features[3])  # H/64, 128ch
+        d_mid1 = self.fapm3(features[1])  # H/16, 32ch
+        d_mid2 = self.fapm2(features[2])  # H/32, 64ch
+        d_deep = self.fapm1(features[3])  # H/64, 128ch
 
         # --- Bottleneck at the deepest scale --------------------------------
         x = self.bottleneck(d_deep)  # (B, 128, H/64, W/64)
@@ -179,9 +182,18 @@ class DinoUNetLiteHead(SegmentationHead):
 
         return logits, ds_out
 
-    def forward(self, image: torch.Tensor, features: List[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self, image: torch.Tensor, features: List[torch.Tensor]
+    ) -> torch.Tensor:
         """
         Forward returning only the main logits to respect the base interface.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (List[torch.Tensor]): Multiscale feature tensors.
+
+        Returns:
+            torch.Tensor: Logits tensor.
         """
         logits, _ = self.forward_with_aux(image, features)
         return logits
@@ -194,7 +206,16 @@ class DinoUNetLiteHead(SegmentationHead):
 
         This keeps robustness to small rounding differences arising from
         strided convolutions or odd-sized inputs.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            skip (torch.Tensor): Skip tensor.
+
+        Returns:
+            torch.Tensor: Concatenated tensor.
         """
         if x.shape[-2:] != skip.shape[-2:]:
-            skip = F.interpolate(skip, size=x.shape[-2:], mode="bilinear", align_corners=False)
+            skip = F.interpolate(
+                skip, size=x.shape[-2:], mode="bilinear", align_corners=False
+            )
         return torch.cat([x, skip], dim=1)

@@ -1,0 +1,75 @@
+resources:
+  seed: 1337
+  omp_threads: 4
+  matmul_precision: high
+  distributed: false
+  dist_backend: nccl
+
+logging:
+  level: info
+  timestamps: true
+  file: logs/run.log
+
+paths:
+  raw_images_dir: /path/to/imagery
+  label_path: /path/to/labels.tif
+  processed_dir: /path/to/cache
+
+dataset:
+  augmentations:
+    enable: true
+    hflip: true
+    vflip: true
+    rotate90: true
+  splits:
+    train_list:
+    val_list:
+
+model:
+  backbone: facebook/dinov3-vitl16-pretrain-sat493m
+  layers: [5, 11, 17, 23]
+  head: unet_v2
+  num_classes: 2
+  dino_channels: 1024
+
+prepare:
+  enable: true
+  tile_size: 512
+  device: cuda
+
+verify:
+  enable: true
+  workers: 8
+
+train:
+  enable: true
+  device: cuda
+  processed_dir: /path/to/cache
+  weights_dir: weights
+  batch_size: 4
+  epochs: 30
+  muon_lr: 0.02
+  adamw_lr: 0.001
+  momentum: 0.95
+  patience: 10
+  val_fraction: 0.2
+  num_workers: 4
+  grad_accum_steps: 1
+  compile: false
+  ema_decay: 0.0
+  loss:
+    ce_weight: 1.0
+    dice_weight: 1.0
+    aux_weight: 0.4
+
+inference:
+  enable: false
+  device: cuda
+  input_tif: /path/to/scene.tif
+  output_tif: test/output_prediction.tif
+  checkpoint: weights/unet_v2_best.pth
+  tile_size: 512
+  overlap: 0.25
+  tta:
+    horizontal_flip: true
+    vertical_flip: false

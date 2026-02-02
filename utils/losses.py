@@ -23,13 +23,33 @@ class DiceLoss(nn.Module):
     0.683
     """
 
-    def __init__(self, num_classes: int, eps: float = 1e-6, ignore_index: Optional[int] = None) -> None:
+    def __init__(
+        self, num_classes: int, eps: float = 1e-6, ignore_index: Optional[int] = None
+    ) -> None:
+        """Initialize the Dice loss.
+
+        Args:
+            num_classes (int): Number of segmentation classes.
+            eps (float): Numerical stability constant.
+            ignore_index (Optional[int]): Optional ignore index.
+        """
+
         super().__init__()
         self.num_classes = num_classes
         self.eps = eps
         self.ignore_index = ignore_index
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute the Dice loss.
+
+        Args:
+            logits (torch.Tensor): Logits tensor.
+            targets (torch.Tensor): Integer target labels.
+
+        Returns:
+            torch.Tensor: Scalar loss tensor.
+        """
+
         probs = torch.softmax(logits, dim=1)
         targets = targets.long()
         if self.ignore_index is not None:
@@ -38,7 +58,9 @@ class DiceLoss(nn.Module):
                 return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
             probs = probs * mask.unsqueeze(1)
             targets = torch.where(mask, targets, torch.zeros_like(targets))
-        one_hot = F.one_hot(targets.clamp(min=0, max=self.num_classes - 1), self.num_classes)
+        one_hot = F.one_hot(
+            targets.clamp(min=0, max=self.num_classes - 1), self.num_classes
+        )
         one_hot = one_hot.permute(0, 3, 1, 2).float()
         dims = (0, 2, 3)
         intersection = torch.sum(probs * one_hot, dims)
@@ -68,6 +90,17 @@ class SegmentationLoss(nn.Module):
         class_weights: Optional[List[float]] = None,
         ignore_index: Optional[int] = None,
     ) -> None:
+        """Initialize the combined segmentation loss.
+
+        Args:
+            num_classes (int): Number of segmentation classes.
+            ce_weight (float): Cross-entropy weight.
+            dice_weight (float): Dice loss weight.
+            aux_weight (float): Auxiliary loss weight.
+            class_weights (Optional[List[float]]): Optional class weights.
+            ignore_index (Optional[int]): Optional ignore index.
+        """
+
         super().__init__()
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
@@ -83,6 +116,16 @@ class SegmentationLoss(nn.Module):
         self.num_classes = num_classes
 
     def _ce_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute the cross-entropy loss.
+
+        Args:
+            logits (torch.Tensor): Logits tensor.
+            targets (torch.Tensor): Integer target labels.
+
+        Returns:
+            torch.Tensor: Scalar loss tensor.
+        """
+
         return F.cross_entropy(
             logits,
             targets,
@@ -97,14 +140,30 @@ class SegmentationLoss(nn.Module):
         aux_logits: Optional[torch.Tensor] = None,
         aux_targets: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        loss = 0.0
+        """Compute the combined loss with optional auxiliary output.
+
+        Args:
+            logits (torch.Tensor): Main logits tensor.
+            targets (torch.Tensor): Target labels.
+            aux_logits (Optional[torch.Tensor]): Auxiliary logits tensor.
+            aux_targets (Optional[torch.Tensor]): Auxiliary targets tensor.
+
+        Returns:
+            torch.Tensor: Scalar loss tensor.
+        """
+
+        loss = torch.tensor(0.0, device=logits.device)
         if self.ce_weight:
             loss = loss + self.ce_weight * self._ce_loss(logits, targets)
         if self.dice_weight:
             loss = loss + self.dice_weight * self.dice(logits, targets)
         if aux_logits is not None and aux_targets is not None and self.aux_weight > 0:
             if self.ce_weight:
-                loss = loss + self.aux_weight * self.ce_weight * self._ce_loss(aux_logits, aux_targets)
+                loss = loss + self.aux_weight * self.ce_weight * self._ce_loss(
+                    aux_logits, aux_targets
+                )
             if self.dice_weight:
-                loss = loss + self.aux_weight * self.dice_weight * self.dice(aux_logits, aux_targets)
+                loss = loss + self.aux_weight * self.dice_weight * self.dice(
+                    aux_logits, aux_targets
+                )
         return loss

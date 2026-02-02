@@ -23,10 +23,23 @@ class SegmentationMetrics:
     """
 
     def __init__(self, num_classes: int) -> None:
+        """Initialize the metric accumulator.
+
+        Args:
+            num_classes (int): Number of segmentation classes.
+        """
+
         self.num_classes = num_classes
         self.confusion = torch.zeros((num_classes, num_classes), dtype=torch.float64)
 
     def update(self, preds: torch.Tensor, targets: torch.Tensor) -> None:
+        """Update the confusion matrix with a batch.
+
+        Args:
+            preds (torch.Tensor): Predicted class indices.
+            targets (torch.Tensor): Ground-truth class indices.
+        """
+
         preds = preds.view(-1).long()
         targets = targets.view(-1).long()
         mask = (targets >= 0) & (targets < self.num_classes)
@@ -35,10 +48,16 @@ class SegmentationMetrics:
         if preds.numel() == 0:
             return
         indices = self.num_classes * targets + preds
-        confusion = torch.bincount(indices, minlength=self.num_classes ** 2).double()
+        confusion = torch.bincount(indices, minlength=self.num_classes**2).double()
         self.confusion += confusion.view(self.num_classes, self.num_classes)
 
-    def compute(self) -> Dict[str, torch.Tensor]:
+    def compute(self) -> Dict[str, torch.Tensor | float]:
+        """Compute IoU and Dice metrics from the confusion matrix.
+
+        Returns:
+            Dict[str, torch.Tensor | float]: Metrics including per-class values and means.
+        """
+
         tp = torch.diag(self.confusion)
         fp = self.confusion.sum(dim=0) - tp
         fn = self.confusion.sum(dim=1) - tp

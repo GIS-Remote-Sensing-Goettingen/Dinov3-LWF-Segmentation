@@ -7,13 +7,19 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 import torch
-from torch import Tensor
-from torch import optim
+from torch import Tensor, optim
 
 
-def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -> Tensor:
+def zeropower_via_newtonschulz5(
+    G: Tensor, steps: int = 10, eps: float = 1e-7
+) -> Tensor:
     """
     Orthogonalize matrix updates using the Newton-Schulz iteration.
+
+    Args:
+        G (Tensor): Input matrix to orthogonalize.
+        steps (int): Number of Newton-Schulz iterations.
+        eps (float): Numerical stability constant.
 
     >>> _ = torch.manual_seed(0)
     >>> G = torch.randn(4, 4)
@@ -26,7 +32,7 @@ def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -
         raise ValueError("Input must be a 2D matrix.")
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16()
-    X /= (X.norm() + eps)
+    X /= X.norm() + eps
     transposed = False
     if G.size(0) > G.size(1):
         X = X.T
@@ -61,6 +67,17 @@ class Muon(optim.Optimizer):
         """
         Build the Muon optimizer.
 
+        Args:
+            params (Iterable[Tensor]): Parameters for the Muon group.
+            lr (float): Learning rate for Muon updates.
+            momentum (float): Momentum coefficient.
+            nesterov (bool): Whether to use Nesterov momentum.
+            ns_steps (int): Newton-Schulz iteration steps.
+            adamw_params (Optional[Iterable[Tensor]]): Parameters for AdamW updates.
+            adamw_lr (float): Learning rate for AdamW updates.
+            adamw_betas (tuple[float, float]): AdamW beta coefficients.
+            adamw_wd (float): AdamW weight decay.
+
         >>> _ = torch.manual_seed(0)
         >>> w = torch.nn.Parameter(torch.randn(2, 2))
         >>> opt = Muon([w], lr=0.01)
@@ -80,9 +97,15 @@ class Muon(optim.Optimizer):
         )
         super().__init__(params, defaults)
 
-    def step(self, closure=None):
+    def step(self, closure=None) -> None:  # type: ignore[override]
         """
         Perform one optimization step.
+
+        Args:
+            closure (Callable | None): Optional closure for reevaluating the model.
+
+        Returns:
+            None: This method updates parameters in-place.
 
         >>> _ = torch.manual_seed(0)
         >>> w = torch.nn.Parameter(torch.randn(2, 2))
@@ -92,6 +115,8 @@ class Muon(optim.Optimizer):
         >>> opt.step()
         """
 
+        if closure is not None:
+            _ = closure()
         for group in self.param_groups:
             if group["adamw_params"] is not None:
                 self._step_adamw(group)
@@ -116,10 +141,14 @@ class Muon(optim.Optimizer):
                 if g.shape != p.shape:
                     g = g.view_as(p)
                 p.data.add_(g, alpha=-lr)
+        return None
 
     def _step_adamw(self, group) -> None:
         """
         Handle AdamW updates for the provided parameter subset.
+
+        Args:
+            group (dict): Optimizer parameter group.
 
         >>> base = torch.nn.Parameter(torch.randn(2, 2))
         >>> p = torch.nn.Parameter(torch.ones(2))
@@ -146,8 +175,10 @@ class Muon(optim.Optimizer):
             exp_avg.mul_(beta1).add_(g, alpha=1 - beta1)
             exp_avg_sq.mul_(beta2).addcmul_(g, g, value=1 - beta2)
             denom = exp_avg_sq.sqrt().add_(eps)
-            step_size = lr * torch.sqrt(torch.tensor(1 - beta2 ** state["step"])) / (
-                1 - beta1 ** state["step"]
+            step_size = (
+                lr
+                * torch.sqrt(torch.tensor(1 - beta2 ** state["step"]))
+                / (1 - beta1 ** state["step"])
             )
             p.data.mul_(1 - lr * wd)
             p.data.addcdiv_(exp_avg, denom, value=-step_size.item())
@@ -156,6 +187,11 @@ class Muon(optim.Optimizer):
 class EarlyStopping:
     """
     Track validation metric improvements and stop once patience runs out.
+
+    Examples:
+        >>> es = EarlyStopping(patience=1)
+        >>> es.early_stop
+        False
     """
 
     def __init__(
@@ -167,6 +203,12 @@ class EarlyStopping:
     ) -> None:
         """
         Initialize the tracker.
+
+        Args:
+            patience (int): Number of epochs to wait for improvement.
+            min_delta (float): Minimum change to qualify as improvement.
+            path (str): Checkpoint path to save the best model.
+            mode (str): Optimization mode ("min" or "max").
 
         >>> es = EarlyStopping(patience=2, min_delta=0.1, path="tmp.pth")
         >>> es.best_score is None
@@ -184,6 +226,15 @@ class EarlyStopping:
         self.mode = mode
 
     def _is_improvement(self, value: float) -> bool:
+        """Return True if the metric improves over the best score.
+
+        Args:
+            value (float): Current metric value.
+
+        Returns:
+            bool: True if the metric improved.
+        """
+
         if self.best_score is None:
             return True
         if self.mode == "min":
@@ -193,6 +244,10 @@ class EarlyStopping:
     def __call__(self, metric: float, model: torch.nn.Module) -> None:
         """
         Update state with the latest validation metric.
+
+        Args:
+            metric (float): Current metric value.
+            model (torch.nn.Module): Model to checkpoint.
 
         >>> es = EarlyStopping(patience=1, min_delta=0.0, path="tmp.pth", mode="max")
         >>> class Dummy(torch.nn.Module):
@@ -217,6 +272,10 @@ class EarlyStopping:
     def save_checkpoint(self, metric: float, model: torch.nn.Module) -> None:
         """
         Persist the model weights to disk.
+
+        Args:
+            metric (float): Current metric value.
+            model (torch.nn.Module): Model to checkpoint.
 
         >>> es = EarlyStopping(path="tmp_checkpoint.pth")
         >>> class Dummy(torch.nn.Module):

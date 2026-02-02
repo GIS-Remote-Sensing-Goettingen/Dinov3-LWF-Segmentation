@@ -8,21 +8,21 @@ from __future__ import annotations
 import concurrent.futures
 import gc
 import glob
-import math
 import os
 import random
-from typing import Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 import numpy as np
 import rasterio
+import torch
+import torch.nn.functional as F
 from rasterio.enums import Resampling
+from rasterio.io import MemoryFile
 from rasterio.mask import mask
 from rasterio.warp import reproject
 from shapely.geometry import box
-import torch
-import torch.nn.functional as F
-from torch.utils.data import Dataset
 from tifffile import imread
+from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import AutoImageProcessor, AutoModel
 
@@ -40,6 +40,17 @@ def extract_multiscale_features(
 ) -> List[torch.Tensor]:
     """
     Run DINO backbone once on a tile and slice hidden states into feature maps.
+
+    Args:
+        image_hw3 (np.ndarray): Image array in HWC format.
+        model: DINO backbone model.
+        processor: Image processor for the backbone.
+        device (torch.device): Device for inference.
+        layers (Sequence[int]): Backbone layer indices to extract.
+        ps (int): Patch size for the backbone.
+
+    Returns:
+        List[torch.Tensor]: Feature maps per requested layer.
 
     >>> import types
     >>> class DummyBatch(dict):
@@ -96,6 +107,13 @@ def subset_label_to_image_bounds(img_path: str, lab_path: str) -> np.ndarray:
     """
     Crop or reproject the label raster so it aligns with the image tile.
 
+    Args:
+        img_path (str): Path to the input image.
+        lab_path (str): Path to the label raster.
+
+    Returns:
+        np.ndarray: Aligned label array.
+
     >>> subset_label_to_image_bounds("image.tif", "labels.tif")  # doctest: +SKIP
     array(...)
     """
@@ -118,7 +136,7 @@ def subset_label_to_image_bounds(img_path: str, lab_path: str) -> np.ndarray:
         else:
             new_meta = img_meta.copy()
             new_meta.update(dtype=src_lab.dtypes[0], count=1)
-            with rasterio.io.MemoryFile() as mem:
+            with MemoryFile() as mem:
                 with mem.open(**new_meta) as dst:
                     reproject(
                         source=rasterio.band(src_lab, 1),
@@ -138,6 +156,12 @@ def subset_label_to_image_bounds(img_path: str, lab_path: str) -> np.ndarray:
 def _check_single_file(file_path: str) -> str | None:
     """
     Validate that a cached tile can be read.
+
+    Args:
+        file_path (str): Path to the cached tile.
+
+    Returns:
+        str | None: Path of the corrupt file, if any.
 
     >>> import tempfile
     >>> tmp = tempfile.NamedTemporaryFile(suffix=".pt", delete=False)
@@ -160,6 +184,11 @@ def verify_and_clean_dataset_fast(
     """
     Spawn workers to make sure each cached tile is readable; delete corrupt ones.
 
+    Args:
+        output_dir (str): Directory containing cached tiles.
+        num_workers (int | None): Worker count for verification.
+        logger (Optional["VerbosityLogger"]): Logger instance.
+
     >>> verify_and_clean_dataset_fast("/tmp", num_workers=1)  # doctest: +SKIP
     """
 
@@ -175,7 +204,9 @@ def verify_and_clean_dataset_fast(
         logger.info(f"Verifying {len(files)} cached tiles.")
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = [executor.submit(_check_single_file, f) for f in files]
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(files), desc="Verifying"):
+        for future in tqdm(
+            concurrent.futures.as_completed(futures), total=len(files), desc="Verifying"
+        ):
             result = future.result()
             if result is not None:
                 corrupted_files.append(result)
@@ -202,6 +233,16 @@ def prepare_data_tiles(
     """
     Tile raw GeoTIFFs, align labels, and pre-compute DINO feature tensors.
 
+    Args:
+        img_dir (str): Directory of input imagery.
+        label_path (str): Label raster path.
+        output_dir (str): Output directory for cached tiles.
+        model_name (str): Backbone model name.
+        layers (Sequence[int]): Backbone layer indices to extract.
+        device (torch.device): Device for inference.
+        tile_size (int): Tile size in pixels.
+        logger (Optional["VerbosityLogger"]): Logger instance.
+
     >>> # Light-touch doctest ensures function signature works by calling with
     >>> # a fake directory (no images). Should exit early with no errors.
     >>> import tempfile
@@ -218,12 +259,24 @@ def prepare_data_tiles(
     """
 
     def _log_info(message: str) -> None:
+        """Emit an info message to the logger or stdout.
+
+        Args:
+            message (str): Message text to emit.
+        """
+
         if logger:
             logger.info(message)
         else:
             print(message)
 
     def _log_debug(message: str) -> None:
+        """Emit a debug message to the logger when enabled.
+
+        Args:
+            message (str): Message text to emit.
+        """
+
         if logger:
             logger.debug(message)
 
@@ -268,6 +321,7 @@ def prepare_data_tiles(
                 if np.isnan(img_crop).any():
                     img_crop = np.nan_to_num(img_crop)
                     _log_debug(f"NaNs detected and replaced for tile {tile_name}")
+                temp_path: str | None = None
                 try:
                     feats = extract_multiscale_features(
                         img_crop,
@@ -291,7 +345,7 @@ def prepare_data_tiles(
                         del img_crop
                         torch.cuda.empty_cache()
                         gc.collect()
-                        if os.path.exists(temp_path):
+                        if temp_path and os.path.exists(temp_path):
                             os.remove(temp_path)
                         continue
                     raise e
@@ -316,10 +370,22 @@ class PrecomputedDataset(Dataset):
         """
         Index every cached tile path.
 
+        Args:
+            processed_dir (str): Directory containing cached tiles.
+            augmentation_cfg (Optional[dict]): Augmentation configuration.
+            file_subset (Optional[List[str]]): Optional subset of files.
+
         >>> import tempfile
         >>> tmpdir = tempfile.mkdtemp()
         >>> sample = os.path.join(tmpdir, "sample.pt")
-        >>> torch.save({"image": torch.zeros(4, 4, 3), "features": [torch.zeros(1, 1, 1)], "label": np.zeros((4, 4))}, sample)
+        >>> torch.save(
+        ...     {
+        ...         "image": torch.zeros(4, 4, 3),
+        ...         "features": [torch.zeros(1, 1, 1)],
+        ...         "label": np.zeros((4, 4)),
+        ...     },
+        ...     sample,
+        ... )
         >>> ds = PrecomputedDataset(tmpdir)
         >>> len(ds)
         1
@@ -328,7 +394,9 @@ class PrecomputedDataset(Dataset):
         if file_subset is not None:
             self.processed_files = file_subset
         else:
-            self.processed_files = sorted(glob.glob(os.path.join(processed_dir, "*.pt")))
+            self.processed_files = sorted(
+                glob.glob(os.path.join(processed_dir, "*.pt"))
+            )
         if not self.processed_files:
             raise ValueError(f"No .pt files found in {processed_dir}.")
         self.augmentation_cfg = augmentation_cfg or {}
@@ -336,6 +404,9 @@ class PrecomputedDataset(Dataset):
     def __len__(self) -> int:
         """
         Number of cached tiles.
+
+        Returns:
+            int: Number of cached tiles.
 
         >>> ds = PrecomputedDataset.__new__(PrecomputedDataset)
         >>> ds.processed_files = [1, 2, 3]
@@ -348,6 +419,12 @@ class PrecomputedDataset(Dataset):
     def __getitem__(self, idx: int):
         """
         Load the tile, normalize RGB image, and return label tensor.
+
+        Args:
+            idx (int): Index of the tile to load.
+
+        Returns:
+            tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]: Image, features, and label.
 
         >>> import tempfile
         >>> tmpdir = tempfile.mkdtemp()
@@ -380,6 +457,17 @@ class PrecomputedDataset(Dataset):
         features: List[torch.Tensor],
         label: torch.Tensor,
     ) -> tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
+        """Apply optional augmentations to image, features, and label.
+
+        Args:
+            img (torch.Tensor): Image tensor.
+            features (List[torch.Tensor]): Feature tensors.
+            label (torch.Tensor): Label tensor.
+
+        Returns:
+            tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]: Augmented outputs.
+        """
+
         cfg = self.augmentation_cfg
         if not cfg or not cfg.get("enable", False):
             return img, features, label

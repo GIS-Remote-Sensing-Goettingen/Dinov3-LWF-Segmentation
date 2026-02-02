@@ -7,8 +7,8 @@ from __future__ import annotations
 from typing import List
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from .base import SegmentationHead
 
@@ -26,6 +26,10 @@ class SpatialPriorModule(nn.Module):
     def __init__(self, in_channels: int = 3, dim: int = 128) -> None:
         """
         Build the module with two stride-2 convolutions.
+
+        Args:
+            in_channels (int): Input channel count.
+            dim (int): Output embedding dimension.
 
         >>> SpatialPriorModule(3, 16)
         SpatialPriorModule(
@@ -55,6 +59,12 @@ class SpatialPriorModule(nn.Module):
         """
         Produce the H/4 prior tensor.
 
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: H/4 prior tensor.
+
         >>> spm = SpatialPriorModule(3, 32)
         >>> spm(torch.randn(1, 3, 32, 32)).shape[-2:]
         torch.Size([8, 8])
@@ -78,6 +88,10 @@ class PixelDecoder(nn.Module):
         """
         Build projector layers plus the SPM module.
 
+        Args:
+            dino_dim (int): DINO feature channel count.
+            embed_dim (int): Embedding dimension.
+
         >>> PixelDecoder(4, 32)  # doctest: +ELLIPSIS
         PixelDecoder(
           (proj_l23): Conv2d(4, 32, kernel_size=(1, 1), stride=(1, 1))
@@ -98,9 +112,18 @@ class PixelDecoder(nn.Module):
             groups -= 1
         self.norm = nn.GroupNorm(groups, embed_dim)
 
-    def forward(self, image: torch.Tensor, features: List[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self, image: torch.Tensor, features: List[torch.Tensor]
+    ) -> torch.Tensor:
         """
         Return fused pixel embeddings at H/4.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (List[torch.Tensor]): Multiscale DINO features.
+
+        Returns:
+            torch.Tensor: Pixel embeddings.
 
         >>> decoder = PixelDecoder(16, 32)
         >>> img = torch.randn(1, 3, 64, 64)
@@ -111,12 +134,14 @@ class PixelDecoder(nn.Module):
 
         feat_spm = self.spm(image)
         target_size = feat_spm.shape[-2:]
-        proj_feats = []
+        proj_feats: list[torch.Tensor] = []
         for proj, feat in zip(
             [self.proj_l5, self.proj_l11, self.proj_l17, self.proj_l23], features
         ):
-            proj_feats.append(F.interpolate(proj(feat), size=target_size, mode="bilinear"))
-        feat_dino = sum(proj_feats)
+            proj_feats.append(
+                F.interpolate(proj(feat), size=target_size, mode="bilinear")
+            )
+        feat_dino = torch.stack(proj_feats, dim=0).sum(dim=0)
         fused = torch.cat([feat_spm, feat_dino], dim=1)
         return self.norm(self.fusion(fused))
 
@@ -142,6 +167,12 @@ class MaskTransformerHead(nn.Module):
         """
         Build the transformer decoder stack.
 
+        Args:
+            num_classes (int): Number of classes.
+            embed_dim (int): Embedding dimension.
+            num_heads (int): Number of attention heads.
+            num_layers (int): Number of decoder layers.
+
         >>> MaskTransformerHead(2, 16, 2, 1)  # doctest: +ELLIPSIS
         MaskTransformerHead(
           (class_queries): Embedding(2, 16)
@@ -160,7 +191,9 @@ class MaskTransformerHead(nn.Module):
             dropout=0.1,
             batch_first=True,
         )
-        self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer, num_layers=num_layers
+        )
         self.output_mlp = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.ReLU(),
@@ -170,6 +203,12 @@ class MaskTransformerHead(nn.Module):
     def forward(self, pixel_embeddings: torch.Tensor) -> torch.Tensor:
         """
         Produce logits via query-to-pixel dot products.
+
+        Args:
+            pixel_embeddings (torch.Tensor): Pixel embedding tensor.
+
+        Returns:
+            torch.Tensor: Mask logits tensor.
 
         >>> head = MaskTransformerHead(2, 8, 2, 1)
         >>> emb = torch.randn(1, 8, 8, 8)
@@ -182,7 +221,9 @@ class MaskTransformerHead(nn.Module):
         queries = self.class_queries.weight.unsqueeze(0).expand(b, -1, -1)
         refined = self.transformer_decoder(tgt=queries, memory=memory)
         refined = self.output_mlp(refined)
-        mask_logits = torch.bmm(refined, memory.transpose(1, 2)).view(b, self.num_classes, h, w)
+        mask_logits = torch.bmm(refined, memory.transpose(1, 2)).view(
+            b, self.num_classes, h, w
+        )
         return mask_logits
 
 
@@ -201,6 +242,10 @@ class DinoMaskFormerHead(SegmentationHead):
         """
         Build the pix2mask pipeline.
 
+        Args:
+            num_classes (int): Number of classes.
+            dino_channels (int): DINO feature channel count.
+
         >>> DinoMaskFormerHead(2, 32)  # doctest: +ELLIPSIS
         DinoMaskFormerHead(
           (pixel_decoder): PixelDecoder...
@@ -210,11 +255,22 @@ class DinoMaskFormerHead(SegmentationHead):
         super().__init__()
         embed_dim = 256
         self.pixel_decoder = PixelDecoder(dino_dim=dino_channels, embed_dim=embed_dim)
-        self.mask_head = MaskTransformerHead(num_classes=num_classes, embed_dim=embed_dim)
+        self.mask_head = MaskTransformerHead(
+            num_classes=num_classes, embed_dim=embed_dim
+        )
 
-    def forward(self, image: torch.Tensor, features: List[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self, image: torch.Tensor, features: List[torch.Tensor]
+    ) -> torch.Tensor:
         """
         Produce segmentation logits at the original image resolution.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (List[torch.Tensor]): Multiscale DINO features.
+
+        Returns:
+            torch.Tensor: Logits tensor.
 
         >>> head = DinoMaskFormerHead(2, 16)
         >>> img = torch.randn(1, 3, 32, 32)
@@ -225,4 +281,6 @@ class DinoMaskFormerHead(SegmentationHead):
 
         pixel_emb = self.pixel_decoder(image, features)
         logits = self.mask_head(pixel_emb)
-        return F.interpolate(logits, size=image.shape[-2:], mode="bilinear", align_corners=False)
+        return F.interpolate(
+            logits, size=image.shape[-2:], mode="bilinear", align_corners=False
+        )

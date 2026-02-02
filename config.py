@@ -17,6 +17,12 @@ CONFIG_ENV_VAR = "DINOV3SEG_CONFIG"
 def _candidate_paths(path: str | None = None) -> List[Path]:
     """
     Build the list of candidate configuration paths ordered by priority.
+
+    Args:
+        path (str | None): Optional explicit configuration path.
+
+    Returns:
+        List[Path]: Candidate paths in priority order.
     """
 
     candidates: List[Path] = []
@@ -40,6 +46,16 @@ def _candidate_paths(path: str | None = None) -> List[Path]:
 def load_config(path: str | None = None) -> Dict[str, Any]:
     """
     Load a YAML configuration file into a dictionary.
+
+    Args:
+        path (str | None): Optional configuration path.
+
+    Returns:
+        Dict[str, Any]: Configuration dictionary.
+
+    Raises:
+        FileNotFoundError: If no config file is found.
+        ValueError: If the config file does not define a mapping.
 
     >>> import tempfile, textwrap, os
     >>> tmp = tempfile.NamedTemporaryFile(delete=False)

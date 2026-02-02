@@ -4,11 +4,9 @@ Simple verbosity-aware logger with optional timestamps and timed blocks.
 
 from __future__ import annotations
 
-import sys
 import time
 from dataclasses import dataclass
 from typing import Optional, TextIO
-
 
 LEVEL_MAP = {"error": 0, "info": 1, "debug": 2}
 
@@ -32,8 +30,9 @@ class VerbosityLogger:
     enabled: bool = True
 
     def __post_init__(self) -> None:
-        """
-        Normalize level names and clamp invalid values.
+        """Normalize level names and clamp invalid values.
+
+        This ensures logging stays within supported verbosity levels.
         """
 
         self.level = self.level.lower()
@@ -45,6 +44,11 @@ class VerbosityLogger:
             self._file_handle = open(self.log_file, "a", encoding="utf-8")
 
     def __del__(self) -> None:
+        """Close any open file handles on teardown.
+
+        This guards against resource leaks during garbage collection.
+        """
+
         if self._file_handle:
             try:
                 self._file_handle.close()
@@ -52,18 +56,33 @@ class VerbosityLogger:
                 pass
 
     def _emit(self, text: str) -> None:
+        """Emit a line to stdout and optional log file.
+
+        Args:
+            text (str): Message text to emit.
+
+        Examples:
+            >>> logger = VerbosityLogger(level="info", timestamps=False)
+            >>> logger._emit("[INFO] hello")
+            [INFO] hello
+        """
+
         print(text)
         if self._file_handle:
             self._file_handle.write(text + "\n")
             self._file_handle.flush()
 
     def log(self, level: str, message: str) -> None:
-        """
-        Emit a log line if the level is enabled.
+        """Emit a log line if the level is enabled.
 
-        >>> logger = VerbosityLogger(level="debug", timestamps=False)
-        >>> logger.log("debug", "detailed")
-        [DEBUG] detailed
+        Args:
+            level (str): Log level name.
+            message (str): Message text to emit.
+
+        Examples:
+            >>> logger = VerbosityLogger(level="debug", timestamps=False)
+            >>> logger.log("debug", "detailed")
+            [DEBUG] detailed
         """
 
         if not self.enabled:
@@ -81,17 +100,44 @@ class VerbosityLogger:
             self._emit(f"{prefix} {message}")
 
     def info(self, message: str) -> None:
-        """Convenience wrapper for info-level logs."""
+        """Convenience wrapper for info-level logs.
+
+        Args:
+            message (str): Message text to emit.
+
+        Examples:
+            >>> logger = VerbosityLogger(level="info", timestamps=False)
+            >>> logger.info("hello")
+            [INFO] hello
+        """
 
         self.log("info", message)
 
     def debug(self, message: str) -> None:
-        """Convenience wrapper for debug-level logs."""
+        """Convenience wrapper for debug-level logs.
+
+        Args:
+            message (str): Message text to emit.
+
+        Examples:
+            >>> logger = VerbosityLogger(level="debug", timestamps=False)
+            >>> logger.debug("detail")
+            [DEBUG] detail
+        """
 
         self.log("debug", message)
 
     def error(self, message: str) -> None:
-        """Convenience wrapper for error-level logs."""
+        """Convenience wrapper for error-level logs.
+
+        Args:
+            message (str): Message text to emit.
+
+        Examples:
+            >>> logger = VerbosityLogger(level="error", timestamps=False)
+            >>> logger.error("boom")
+            [ERROR] boom
+        """
 
         self.log("error", message)
 
@@ -108,16 +154,40 @@ class TimedBlock:
     """
 
     def __init__(self, logger: VerbosityLogger, label: str) -> None:
+        """Initialize the timed block.
+
+        Args:
+            logger (VerbosityLogger): Logger instance for messages.
+            label (str): Label for the timed block.
+        """
+
         self.logger = logger
         self.label = label
         self.start_time: Optional[float] = None
 
     def __enter__(self):
+        """Enter the timed block and record the start time.
+
+        Returns:
+            TimedBlock: The active context manager.
+        """
+
         self.start_time = time.perf_counter()
         self.logger.info(f"{self.label} starting")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit the timed block and emit the elapsed time.
+
+        Args:
+            exc_type (type | None): Exception type, if any.
+            exc_val (BaseException | None): Exception value, if any.
+            exc_tb (TracebackType | None): Traceback, if any.
+
+        Returns:
+            bool: False to propagate exceptions.
+        """
+
         if self.start_time is None:
             return False
         duration = time.perf_counter() - self.start_time
