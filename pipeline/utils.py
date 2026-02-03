@@ -16,7 +16,6 @@ import torch.distributed as dist
 from utils import VerbosityLogger
 
 from .constants import (
-    DEFAULT_DEVICE,
     DEFAULT_DINO_CHANNELS,
     DEFAULT_EXPERIMENT_ID,
     DEFAULT_HEAD,
@@ -60,13 +59,17 @@ def setup_distributed(resources_cfg: dict) -> DistContext:
     if not dist_flag:
         return ctx
     if not dist.is_available():
-        raise RuntimeError("distributed training requested but torch.distributed unavailable")
+        raise RuntimeError(
+            "distributed training requested but torch.distributed unavailable"
+        )
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
     else:
-        raise RuntimeError("Distributed mode requires torchrun/launch to set RANK and WORLD_SIZE")
+        raise RuntimeError(
+            "Distributed mode requires torchrun/launch to set RANK and WORLD_SIZE"
+        )
     backend = resources_cfg.get("dist_backend", "nccl")
     torch.cuda.set_device(local_rank)
     dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
@@ -138,7 +141,9 @@ def build_logger(config: dict, enabled: bool = True) -> VerbosityLogger:
     level = logging_cfg.get("level", "info")
     timestamps = logging_cfg.get("timestamps", True)
     log_file = logging_cfg.get("file")
-    return VerbosityLogger(level=level, timestamps=timestamps, log_file=log_file, enabled=enabled)
+    return VerbosityLogger(
+        level=level, timestamps=timestamps, log_file=log_file, enabled=enabled
+    )
 
 
 def section_enabled(config: dict, name: str) -> bool:
@@ -277,7 +282,9 @@ def collect_run_params(config: dict) -> dict[str, str]:
         "train.adamw_lr": str(train_cfg.get("adamw_lr", 0.001)),
         "resources.seed": str(resources_cfg.get("seed", "")),
         "resources.distributed": str(resources_cfg.get("distributed", False)),
-        "dataset.augmentations": str(dataset_cfg.get("augmentations", {}).get("enable", False)),
+        "dataset.augmentations": str(
+            dataset_cfg.get("augmentations", {}).get("enable", False)
+        ),
     }
     return params
 
@@ -345,7 +352,9 @@ def build_processors(config: dict) -> list[Processor]:
     return processors
 
 
-def build_run_context(config: dict, logger: VerbosityLogger, dist_ctx: DistContext) -> RunContext:
+def build_run_context(
+    config: dict, logger: VerbosityLogger, dist_ctx: DistContext
+) -> RunContext:
     """Create the RunContext with MLflow logging and hooks.
 
     Args:
@@ -380,11 +389,17 @@ def build_run_context(config: dict, logger: VerbosityLogger, dist_ctx: DistConte
             tags=tracking_cfg.get("tags", {}),
         )
         run_dir = mlflow_logger.run_dir
-    metrics_writer = MetricsWriter(run_dir / "artifacts" / "metrics.jsonl") if mlflow_logger else None
+    metrics_writer = (
+        MetricsWriter(run_dir / "artifacts" / "metrics.jsonl")
+        if mlflow_logger
+        else None
+    )
     config["_run_params"] = collect_run_params(config)
     hooks = build_hooks(config, mlflow_logger)
     hook_manager = HookManager(hooks)
-    continue_on_error = bool(config.get("resources", {}).get("continue_on_error", False))
+    continue_on_error = bool(
+        config.get("resources", {}).get("continue_on_error", False)
+    )
     return RunContext(
         config=config,
         logger=logger,

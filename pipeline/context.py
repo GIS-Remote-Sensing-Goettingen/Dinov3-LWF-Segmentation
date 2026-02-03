@@ -177,13 +177,15 @@ class PhaseResult:
             "duration_s": self.duration_s,
             "metrics": self.metrics,
             "artifacts": self.artifacts,
-            "error": None
-            if self.error is None
-            else {
-                "type": self.error.type,
-                "message": self.error.message,
-                "details": self.error.details,
-            },
+            "error": (
+                None
+                if self.error is None
+                else {
+                    "type": self.error.type,
+                    "message": self.error.message,
+                    "details": self.error.details,
+                }
+            ),
         }
 
 

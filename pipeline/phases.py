@@ -6,6 +6,7 @@ import glob
 import math
 import os
 from contextlib import nullcontext
+from typing import Any, cast
 
 import numpy as np
 import rasterio
@@ -29,7 +30,12 @@ from utils import (
     verify_and_clean_dataset_fast,
 )
 
-from .constants import DEFAULT_DEVICE, DEFAULT_LABEL_PATH, DEFAULT_PROCESSED_DIR, DEFAULT_RAW_IMAGES_DIR
+from .constants import (
+    DEFAULT_DEVICE,
+    DEFAULT_LABEL_PATH,
+    DEFAULT_PROCESSED_DIR,
+    DEFAULT_RAW_IMAGES_DIR,
+)
 from .context import InferenceError, PhaseOutcome, RunContext, TrainingError
 from .data_splits import create_dataloaders, dataset_size
 from .inference_utils import build_tta_transforms
@@ -38,6 +44,7 @@ from .train_utils import (
     ModelEMA,
     align_labels_to_logits,
     evaluate,
+    extract_multiscale_features_batch,
     move_features_to_device,
     split_params_for_muon,
 )
@@ -67,13 +74,20 @@ class PreparePhase(Phase):
 
         section = context.config.get(self.config_key, {})
         model_cfg = get_model_config(context.config)
-        img_dir = resolve_path(context.config, section, "img_dir", DEFAULT_RAW_IMAGES_DIR)
-        label_path = resolve_path(context.config, section, "label_path", DEFAULT_LABEL_PATH)
-        output_dir = resolve_path(context.config, section, "output_dir", DEFAULT_PROCESSED_DIR)
+        img_dir = resolve_path(
+            context.config, section, "img_dir", DEFAULT_RAW_IMAGES_DIR
+        )
+        label_path = resolve_path(
+            context.config, section, "label_path", DEFAULT_LABEL_PATH
+        )
+        output_dir = resolve_path(
+            context.config, section, "output_dir", DEFAULT_PROCESSED_DIR
+        )
         device = torch.device(section.get("device", DEFAULT_DEVICE))
         if context.dist_ctx.enabled:
             device = torch.device(f"cuda:{context.dist_ctx.local_rank}")
         before_count = len(glob.glob(os.path.join(output_dir, "*.pt")))
+        cache_features = bool(section.get("cache_features", True))
         with TimedBlock(context.logger, "Preparation phase"):
             prepare_data_tiles(
                 img_dir=img_dir,
@@ -83,6 +97,7 @@ class PreparePhase(Phase):
                 layers=model_cfg["layers"],
                 device=device,
                 tile_size=section.get("tile_size", 512),
+                cache_features=cache_features,
                 logger=context.logger,
             )
         after_count = len(glob.glob(os.path.join(output_dir, "*.pt")))
@@ -116,7 +131,9 @@ class VerifyPhase(Phase):
         """
 
         section = context.config.get(self.config_key, {})
-        processed_dir = resolve_path(context.config, section, "processed_dir", DEFAULT_PROCESSED_DIR)
+        processed_dir = resolve_path(
+            context.config, section, "processed_dir", DEFAULT_PROCESSED_DIR
+        )
         before_count = len(glob.glob(os.path.join(processed_dir, "*.pt")))
         with TimedBlock(context.logger, "Verification phase"):
             verify_and_clean_dataset_fast(
@@ -176,7 +193,9 @@ class TrainPhase(Phase):
         section = context.config.get(self.config_key, {})
         dataset_cfg = context.config.get("dataset", {})
         model_cfg = get_model_config(context.config)
-        processed_dir = resolve_path(context.config, section, "processed_dir", DEFAULT_PROCESSED_DIR)
+        processed_dir = resolve_path(
+            context.config, section, "processed_dir", DEFAULT_PROCESSED_DIR
+        )
         weights_dir = section.get("weights_dir", "weights")
         os.makedirs(weights_dir, exist_ok=True)
         device = torch.device(section.get("device", DEFAULT_DEVICE))
@@ -203,7 +222,7 @@ class TrainPhase(Phase):
             dino_channels=model_cfg["dino_channels"],
         ).to(device)
         if section.get("compile", False) and hasattr(torch, "compile"):
-            model = torch.compile(model)
+            model = cast(torch.nn.Module, torch.compile(model))
         if context.dist_ctx.enabled:
             model = DDP(
                 model,
@@ -211,7 +230,7 @@ class TrainPhase(Phase):
                 output_device=context.dist_ctx.local_rank,
                 find_unused_parameters=False,
             )
-        base_model = unwrap_model(model)
+        base_model = unwrap_model(cast(torch.nn.Module, model))
         total_params = sum(p.numel() for p in base_model.parameters())
         context.logger.info(
             f"Initialized head '{model_cfg['head']}' with {total_params:,} parameters."
@@ -242,6 +261,10 @@ class TrainPhase(Phase):
             class_weights=loss_cfg.get("class_weights"),
             ignore_index=loss_cfg.get("ignore_index"),
         ).to(device)
+        cache_features = bool(dataset_cfg.get("cache_features", True))
+        backbone = None
+        processor = None
+        ps = 14 if "vitl14" in model_cfg["backbone"] else 16
         use_amp = device.type == "cuda"
         scaler = torch.cuda.amp.GradScaler() if use_amp else None
         autocast = torch.cuda.amp.autocast() if use_amp else nullcontext()
@@ -269,7 +292,8 @@ class TrainPhase(Phase):
                 if train_sampler is not None:
                     train_sampler.set_epoch(epoch)
                 with TimedBlock(context.logger, f"Epoch {epoch + 1}"):
-                    model.train()
+                    model_call = cast(Any, model)
+                    model_call.train()
                     train_loss = 0.0
                     optimizer.zero_grad()
                     pbar = tqdm(
@@ -280,11 +304,32 @@ class TrainPhase(Phase):
                     for batch_idx, (img, features, y) in enumerate(pbar, 1):
                         img = img.to(device)
                         y = y.to(device)
-                        feats = move_features_to_device(features, device)
-                        model_call = model
+                        if cache_features and features:
+                            feats = move_features_to_device(features, device)
+                        else:
+                            if backbone is None or processor is None:
+                                processor = AutoImageProcessor.from_pretrained(
+                                    model_cfg["backbone"]
+                                )
+                                backbone = (
+                                    AutoModel.from_pretrained(model_cfg["backbone"])
+                                    .eval()
+                                    .to(device)
+                                )
+                            feats = extract_multiscale_features_batch(
+                                img,
+                                backbone,
+                                processor,
+                                device,
+                                model_cfg["layers"],
+                                ps,
+                            )
+                        model_call = cast(Any, model)
                         with autocast:
                             if hasattr(model_call, "forward_with_aux"):
-                                logits, aux_logits = model_call.forward_with_aux(img, feats)
+                                logits, aux_logits = model_call.forward_with_aux(
+                                    img, feats
+                                )
                             else:
                                 logits = model_call(img, feats)
                                 aux_logits = None
@@ -305,7 +350,9 @@ class TrainPhase(Phase):
                             scaler.scale(loss).backward()
                         else:
                             loss.backward()
-                        if batch_idx % grad_accum == 0 or batch_idx == len(train_loader):
+                        if batch_idx % grad_accum == 0 or batch_idx == len(
+                            train_loader
+                        ):
                             if scaler:
                                 scaler.step(optimizer)
                                 scaler.update()
@@ -328,10 +375,17 @@ class TrainPhase(Phase):
                                 context,
                                 self.name,
                                 batch_idx,
-                                {"batch_loss": batch_metrics["loss"], "lr": batch_metrics["lr"]},
+                                {
+                                    "batch_loss": batch_metrics["loss"],
+                                    "lr": batch_metrics["lr"],
+                                },
                             )
                     avg_train_loss = train_loss / len(train_loader)
-                    eval_model = ema.ema_model if ema else unwrap_model(model)
+                    eval_model = (
+                        ema.ema_model
+                        if ema
+                        else unwrap_model(cast(torch.nn.Module, model))
+                    )
                     val_loss, val_metrics = evaluate(
                         eval_model,
                         val_loader,
@@ -342,7 +396,9 @@ class TrainPhase(Phase):
                         model_cfg["num_classes"],
                     )
                     if context.dist_ctx.enabled:
-                        loss_tensor = torch.tensor([val_loss, val_metrics["miou"]], device=device)
+                        loss_tensor = torch.tensor(
+                            [val_loss, val_metrics["miou"]], device=device
+                        )
                         dist.broadcast(loss_tensor, src=0)
                         val_loss = loss_tensor[0].item()
                         val_metrics["miou"] = loss_tensor[1].item()
@@ -374,7 +430,9 @@ class TrainPhase(Phase):
                         "mdice": float(val_metrics["mdice"]),
                         "lr": scheduler.get_last_lr()[0],
                     }
-                    context.hook_manager.on_epoch_end(context, self.name, epoch + 1, epoch_metrics)
+                    context.hook_manager.on_epoch_end(
+                        context, self.name, epoch + 1, epoch_metrics
+                    )
                     context.hook_manager.on_metrics(
                         context,
                         self.name,
@@ -468,7 +526,9 @@ class InferencePhase(Phase):
         tile_size = infer_cfg.get("tile_size", 512)
         ps = 14 if "vitl14" in model_cfg["backbone"] else 16
         overlap_cfg = infer_cfg.get("overlap", 0.0)
-        overlap_px = int(tile_size * overlap_cfg) if overlap_cfg < 1 else int(overlap_cfg)
+        overlap_px = (
+            int(tile_size * overlap_cfg) if overlap_cfg < 1 else int(overlap_cfg)
+        )
         stride = max(1, tile_size - overlap_px)
         tta_transforms = build_tta_transforms(infer_cfg.get("tta", {}))
         with rasterio.open(input_tif) as src:
@@ -477,13 +537,20 @@ class InferencePhase(Phase):
             channels = src.count
         if channels != 3:
             raise InferenceError("Expected 3-band imagery.")
-        prob_accum = np.zeros((model_cfg["num_classes"], height, width), dtype=np.float32)
+        prob_accum = np.zeros(
+            (model_cfg["num_classes"], height, width), dtype=np.float32
+        )
         count_accum = np.zeros((height, width), dtype=np.float32)
         total_tiles = math.ceil(height / stride) * math.ceil(width / stride)
-        context.logger.info(f"Running inference on {total_tiles} tiles with stride {stride}.")
+        context.logger.info(
+            f"Running inference on {total_tiles} tiles with stride {stride}."
+        )
         tile_counter = 0
         autocast = torch.cuda.amp.autocast() if device.type == "cuda" else nullcontext()
-        with rasterio.open(input_tif) as src, TimedBlock(context.logger, "Inference phase"):
+        with (
+            rasterio.open(input_tif) as src,
+            TimedBlock(context.logger, "Inference phase"),
+        ):
             for y in range(0, height, stride):
                 for x in range(0, width, stride):
                     tile_counter += 1
@@ -508,7 +575,9 @@ class InferencePhase(Phase):
                     )
                     for transform in tta_transforms:
                         aug_img = transform.apply(img_tile)
-                        img_tile_norm = (aug_img.astype(np.float32) / 255.0).astype(np.float32)
+                        img_tile_norm = (aug_img.astype(np.float32) / 255.0).astype(
+                            np.float32
+                        )
                         img_t = (
                             torch.from_numpy(img_tile_norm)
                             .permute(2, 0, 1)
@@ -534,7 +603,9 @@ class InferencePhase(Phase):
                                     mode="bilinear",
                                     align_corners=False,
                                 )
-                            probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+                            probs = (
+                                torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+                            )
                         probs = probs[:, :orig_h, :orig_w]
                         tile_probs += probs
                     tile_probs /= len(tta_transforms)

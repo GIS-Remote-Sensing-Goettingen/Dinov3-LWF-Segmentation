@@ -14,6 +14,7 @@ paths:
   processed_dir: /mnt/OS/processed_tiles_1024/
 
 dataset:
+  cache_features: false
   augmentations:
     enable: true
     hflip: true
@@ -34,6 +35,7 @@ prepare:
   enable: false
   tile_size: 512
   device: cuda
+  cache_features: false
 
 verify:
   enable: false
@@ -71,4 +73,3 @@ inference:
   tta:
     horizontal_flip: true
     vertical_flip: false
-

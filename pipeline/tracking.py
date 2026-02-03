@@ -7,7 +7,6 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -463,8 +462,12 @@ class MlflowHook(Hook):
             timestamp_ms (int): Unix timestamp in milliseconds.
         """
 
-        metric_payload = {f"{phase_name}.{key}": value for key, value in metrics.items()}
-        self.mlflow_logger.log_metrics(metric_payload, step=step, timestamp_ms=timestamp_ms)
+        metric_payload = {
+            f"{phase_name}.{key}": value for key, value in metrics.items()
+        }
+        self.mlflow_logger.log_metrics(
+            metric_payload, step=step, timestamp_ms=timestamp_ms
+        )
 
 
 class HookManager:
@@ -613,7 +616,9 @@ class HookManager:
         if timestamp_ms is None:
             timestamp_ms = int(time.time() * 1000)
         if context.metrics_writer:
-            context.metrics_writer.write(phase_name, step, metrics, timestamp_ms=timestamp_ms)
+            context.metrics_writer.write(
+                phase_name, step, metrics, timestamp_ms=timestamp_ms
+            )
         for hook in self.hooks:
             hook.on_metrics(context, phase_name, step, metrics, timestamp_ms)
 
@@ -665,7 +670,9 @@ class Processor:
         _ = when
         return True
 
-    def run(self, context: RunContext, phase_result: PhaseResult, when: str) -> PhaseResult:
+    def run(
+        self, context: RunContext, phase_result: PhaseResult, when: str
+    ) -> PhaseResult:
         """Execute processor logic for a phase.
 
         Args:
@@ -699,7 +706,9 @@ class ConfigSnapshotProcessor(Processor):
 
         self._ran = False
 
-    def run(self, context: RunContext, phase_result: PhaseResult, when: str) -> PhaseResult:
+    def run(
+        self, context: RunContext, phase_result: PhaseResult, when: str
+    ) -> PhaseResult:
         """Write the configuration snapshot to artifacts.
 
         Args:
@@ -734,7 +743,9 @@ class RunSummaryProcessor(Processor):
         True
     """
 
-    def run(self, context: RunContext, phase_result: PhaseResult, when: str) -> PhaseResult:
+    def run(
+        self, context: RunContext, phase_result: PhaseResult, when: str
+    ) -> PhaseResult:
         """Write the run summary to artifacts.
 
         Args:

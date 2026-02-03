@@ -16,6 +16,7 @@ paths:
   processed_dir: /path/to/cache
 
 dataset:
+  cache_features: false
   augmentations:
     enable: true
     hflip: true
@@ -36,6 +37,7 @@ prepare:
   enable: true
   tile_size: 512
   device: cuda
+  cache_features: false
 
 verify:
   enable: true

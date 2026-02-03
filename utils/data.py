@@ -228,6 +228,7 @@ def prepare_data_tiles(
     layers: Sequence[int],
     device: torch.device,
     tile_size: int = 512,
+    cache_features: bool = True,
     logger: Optional["VerbosityLogger"] = None,
 ) -> None:
     """
@@ -241,6 +242,7 @@ def prepare_data_tiles(
         layers (Sequence[int]): Backbone layer indices to extract.
         device (torch.device): Device for inference.
         tile_size (int): Tile size in pixels.
+        cache_features (bool): Whether to cache DINO features on disk.
         logger (Optional["VerbosityLogger"]): Logger instance.
 
     >>> # Light-touch doctest ensures function signature works by calling with
@@ -285,8 +287,11 @@ def prepare_data_tiles(
     existing = glob.glob(os.path.join(output_dir, "*.pt"))
     if existing:
         _log_info(f"[INFO] Found {len(existing)} existing tiles.")
-    processor = AutoImageProcessor.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name).eval().to(device)
+    processor = None
+    model = None
+    if cache_features:
+        processor = AutoImageProcessor.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name).eval().to(device)
     image_paths = glob.glob(os.path.join(img_dir, "*.tif"))
     ps = 14 if "vitl14" in model_name else 16
     for img_path in tqdm(image_paths, desc="Processing Large Images"):
@@ -323,17 +328,19 @@ def prepare_data_tiles(
                     _log_debug(f"NaNs detected and replaced for tile {tile_name}")
                 temp_path: str | None = None
                 try:
-                    feats = extract_multiscale_features(
-                        img_crop,
-                        model,
-                        processor,
-                        device,
-                        layers,
-                        ps=ps,
-                    )
+                    feats = []
+                    if cache_features:
+                        feats = extract_multiscale_features(
+                            img_crop,
+                            model,
+                            processor,
+                            device,
+                            layers,
+                            ps=ps,
+                        )
                     payload = {
                         "image": torch.from_numpy(img_crop),
-                        "features": [f.cpu() for f in feats],
+                        "features": [f.cpu() for f in feats] if feats else [],
                         "label": lbl_crop,
                     }
                     temp_path = save_path + ".tmp"
@@ -445,7 +452,7 @@ class PrecomputedDataset(Dataset):
         except TypeError:
             data = torch.load(self.processed_files[idx])
         img = data["image"].permute(2, 0, 1).float() / 255.0
-        features = data["features"]
+        features = data.get("features", [])
         label_raw = data["label"]
         label_seg = torch.from_numpy(label_raw.astype(np.int64)).long()
         img, features, label_seg = self._apply_augmentations(img, features, label_seg)

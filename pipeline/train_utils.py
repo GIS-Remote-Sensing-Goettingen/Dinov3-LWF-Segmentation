@@ -52,11 +52,64 @@ class ModelEMA:
             model_params = dict(model.named_parameters())
             for name, param in model_params.items():
                 if name in ema_params:
-                    ema_params[name].mul_(self.decay).add_(param.data, alpha=1 - self.decay)
+                    ema_params[name].mul_(self.decay).add_(
+                        param.data, alpha=1 - self.decay
+                    )
             ema_buffers = dict(self.ema_model.named_buffers())
             for name, buf in model.named_buffers():
                 if name in ema_buffers:
                     ema_buffers[name].copy_(buf)
+
+
+def extract_multiscale_features_batch(
+    images: torch.Tensor,
+    model: Any,
+    processor: Any,
+    device: torch.device,
+    layers: list[int],
+    ps: int,
+) -> list[torch.Tensor]:
+    """Extract multiscale features for a batch of images.
+
+    Args:
+        images (torch.Tensor): Image batch in CHW format, normalized to [0, 1].
+        model (Any): Backbone model instance.
+        processor (Any): Image processor instance.
+        device (torch.device): Device for inference.
+        layers (list[int]): Backbone layer indices to extract.
+        ps (int): Patch size for the backbone.
+
+    Returns:
+        list[torch.Tensor]: Feature maps per requested layer (B, C, H/ps, W/ps).
+
+    Examples:
+        >>> callable(extract_multiscale_features_batch)
+        True
+    """
+
+    images_np = images.detach().cpu().permute(0, 2, 3, 1).numpy()
+    if images_np.max() <= 1.5:
+        images_np = (images_np * 255.0).astype("uint8")
+    inputs = processor(
+        images=list(images_np),
+        return_tensors="pt",
+        do_resize=False,
+        do_center_crop=False,
+    ).to(device)
+    R = getattr(model.config, "num_register_tokens", 0)
+    with torch.no_grad():
+        out = model(**inputs, output_hidden_states=True)
+        hidden_states = out.hidden_states
+    _, _, h_proc, w_proc = inputs["pixel_values"].shape
+    hp, wp = h_proc // ps, w_proc // ps
+    feature_maps: list[torch.Tensor] = []
+    batch_size = images.shape[0]
+    for layer_idx in layers:
+        layer_output = hidden_states[layer_idx]
+        patch_tokens = layer_output[:, 1 + R :, :]
+        feats = patch_tokens.reshape(batch_size, hp, wp, -1).permute(0, 3, 1, 2)
+        feature_maps.append(feats)
+    return feature_maps
 
 
 def move_features_to_device(
@@ -188,7 +241,9 @@ def evaluate(
                     aux_logits = None
                 target_main = align_labels_to_logits(y, logits)
                 target_aux = (
-                    align_labels_to_logits(y, aux_logits) if aux_logits is not None else None
+                    align_labels_to_logits(y, aux_logits)
+                    if aux_logits is not None
+                    else None
                 )
                 loss = loss_fn(
                     logits,

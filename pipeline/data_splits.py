@@ -7,7 +7,6 @@ import os
 import random
 from typing import Optional, Sized, cast
 
-import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -154,7 +153,9 @@ def create_dataloaders(
     augment_cfg = dataset_cfg.get("augmentations", {})
     split_cfg = dataset_cfg.get("splits", {})
     val_fraction = train_cfg.get("val_fraction", 0.2)
-    train_files, val_files = resolve_dataset_splits(processed_dir, split_cfg, val_fraction, logger)
+    train_files, val_files = resolve_dataset_splits(
+        processed_dir, split_cfg, val_fraction, logger
+    )
     train_dataset = PrecomputedDataset(
         processed_dir,
         augmentation_cfg=augment_cfg,
