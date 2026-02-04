@@ -32,7 +32,7 @@ model:
   dino_channels: 1024
 
 prepare:
-  enable: false
+  enable: true
   tile_size: 512
   device: cuda
   cache_features: false
