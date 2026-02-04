@@ -105,6 +105,61 @@ def extract_multiscale_features(
     return feature_maps
 
 
+def process_image_tiles_no_features(
+    img_path: str,
+    label_path: str,
+    output_dir: str,
+    tile_size: int,
+) -> dict:
+    """Process one image into tiles without DINO features.
+
+    Args:
+        img_path (str): Path to the input image.
+        label_path (str): Path to the label raster.
+        output_dir (str): Output directory for tiles.
+        tile_size (int): Tile size in pixels.
+
+    Returns:
+        dict: Status and tile counts for the processed image.
+    """
+
+    try:
+        full_img = imread(img_path)
+        full_label = subset_label_to_image_bounds(img_path, label_path)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+    h, w, _ = full_img.shape
+    tiles_written = 0
+    for y in range(0, h, tile_size):
+        for x in range(0, w, tile_size):
+            y_min, x_min = y, x
+            y_max, x_max = y + tile_size, x + tile_size
+            if y_max > h:
+                y_min, y_max = h - tile_size, h
+            if x_max > w:
+                x_min, x_max = w - tile_size, w
+            tile_name = f"{Path(img_path).stem}_y{y_min}_x{x_min}.pt"
+            save_path = os.path.join(output_dir, tile_name)
+            if os.path.exists(save_path):
+                continue
+            img_crop = full_img[y_min:y_max, x_min:x_max, :]
+            lbl_crop = full_label[y_min:y_max, x_min:x_max]
+            if img_crop.max() == 0:
+                continue
+            if np.isnan(img_crop).any():
+                img_crop = np.nan_to_num(img_crop)
+            payload = {
+                "image": torch.from_numpy(img_crop),
+                "features": [],
+                "label": lbl_crop,
+            }
+            temp_path = save_path + ".tmp"
+            torch.save(payload, temp_path)
+            os.rename(temp_path, save_path)
+            tiles_written += 1
+    return {"status": "ok", "tiles_written": tiles_written}
+
+
 def subset_label_to_image_bounds(img_path: str, lab_path: str) -> np.ndarray:
     """
     Crop or reproject the label raster so it aligns with the image tile.
@@ -305,60 +360,6 @@ def prepare_data_tiles(
         minutes, secs = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-    def _process_image_tiles_no_features(
-        img_path: str,
-        label_path_local: str,
-        output_dir_local: str,
-        tile_size_local: int,
-    ) -> dict:
-        """Process one image into tiles without DINO features.
-
-        Args:
-            img_path (str): Path to the input image.
-            label_path_local (str): Path to the label raster.
-            output_dir_local (str): Output directory for tiles.
-            tile_size_local (int): Tile size in pixels.
-
-        Returns:
-            dict: Status and tile counts for the processed image.
-        """
-
-        try:
-            full_img = imread(img_path)
-            full_label = subset_label_to_image_bounds(img_path, label_path_local)
-        except Exception as exc:
-            return {"status": "error", "error": str(exc)}
-        h, w, _ = full_img.shape
-        tiles_written = 0
-        for y in range(0, h, tile_size_local):
-            for x in range(0, w, tile_size_local):
-                y_min, x_min = y, x
-                y_max, x_max = y + tile_size_local, x + tile_size_local
-                if y_max > h:
-                    y_min, y_max = h - tile_size_local, h
-                if x_max > w:
-                    x_min, x_max = w - tile_size_local, w
-                tile_name = f"{Path(img_path).stem}_y{y_min}_x{x_min}.pt"
-                save_path = os.path.join(output_dir_local, tile_name)
-                if os.path.exists(save_path):
-                    continue
-                img_crop = full_img[y_min:y_max, x_min:x_max, :]
-                lbl_crop = full_label[y_min:y_max, x_min:x_max]
-                if img_crop.max() == 0:
-                    continue
-                if np.isnan(img_crop).any():
-                    img_crop = np.nan_to_num(img_crop)
-                payload = {
-                    "image": torch.from_numpy(img_crop),
-                    "features": [],
-                    "label": lbl_crop,
-                }
-                temp_path = save_path + ".tmp"
-                torch.save(payload, temp_path)
-                os.rename(temp_path, save_path)
-                tiles_written += 1
-        return {"status": "ok", "tiles_written": tiles_written}
-
     _log_info("--- PHASE 1: TILING & PRE-COMPUTING ---")
     os.makedirs(output_dir, exist_ok=True)
     existing = glob.glob(os.path.join(output_dir, "*.pt"))
@@ -382,7 +383,7 @@ def prepare_data_tiles(
         with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(
-                    _process_image_tiles_no_features,
+                    process_image_tiles_no_features,
                     img_path,
                     label_path,
                     output_dir,

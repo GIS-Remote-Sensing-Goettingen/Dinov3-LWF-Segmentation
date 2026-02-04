@@ -331,48 +331,61 @@ class TrainPhase(Phase):
                             last_log_time = time.time()
                         img = img.to(device)
                         y = y.to(device)
-                        if cache_features and features:
-                            feats = move_features_to_device(features, device)
-                        else:
-                            if backbone is None or processor is None:
-                                processor = AutoImageProcessor.from_pretrained(
-                                    model_cfg["backbone"]
-                                )
-                                backbone = (
-                                    AutoModel.from_pretrained(model_cfg["backbone"])
-                                    .eval()
-                                    .to(device)
-                                )
-                            feats = extract_multiscale_features_batch(
-                                img,
-                                backbone,
-                                processor,
-                                device,
-                                model_cfg["layers"],
-                                ps,
-                            )
-                        model_call = cast(Any, model)
-                        with autocast:
-                            if hasattr(model_call, "forward_with_aux"):
-                                logits, aux_logits = model_call.forward_with_aux(
-                                    img, feats
-                                )
+                        try:
+                            if cache_features and features:
+                                feats = move_features_to_device(features, device)
                             else:
-                                logits = model_call(img, feats)
-                                aux_logits = None
-                            target_main = align_labels_to_logits(y, logits)
-                            target_aux = (
-                                align_labels_to_logits(y, aux_logits)
-                                if aux_logits is not None
-                                else None
+                                if backbone is None or processor is None:
+                                    processor = AutoImageProcessor.from_pretrained(
+                                        model_cfg["backbone"]
+                                    )
+                                    backbone = (
+                                        AutoModel.from_pretrained(model_cfg["backbone"])
+                                        .eval()
+                                        .to(device)
+                                    )
+                                feats = extract_multiscale_features_batch(
+                                    img,
+                                    backbone,
+                                    processor,
+                                    device,
+                                    model_cfg["layers"],
+                                    ps,
+                                )
+                            model_call = cast(Any, model)
+                            with autocast:
+                                if hasattr(model_call, "forward_with_aux"):
+                                    logits, aux_logits = model_call.forward_with_aux(
+                                        img, feats
+                                    )
+                                else:
+                                    logits = model_call(img, feats)
+                                    aux_logits = None
+                                target_main = align_labels_to_logits(y, logits)
+                                target_aux = (
+                                    align_labels_to_logits(y, aux_logits)
+                                    if aux_logits is not None
+                                    else None
+                                )
+                                loss = loss_fn(
+                                    logits,
+                                    target_main,
+                                    aux_logits=aux_logits,
+                                    aux_targets=target_aux,
+                                )
+                                loss = loss / grad_accum
+                        except Exception as exc:
+                            context.logger.info(
+                                "Batch %s failed with %s; img=%s, features=%s, layers=%s"
+                                % (
+                                    batch_idx,
+                                    exc,
+                                    tuple(img.shape),
+                                    len(features) if features is not None else 0,
+                                    model_cfg["layers"],
+                                )
                             )
-                            loss = loss_fn(
-                                logits,
-                                target_main,
-                                aux_logits=aux_logits,
-                                aux_targets=target_aux,
-                            )
-                            loss = loss / grad_accum
+                            raise
                         if scaler:
                             scaler.scale(loss).backward()
                         else:
