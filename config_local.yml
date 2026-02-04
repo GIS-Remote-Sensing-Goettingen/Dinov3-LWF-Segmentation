@@ -7,6 +7,7 @@ logging:
   level: debug
   timestamps: true
   file: /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/logs/run.log
+  per_run: true
 
 paths:
   raw_images_dir: /home/mak/PycharmProjects/SegEdge/experiments/get_data_from_api/patches_mt/
@@ -37,6 +38,7 @@ prepare:
   tile_size: 512
   device: cuda
   cache_features: false
+  workers: 8
 
 verify:
   enable: false

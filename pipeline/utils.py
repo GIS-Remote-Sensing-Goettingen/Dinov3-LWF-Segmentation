@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import random
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -121,18 +120,22 @@ def apply_resource_config(config: dict) -> None:
     torch.backends.cudnn.benchmark = res_cfg.get("cudnn_benchmark", True)
 
 
-def build_logger(config: dict, enabled: bool = True) -> VerbosityLogger:
+def build_logger(config: dict, run_id: str, enabled: bool = True) -> VerbosityLogger:
     """Create a VerbosityLogger using the logging configuration.
 
     Args:
         config (dict): Configuration dictionary.
+        run_id (str): Run identifier used for per-run log files.
         enabled (bool): Whether logging is enabled.
 
     Returns:
         VerbosityLogger: Configured logger instance.
 
     Examples:
-        >>> logger = build_logger({"logging": {"level": "debug", "timestamps": False}})
+        >>> logger = build_logger(
+        ...     {"logging": {"level": "debug", "timestamps": False, "per_run": False}},
+        ...     run_id="demo",
+        ... )
         >>> logger.debug("configured")
         [DEBUG] configured
     """
@@ -141,6 +144,19 @@ def build_logger(config: dict, enabled: bool = True) -> VerbosityLogger:
     level = logging_cfg.get("level", "info")
     timestamps = logging_cfg.get("timestamps", True)
     log_file = logging_cfg.get("file")
+    per_run = bool(logging_cfg.get("per_run", True))
+    if per_run:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        log_dir = logging_cfg.get("dir")
+        if log_dir:
+            base = logging_cfg.get("base_name", "run")
+            log_file = str(Path(log_dir) / f"{base}_{timestamp}_{run_id}.log")
+        elif log_file:
+            path = Path(log_file)
+            base = path.stem or "run"
+            log_file = str(path.with_name(f"{base}_{timestamp}_{run_id}.log"))
+        else:
+            log_file = str(Path("logs") / f"run_{timestamp}_{run_id}.log")
     if log_file:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     return VerbosityLogger(
@@ -355,7 +371,7 @@ def build_processors(config: dict) -> list[Processor]:
 
 
 def build_run_context(
-    config: dict, logger: VerbosityLogger, dist_ctx: DistContext
+    config: dict, logger: VerbosityLogger, dist_ctx: DistContext, run_id: str
 ) -> RunContext:
     """Create the RunContext with MLflow logging and hooks.
 
@@ -363,13 +379,19 @@ def build_run_context(
         config (dict): Configuration dictionary.
         logger (VerbosityLogger): Logger instance.
         dist_ctx (DistContext): Distributed context.
+        run_id (str): Run identifier for tracking and logging.
 
     Returns:
         RunContext: Initialized run context.
 
     Examples:
         >>> cfg = {"tracking": {"mlflow": {"enable": False}}}
-        >>> ctx = build_run_context(cfg, VerbosityLogger(level="info", timestamps=False), DistContext())
+        >>> ctx = build_run_context(
+        ...     cfg,
+        ...     VerbosityLogger(level="info", timestamps=False),
+        ...     DistContext(),
+        ...     run_id="demo",
+        ... )
         >>> isinstance(ctx, RunContext)
         True
     """
@@ -379,7 +401,6 @@ def build_run_context(
     tracking_dir = tracking_cfg.get("tracking_dir", DEFAULT_TRACKING_DIR)
     experiment_id = str(tracking_cfg.get("experiment_id", DEFAULT_EXPERIMENT_ID))
     run_name = tracking_cfg.get("run_name")
-    run_id = uuid.uuid4().hex
     mlflow_logger = None
     run_dir = Path(".")
     if enable_tracking and dist_ctx.is_main:

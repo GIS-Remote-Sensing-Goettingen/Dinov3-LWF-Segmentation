@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import math
 import os
+import time
 from contextlib import nullcontext
 from typing import Any, cast
 
@@ -98,6 +99,7 @@ class PreparePhase(Phase):
                 device=device,
                 tile_size=section.get("tile_size", 512),
                 cache_features=cache_features,
+                workers=section.get("workers"),
                 logger=context.logger,
             )
         after_count = len(glob.glob(os.path.join(output_dir, "*.pt")))
@@ -202,6 +204,20 @@ class TrainPhase(Phase):
         if context.dist_ctx.enabled:
             device = torch.device(f"cuda:{context.dist_ctx.local_rank}")
         batch_size = section.get("batch_size", 4)
+        cache_features = bool(dataset_cfg.get("cache_features", True))
+        max_tiles = dataset_cfg.get("max_tiles")
+        context.logger.info(
+            "Building dataloaders with batch_size=%s, num_workers=%s, "
+            "cache_features=%s, max_tiles=%s, processed_dir=%s"
+            % (
+                batch_size,
+                section.get("num_workers", 4),
+                cache_features,
+                max_tiles,
+                processed_dir,
+            )
+        )
+        loader_start = time.time()
         train_loader, train_sampler, val_loader = create_dataloaders(
             processed_dir,
             dataset_cfg,
@@ -210,6 +226,7 @@ class TrainPhase(Phase):
             context.logger,
             context.dist_ctx,
         )
+        context.logger.info(f"Dataloaders ready in {time.time() - loader_start:.2f}s")
         context.logger.info(
             f"Dataset split: {dataset_size(train_loader.dataset)} train tiles."
         )
@@ -261,7 +278,6 @@ class TrainPhase(Phase):
             class_weights=loss_cfg.get("class_weights"),
             ignore_index=loss_cfg.get("ignore_index"),
         ).to(device)
-        cache_features = bool(dataset_cfg.get("cache_features", True))
         backbone = None
         processor = None
         ps = 14 if "vitl14" in model_cfg["backbone"] else 16
@@ -289,6 +305,9 @@ class TrainPhase(Phase):
         with TimedBlock(context.logger, "Training phase"):
             for epoch in range(epochs):
                 context.hook_manager.on_epoch_start(context, self.name, epoch + 1)
+                epoch_start = time.time()
+                first_batch_logged = False
+                last_log_time = epoch_start
                 if train_sampler is not None:
                     train_sampler.set_epoch(epoch)
                 with TimedBlock(context.logger, f"Epoch {epoch + 1}"):
@@ -302,6 +321,14 @@ class TrainPhase(Phase):
                         leave=False,
                     )
                     for batch_idx, (img, features, y) in enumerate(pbar, 1):
+                        if not first_batch_logged:
+                            first_batch_logged = True
+                            first_delay = time.time() - epoch_start
+                            context.logger.info(
+                                f"Epoch {epoch + 1} first batch received after "
+                                f"{first_delay:.2f}s"
+                            )
+                            last_log_time = time.time()
                         img = img.to(device)
                         y = y.to(device)
                         if cache_features and features:
@@ -380,6 +407,15 @@ class TrainPhase(Phase):
                                     "lr": batch_metrics["lr"],
                                 },
                             )
+                        if batch_idx % 10 == 0:
+                            now = time.time()
+                            avg_batch = (now - last_log_time) / 10
+                            context.logger.info(
+                                f"Epoch {epoch + 1} batch {batch_idx}/"
+                                f"{len(train_loader)} avg batch time "
+                                f"{avg_batch:.2f}s"
+                            )
+                            last_log_time = now
                     avg_train_loss = train_loss / len(train_loader)
                     eval_model = (
                         ema.ema_model

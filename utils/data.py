@@ -11,6 +11,7 @@ import glob
 import os
 import random
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Sequence
 
 import numpy as np
@@ -230,6 +231,7 @@ def prepare_data_tiles(
     device: torch.device,
     tile_size: int = 512,
     cache_features: bool = True,
+    workers: int | None = None,
     logger: Optional["VerbosityLogger"] = None,
 ) -> None:
     """
@@ -244,6 +246,7 @@ def prepare_data_tiles(
         device (torch.device): Device for inference.
         tile_size (int): Tile size in pixels.
         cache_features (bool): Whether to cache DINO features on disk.
+        workers (int | None): Number of worker processes for tiling.
         logger (Optional["VerbosityLogger"]): Logger instance.
 
     >>> # Light-touch doctest ensures function signature works by calling with
@@ -302,11 +305,70 @@ def prepare_data_tiles(
         minutes, secs = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
+    def _process_image_tiles_no_features(
+        img_path: str,
+        label_path_local: str,
+        output_dir_local: str,
+        tile_size_local: int,
+    ) -> dict:
+        """Process one image into tiles without DINO features.
+
+        Args:
+            img_path (str): Path to the input image.
+            label_path_local (str): Path to the label raster.
+            output_dir_local (str): Output directory for tiles.
+            tile_size_local (int): Tile size in pixels.
+
+        Returns:
+            dict: Status and tile counts for the processed image.
+        """
+
+        try:
+            full_img = imread(img_path)
+            full_label = subset_label_to_image_bounds(img_path, label_path_local)
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+        h, w, _ = full_img.shape
+        tiles_written = 0
+        for y in range(0, h, tile_size_local):
+            for x in range(0, w, tile_size_local):
+                y_min, x_min = y, x
+                y_max, x_max = y + tile_size_local, x + tile_size_local
+                if y_max > h:
+                    y_min, y_max = h - tile_size_local, h
+                if x_max > w:
+                    x_min, x_max = w - tile_size_local, w
+                tile_name = f"{Path(img_path).stem}_y{y_min}_x{x_min}.pt"
+                save_path = os.path.join(output_dir_local, tile_name)
+                if os.path.exists(save_path):
+                    continue
+                img_crop = full_img[y_min:y_max, x_min:x_max, :]
+                lbl_crop = full_label[y_min:y_max, x_min:x_max]
+                if img_crop.max() == 0:
+                    continue
+                if np.isnan(img_crop).any():
+                    img_crop = np.nan_to_num(img_crop)
+                payload = {
+                    "image": torch.from_numpy(img_crop),
+                    "features": [],
+                    "label": lbl_crop,
+                }
+                temp_path = save_path + ".tmp"
+                torch.save(payload, temp_path)
+                os.rename(temp_path, save_path)
+                tiles_written += 1
+        return {"status": "ok", "tiles_written": tiles_written}
+
     _log_info("--- PHASE 1: TILING & PRE-COMPUTING ---")
     os.makedirs(output_dir, exist_ok=True)
     existing = glob.glob(os.path.join(output_dir, "*.pt"))
     if existing:
         _log_info(f"[INFO] Found {len(existing)} existing tiles.")
+    if workers is None:
+        workers = 1
+    if cache_features and workers > 1:
+        _log_info("cache_features enabled; using a single worker for tiling.")
+        workers = 1
     processor = None
     model = None
     if cache_features:
@@ -316,6 +378,45 @@ def prepare_data_tiles(
     ps = 14 if "vitl14" in model_name else 16
     total_images = len(image_paths)
     start_time = time.time()
+    if workers > 1 and not cache_features:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _process_image_tiles_no_features,
+                    img_path,
+                    label_path,
+                    output_dir,
+                    tile_size,
+                ): img_path
+                for img_path in image_paths
+            }
+            for idx, future in enumerate(
+                tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=total_images,
+                    desc="Processing Large Images",
+                ),
+                start=1,
+            ):
+                img_path = futures[future]
+                basename = os.path.splitext(os.path.basename(img_path))[0]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    _log_debug(f"Skipping corrupted image {basename}: {exc}")
+                    continue
+                if result.get("status") != "ok":
+                    _log_debug(
+                        f"Skipping corrupted image {basename}: {result.get('error')}."
+                    )
+                    continue
+                elapsed = time.time() - start_time
+                eta = _format_eta((elapsed / max(1, idx)) * (total_images - idx))
+                _log_info(
+                    f"Processing image {idx}/{total_images} (ETA {eta}): {basename}"
+                )
+        return
+
     for idx, img_path in enumerate(
         tqdm(image_paths, desc="Processing Large Images"), start=1
     ):
@@ -329,6 +430,7 @@ def prepare_data_tiles(
             full_img = imread(img_path)
             full_label = subset_label_to_image_bounds(img_path, label_path)
         except Exception:
+            _log_debug(f"Skipping corrupted image {basename}.")
             continue
         H, W, _ = full_img.shape
         for y in range(0, H, tile_size):

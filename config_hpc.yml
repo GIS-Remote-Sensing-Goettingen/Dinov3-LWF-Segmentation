@@ -7,6 +7,7 @@ logging:
   level: debug
   timestamps: true
   file: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/logs/run.log
+  per_run: true
 
 paths:
   raw_images_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_1/
@@ -15,7 +16,7 @@ paths:
 
 dataset:
   cache_features: false
-  max_tiles: 0
+  max_tiles: 500
   augmentations:
     enable: true
     hflip: true
@@ -37,6 +38,7 @@ prepare:
   tile_size: 512
   device: cuda
   cache_features: false
+  workers: 8
 
 verify:
   enable: false

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import uuid
 
 from pipeline.constants import ensure_env_defaults
 from pipeline.context import ConfigError
@@ -41,11 +42,12 @@ def main(config_path: str | None = None) -> None:
         raise ConfigError(str(exc)) from exc
     apply_resource_config(config)
     dist_ctx = setup_distributed(config.get("resources", {}))
-    logger = build_logger(config, enabled=dist_ctx.is_main)
+    run_id = uuid.uuid4().hex
+    logger = build_logger(config, run_id=run_id, enabled=dist_ctx.is_main)
     logger.info(
         f"Loaded configuration from {config.get('_config_path', 'embedded dict')}"
     )
-    context = build_run_context(config, logger, dist_ctx)
+    context = build_run_context(config, logger, dist_ctx, run_id=run_id)
     phases = [PreparePhase(), VerifyPhase(), TrainPhase(), InferencePhase()]
     processors = build_processors(config)
     runner = PhaseRunner(phases=phases, processors=processors)
