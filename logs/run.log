@@ -1,0 +1,797 @@
+2025-11-24 17:34:41 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 17:34:41 [INFO] Preparation phase starting
+2025-11-24 17:34:41 [INFO] --- PHASE 1: TILING & PRE-COMPUTING ---
+2025-11-24 17:34:41 [INFO] [INFO] Found 9600 existing tiles.
+2025-11-24 17:34:42 [INFO] Processing image dop20_592000_5977000_1km_20cm
+2025-11-24 17:34:43 [INFO] Processing image dop20_592000_5976000_1km_20cm
+2025-11-24 17:34:43 [INFO] Processing image dop20_592000_5973000_1km_20cm
+2025-11-24 17:34:43 [INFO] Processing image dop20_592000_5978000_1km_20cm
+2025-11-24 17:34:43 [INFO] Processing image dop20_592000_5975000_1km_20cm
+2025-11-24 17:34:44 [INFO] Processing image dop20_592000_5974000_1km_20cm
+2025-11-24 17:34:44 [INFO] Processing image dop20_592000_5981000_1km_20cm
+2025-11-24 17:34:44 [INFO] Processing image dop20_592000_5979000_1km_20cm
+2025-11-24 17:34:45 [INFO] Processing image dop20_592000_5982000_1km_20cm
+2025-11-24 17:34:45 [INFO] Processing image dop20_592000_5980000_1km_20cm
+2025-11-24 17:34:45 [INFO] Processing image dop20_592000_5983000_1km_20cm
+2025-11-24 17:34:45 [INFO] Processing image dop20_592000_5984000_1km_20cm
+2025-11-24 17:34:46 [INFO] Processing image dop20_593000_5974000_1km_20cm
+2025-11-24 17:34:46 [INFO] Processing image dop20_593000_5975000_1km_20cm
+2025-11-24 17:34:46 [INFO] Processing image dop20_593000_5973000_1km_20cm
+2025-11-24 17:34:46 [INFO] Processing image dop20_593000_5976000_1km_20cm
+2025-11-24 17:34:47 [INFO] Processing image dop20_593000_5977000_1km_20cm
+2025-11-24 17:34:47 [INFO] Processing image dop20_593000_5978000_1km_20cm
+2025-11-24 17:34:47 [INFO] Processing image dop20_593000_5980000_1km_20cm
+2025-11-24 17:34:48 [INFO] Processing image dop20_593000_5979000_1km_20cm
+2025-11-24 17:34:48 [INFO] Processing image dop20_593000_5981000_1km_20cm
+2025-11-24 17:34:48 [INFO] Processing image dop20_593000_5982000_1km_20cm
+2025-11-24 17:34:48 [INFO] Processing image dop20_593000_5983000_1km_20cm
+2025-11-24 17:34:49 [INFO] Processing image dop20_593000_5984000_1km_20cm
+2025-11-24 17:34:49 [INFO] Processing image dop20_594000_5973000_1km_20cm
+2025-11-24 17:34:49 [INFO] Processing image dop20_594000_5974000_1km_20cm
+2025-11-24 17:34:49 [INFO] Processing image dop20_594000_5975000_1km_20cm
+2025-11-24 17:34:50 [INFO] Processing image dop20_594000_5976000_1km_20cm
+2025-11-24 17:34:50 [INFO] Processing image dop20_594000_5979000_1km_20cm
+2025-11-24 17:34:50 [INFO] Processing image dop20_594000_5977000_1km_20cm
+2025-11-24 17:34:51 [INFO] Processing image dop20_594000_5978000_1km_20cm
+2025-11-24 17:34:51 [INFO] Processing image dop20_594000_5980000_1km_20cm
+2025-11-24 17:34:51 [INFO] Processing image dop20_594000_5981000_1km_20cm
+2025-11-24 17:34:51 [INFO] Processing image dop20_594000_5982000_1km_20cm
+2025-11-24 17:34:52 [INFO] Processing image dop20_594000_5983000_1km_20cm
+2025-11-24 17:34:52 [INFO] Processing image dop20_594000_5984000_1km_20cm
+2025-11-24 17:34:52 [INFO] Processing image dop20_595000_5973000_1km_20cm
+2025-11-24 17:34:52 [INFO] Processing image dop20_595000_5974000_1km_20cm
+2025-11-24 17:34:53 [INFO] Processing image dop20_595000_5975000_1km_20cm
+2025-11-24 17:34:53 [INFO] Processing image dop20_595000_5976000_1km_20cm
+2025-11-24 17:34:53 [INFO] Processing image dop20_595000_5977000_1km_20cm
+2025-11-24 17:34:54 [INFO] Processing image dop20_595000_5979000_1km_20cm
+2025-11-24 17:34:54 [INFO] Processing image dop20_595000_5978000_1km_20cm
+2025-11-24 17:34:54 [INFO] Processing image dop20_595000_5980000_1km_20cm
+2025-11-24 17:34:54 [INFO] Processing image dop20_595000_5981000_1km_20cm
+2025-11-24 17:34:55 [INFO] Processing image dop20_595000_5982000_1km_20cm
+2025-11-24 17:34:55 [INFO] Processing image dop20_595000_5983000_1km_20cm
+2025-11-24 17:34:55 [INFO] Processing image dop20_596000_5973000_1km_20cm
+2025-11-24 17:34:56 [INFO] Processing image dop20_595000_5984000_1km_20cm
+2025-11-24 17:34:56 [INFO] Processing image dop20_596000_5974000_1km_20cm
+2025-11-24 17:34:56 [INFO] Processing image dop20_596000_5975000_1km_20cm
+2025-11-24 17:34:56 [INFO] Processing image dop20_596000_5976000_1km_20cm
+2025-11-24 17:34:57 [INFO] Processing image dop20_596000_5977000_1km_20cm
+2025-11-24 17:34:57 [INFO] Processing image dop20_596000_5978000_1km_20cm
+2025-11-24 17:34:57 [INFO] Processing image dop20_596000_5979000_1km_20cm
+2025-11-24 17:34:57 [INFO] Processing image dop20_596000_5981000_1km_20cm
+2025-11-24 17:34:58 [INFO] Processing image dop20_596000_5980000_1km_20cm
+2025-11-24 17:34:58 [INFO] Processing image dop20_596000_5982000_1km_20cm
+2025-11-24 17:34:58 [INFO] Processing image dop20_596000_5983000_1km_20cm
+2025-11-24 17:34:59 [INFO] Processing image dop20_597000_5973000_1km_20cm
+2025-11-24 17:34:59 [INFO] Processing image dop20_596000_5984000_1km_20cm
+2025-11-24 17:34:59 [INFO] Processing image dop20_597000_5975000_1km_20cm
+2025-11-24 17:34:59 [INFO] Processing image dop20_597000_5974000_1km_20cm
+2025-11-24 17:35:00 [INFO] Processing image dop20_597000_5976000_1km_20cm
+2025-11-24 17:35:00 [INFO] Processing image dop20_597000_5977000_1km_20cm
+2025-11-24 17:35:00 [INFO] Processing image dop20_597000_5978000_1km_20cm
+2025-11-24 17:35:01 [INFO] Processing image dop20_597000_5979000_1km_20cm
+2025-11-24 17:35:01 [INFO] Processing image dop20_597000_5980000_1km_20cm
+2025-11-24 17:35:01 [INFO] Processing image dop20_597000_5981000_1km_20cm
+2025-11-24 17:35:01 [INFO] Processing image dop20_597000_5982000_1km_20cm
+2025-11-24 17:35:02 [INFO] Processing image dop20_597000_5983000_1km_20cm
+2025-11-24 17:35:02 [INFO] Processing image dop20_597000_5984000_1km_20cm
+2025-11-24 17:35:02 [INFO] Processing image dop20_598000_5973000_1km_20cm
+2025-11-24 17:35:03 [INFO] Processing image dop20_598000_5974000_1km_20cm
+2025-11-24 17:35:03 [INFO] Processing image dop20_598000_5975000_1km_20cm
+2025-11-24 17:35:03 [INFO] Processing image dop20_598000_5976000_1km_20cm
+2025-11-24 17:35:03 [INFO] Processing image dop20_598000_5977000_1km_20cm
+2025-11-24 17:35:04 [INFO] Processing image dop20_598000_5978000_1km_20cm
+2025-11-24 17:35:04 [INFO] Processing image dop20_598000_5979000_1km_20cm
+2025-11-24 17:35:04 [INFO] Processing image dop20_598000_5980000_1km_20cm
+2025-11-24 17:35:05 [INFO] Processing image dop20_598000_5981000_1km_20cm
+2025-11-24 17:35:05 [INFO] Processing image dop20_598000_5982000_1km_20cm
+2025-11-24 17:35:05 [INFO] Processing image dop20_598000_5983000_1km_20cm
+2025-11-24 17:35:05 [INFO] Processing image dop20_598000_5984000_1km_20cm
+2025-11-24 17:35:06 [INFO] Processing image dop20_599000_5973000_1km_20cm
+2025-11-24 17:35:06 [INFO] Processing image dop20_599000_5974000_1km_20cm
+2025-11-24 17:35:06 [INFO] Processing image dop20_599000_5975000_1km_20cm
+2025-11-24 17:35:06 [INFO] Processing image dop20_599000_5977000_1km_20cm
+2025-11-24 17:35:07 [INFO] Processing image dop20_599000_5976000_1km_20cm
+2025-11-24 17:35:07 [INFO] Processing image dop20_599000_5978000_1km_20cm
+2025-11-24 17:35:07 [INFO] Processing image dop20_599000_5979000_1km_20cm
+2025-11-24 17:35:08 [INFO] Processing image dop20_599000_5980000_1km_20cm
+2025-11-24 17:35:08 [INFO] Processing image dop20_599000_5981000_1km_20cm
+2025-11-24 17:35:08 [INFO] Processing image dop20_599000_5982000_1km_20cm
+2025-11-24 17:35:08 [INFO] Processing image dop20_599000_5983000_1km_20cm
+2025-11-24 17:35:09 [INFO] Processing image dop20_599000_5984000_1km_20cm
+2025-11-24 17:35:09 [INFO] Phase 1 Complete.
+2025-11-24 17:35:09 [INFO] Preparation phase finished in 28.20s
+2025-11-24 17:35:09 [INFO] Verification phase starting
+2025-11-24 17:35:09 [INFO] Verifying 9600 cached tiles.
+2025-11-24 17:36:24 [INFO] Verification phase finished in 74.88s
+2025-11-24 17:36:24 [INFO] Using random split with 7680 train and 1920 validation tiles.
+2025-11-24 17:36:24 [INFO] Dataset split: 7680 train / 1920 val tiles.
+2025-11-24 17:36:24 [INFO] Initialized head 'unet_v2' with 9,142,308 parameters.
+2025-11-24 17:36:24 [INFO] Training for up to 30 epochs on device cuda.
+2025-11-24 17:36:24 [INFO] Training phase starting
+2025-11-24 17:36:24 [INFO] Epoch 1 starting
+2025-11-24 17:39:57 [INFO] Epoch 1 finished in 212.89s
+2025-11-24 17:39:57 [INFO] Training phase finished in 212.89s
+2025-11-24 17:40:31 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 17:40:31 [INFO] Preparation phase starting
+2025-11-24 17:40:31 [INFO] --- PHASE 1: TILING & PRE-COMPUTING ---
+2025-11-24 17:40:31 [INFO] [INFO] Found 9600 existing tiles.
+2025-11-24 17:40:32 [INFO] Preparation phase finished in 0.47s
+2025-11-24 17:40:42 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 17:40:42 [INFO] Preparation phase starting
+2025-11-24 17:40:42 [INFO] --- PHASE 1: TILING & PRE-COMPUTING ---
+2025-11-24 17:40:42 [INFO] [INFO] Found 9600 existing tiles.
+2025-11-24 17:40:43 [INFO] Processing image dop20_592000_5977000_1km_20cm
+2025-11-24 17:40:43 [INFO] Processing image dop20_592000_5976000_1km_20cm
+2025-11-24 17:40:44 [INFO] Processing image dop20_592000_5973000_1km_20cm
+2025-11-24 17:40:44 [INFO] Processing image dop20_592000_5978000_1km_20cm
+2025-11-24 17:40:44 [INFO] Processing image dop20_592000_5975000_1km_20cm
+2025-11-24 17:40:45 [INFO] Processing image dop20_592000_5974000_1km_20cm
+2025-11-24 17:40:45 [INFO] Processing image dop20_592000_5981000_1km_20cm
+2025-11-24 17:40:45 [INFO] Processing image dop20_592000_5979000_1km_20cm
+2025-11-24 17:40:45 [INFO] Processing image dop20_592000_5982000_1km_20cm
+2025-11-24 17:40:46 [INFO] Processing image dop20_592000_5980000_1km_20cm
+2025-11-24 17:40:46 [INFO] Processing image dop20_592000_5983000_1km_20cm
+2025-11-24 17:40:46 [INFO] Processing image dop20_592000_5984000_1km_20cm
+2025-11-24 17:40:46 [INFO] Processing image dop20_593000_5974000_1km_20cm
+2025-11-24 17:40:47 [INFO] Processing image dop20_593000_5975000_1km_20cm
+2025-11-24 17:40:47 [INFO] Processing image dop20_593000_5973000_1km_20cm
+2025-11-24 17:40:47 [INFO] Processing image dop20_593000_5976000_1km_20cm
+2025-11-24 17:40:48 [INFO] Processing image dop20_593000_5977000_1km_20cm
+2025-11-24 17:40:48 [INFO] Processing image dop20_593000_5978000_1km_20cm
+2025-11-24 17:40:48 [INFO] Processing image dop20_593000_5980000_1km_20cm
+2025-11-24 17:40:48 [INFO] Processing image dop20_593000_5979000_1km_20cm
+2025-11-24 17:40:49 [INFO] Processing image dop20_593000_5981000_1km_20cm
+2025-11-24 17:40:49 [INFO] Processing image dop20_593000_5982000_1km_20cm
+2025-11-24 17:40:49 [INFO] Processing image dop20_593000_5983000_1km_20cm
+2025-11-24 17:40:49 [INFO] Processing image dop20_593000_5984000_1km_20cm
+2025-11-24 17:40:50 [INFO] Processing image dop20_594000_5973000_1km_20cm
+2025-11-24 17:40:50 [INFO] Processing image dop20_594000_5974000_1km_20cm
+2025-11-24 17:40:50 [INFO] Processing image dop20_594000_5975000_1km_20cm
+2025-11-24 17:40:51 [INFO] Processing image dop20_594000_5976000_1km_20cm
+2025-11-24 17:40:51 [INFO] Processing image dop20_594000_5979000_1km_20cm
+2025-11-24 17:40:51 [INFO] Processing image dop20_594000_5977000_1km_20cm
+2025-11-24 17:40:51 [INFO] Processing image dop20_594000_5978000_1km_20cm
+2025-11-24 17:40:52 [INFO] Processing image dop20_594000_5980000_1km_20cm
+2025-11-24 17:40:52 [INFO] Processing image dop20_594000_5981000_1km_20cm
+2025-11-24 17:40:52 [INFO] Processing image dop20_594000_5982000_1km_20cm
+2025-11-24 17:40:53 [INFO] Processing image dop20_594000_5983000_1km_20cm
+2025-11-24 17:40:53 [INFO] Processing image dop20_594000_5984000_1km_20cm
+2025-11-24 17:40:53 [INFO] Processing image dop20_595000_5973000_1km_20cm
+2025-11-24 17:40:53 [INFO] Processing image dop20_595000_5974000_1km_20cm
+2025-11-24 17:40:54 [INFO] Processing image dop20_595000_5975000_1km_20cm
+2025-11-24 17:40:54 [INFO] Processing image dop20_595000_5976000_1km_20cm
+2025-11-24 17:40:54 [INFO] Processing image dop20_595000_5977000_1km_20cm
+2025-11-24 17:40:55 [INFO] Processing image dop20_595000_5979000_1km_20cm
+2025-11-24 17:40:55 [INFO] Processing image dop20_595000_5978000_1km_20cm
+2025-11-24 17:40:55 [INFO] Processing image dop20_595000_5980000_1km_20cm
+2025-11-24 17:40:55 [INFO] Processing image dop20_595000_5981000_1km_20cm
+2025-11-24 17:40:56 [INFO] Processing image dop20_595000_5982000_1km_20cm
+2025-11-24 17:40:56 [INFO] Processing image dop20_595000_5983000_1km_20cm
+2025-11-24 17:40:56 [INFO] Processing image dop20_596000_5973000_1km_20cm
+2025-11-24 17:40:56 [INFO] Preparation phase finished in 14.07s
+2025-11-24 17:41:36 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 17:41:36 [INFO] Using random split with 7680 train and 1920 validation tiles.
+2025-11-24 17:41:36 [INFO] Dataset split: 7680 train / 1920 val tiles.
+2025-11-24 17:41:36 [INFO] Initialized head 'unet_v2' with 9,142,308 parameters.
+2025-11-24 17:41:36 [INFO] Training for up to 30 epochs on device cuda.
+2025-11-24 17:41:36 [INFO] Training phase starting
+2025-11-24 17:41:36 [INFO] Epoch 1 starting
+2025-11-24 17:42:21 [INFO] Epoch 1 finished in 44.52s
+2025-11-24 17:42:21 [INFO] Training phase finished in 44.52s
+2025-11-24 17:42:25 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 17:42:25 [INFO] Using random split with 7680 train and 1920 validation tiles.
+2025-11-24 17:42:25 [INFO] Dataset split: 7680 train / 1920 val tiles.
+2025-11-24 17:42:25 [INFO] Initialized head 'unet_v2' with 9,142,308 parameters.
+2025-11-24 17:42:25 [INFO] Training for up to 30 epochs on device cuda.
+2025-11-24 17:42:25 [INFO] Training phase starting
+2025-11-24 17:42:25 [INFO] Epoch 1 starting
+2025-11-24 17:57:36 [INFO] Epoch 1 finished in 911.07s
+2025-11-24 17:57:36 [INFO] Training phase finished in 911.07s
+2025-11-24 17:57:59 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 17:57:59 [DEBUG] Prepare phase disabled.
+2025-11-24 17:57:59 [DEBUG] Verify phase disabled.
+2025-11-24 17:57:59 [INFO] Using random split with 7680 train and 1920 validation tiles.
+2025-11-24 17:57:59 [INFO] Dataset split: 7680 train / 1920 val tiles.
+2025-11-24 17:58:00 [INFO] Initialized head 'unet_v2' with 9,142,308 parameters.
+2025-11-24 17:58:00 [INFO] Training for up to 30 epochs on device cuda.
+2025-11-24 17:58:00 [INFO] Training phase starting
+2025-11-24 17:58:00 [INFO] Epoch 1 starting
+2025-11-24 17:58:17 [INFO] Epoch 1 finished in 16.97s
+2025-11-24 17:58:17 [INFO] Training phase finished in 16.97s
+2025-11-24 17:58:35 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 17:58:35 [DEBUG] Prepare phase disabled.
+2025-11-24 17:58:35 [DEBUG] Verify phase disabled.
+2025-11-24 17:58:35 [INFO] Using random split with 7680 train and 1920 validation tiles.
+2025-11-24 17:58:35 [INFO] Dataset split: 7680 train / 1920 val tiles.
+2025-11-24 17:58:43 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 17:58:43 [DEBUG] Prepare phase disabled.
+2025-11-24 17:58:43 [DEBUG] Verify phase disabled.
+2025-11-24 17:58:43 [INFO] Using random split with 7680 train and 1920 validation tiles.
+2025-11-24 17:58:43 [INFO] Dataset split: 7680 train / 1920 val tiles.
+2025-11-24 17:58:43 [INFO] Initialized head 'unet_lite' with 778,500 parameters.
+2025-11-24 17:58:43 [INFO] Training for up to 30 epochs on device cuda.
+2025-11-24 17:58:43 [INFO] Training phase starting
+2025-11-24 17:58:43 [INFO] Epoch 1 starting
+2025-11-24 17:58:57 [DEBUG] Epoch 1, batch 10/1920 loss=2.0431, lr=0.00080
+2025-11-24 17:59:00 [DEBUG] Epoch 1, batch 20/1920 loss=1.9967, lr=0.00080
+2025-11-24 17:59:02 [DEBUG] Epoch 1, batch 30/1920 loss=1.9700, lr=0.00080
+2025-11-24 17:59:04 [DEBUG] Epoch 1, batch 40/1920 loss=1.8685, lr=0.00080
+2025-11-24 17:59:06 [DEBUG] Epoch 1, batch 50/1920 loss=1.8037, lr=0.00080
+2025-11-24 17:59:08 [DEBUG] Epoch 1, batch 60/1920 loss=1.7387, lr=0.00080
+2025-11-24 17:59:10 [DEBUG] Epoch 1, batch 70/1920 loss=1.7437, lr=0.00080
+2025-11-24 17:59:12 [DEBUG] Epoch 1, batch 80/1920 loss=1.6676, lr=0.00080
+2025-11-24 17:59:14 [DEBUG] Epoch 1, batch 90/1920 loss=1.5978, lr=0.00080
+2025-11-24 17:59:16 [DEBUG] Epoch 1, batch 100/1920 loss=1.5492, lr=0.00080
+2025-11-24 17:59:18 [DEBUG] Epoch 1, batch 110/1920 loss=1.5055, lr=0.00080
+2025-11-24 17:59:20 [DEBUG] Epoch 1, batch 120/1920 loss=1.5008, lr=0.00080
+2025-11-24 17:59:22 [DEBUG] Epoch 1, batch 130/1920 loss=1.4431, lr=0.00080
+2025-11-24 17:59:24 [DEBUG] Epoch 1, batch 140/1920 loss=1.3872, lr=0.00080
+2025-11-24 17:59:26 [DEBUG] Epoch 1, batch 150/1920 loss=1.3603, lr=0.00080
+2025-11-24 17:59:28 [DEBUG] Epoch 1, batch 160/1920 loss=1.3428, lr=0.00080
+2025-11-24 17:59:31 [DEBUG] Epoch 1, batch 170/1920 loss=1.3017, lr=0.00080
+2025-11-24 17:59:33 [DEBUG] Epoch 1, batch 180/1920 loss=1.2924, lr=0.00081
+2025-11-24 17:59:35 [DEBUG] Epoch 1, batch 190/1920 loss=1.2518, lr=0.00081
+2025-11-24 17:59:37 [DEBUG] Epoch 1, batch 200/1920 loss=1.1974, lr=0.00081
+2025-11-24 17:59:39 [DEBUG] Epoch 1, batch 210/1920 loss=1.1869, lr=0.00081
+2025-11-24 17:59:41 [DEBUG] Epoch 1, batch 220/1920 loss=1.1580, lr=0.00081
+2025-11-24 17:59:43 [DEBUG] Epoch 1, batch 230/1920 loss=1.1400, lr=0.00081
+2025-11-24 17:59:45 [DEBUG] Epoch 1, batch 240/1920 loss=1.1225, lr=0.00081
+2025-11-24 17:59:47 [DEBUG] Epoch 1, batch 250/1920 loss=1.0778, lr=0.00081
+2025-11-24 17:59:49 [DEBUG] Epoch 1, batch 260/1920 loss=1.0756, lr=0.00081
+2025-11-24 17:59:51 [DEBUG] Epoch 1, batch 270/1920 loss=1.0532, lr=0.00081
+2025-11-24 17:59:54 [DEBUG] Epoch 1, batch 280/1920 loss=1.0147, lr=0.00081
+2025-11-24 17:59:56 [DEBUG] Epoch 1, batch 290/1920 loss=1.0066, lr=0.00081
+2025-11-24 17:59:58 [DEBUG] Epoch 1, batch 300/1920 loss=0.9950, lr=0.00081
+2025-11-24 18:00:00 [DEBUG] Epoch 1, batch 310/1920 loss=0.9666, lr=0.00082
+2025-11-24 18:00:02 [DEBUG] Epoch 1, batch 320/1920 loss=0.9604, lr=0.00082
+2025-11-24 18:00:04 [DEBUG] Epoch 1, batch 330/1920 loss=0.9497, lr=0.00082
+2025-11-24 18:00:06 [DEBUG] Epoch 1, batch 340/1920 loss=1.0384, lr=0.00082
+2025-11-24 18:00:08 [DEBUG] Epoch 1, batch 350/1920 loss=0.9179, lr=0.00082
+2025-11-24 18:00:10 [DEBUG] Epoch 1, batch 360/1920 loss=0.9952, lr=0.00082
+2025-11-24 18:00:12 [DEBUG] Epoch 1, batch 370/1920 loss=0.8504, lr=0.00082
+2025-11-24 18:00:14 [DEBUG] Epoch 1, batch 380/1920 loss=0.8625, lr=0.00082
+2025-11-24 18:00:16 [DEBUG] Epoch 1, batch 390/1920 loss=0.8648, lr=0.00082
+2025-11-24 18:00:18 [DEBUG] Epoch 1, batch 400/1920 loss=0.8863, lr=0.00083
+2025-11-24 18:00:20 [DEBUG] Epoch 1, batch 410/1920 loss=0.8381, lr=0.00083
+2025-11-24 18:00:22 [DEBUG] Epoch 1, batch 420/1920 loss=0.9483, lr=0.00083
+2025-11-24 18:00:24 [DEBUG] Epoch 1, batch 430/1920 loss=0.8350, lr=0.00083
+2025-11-24 18:00:26 [DEBUG] Epoch 1, batch 440/1920 loss=0.8640, lr=0.00083
+2025-11-24 18:00:29 [DEBUG] Epoch 1, batch 450/1920 loss=0.8809, lr=0.00083
+2025-11-24 18:00:31 [DEBUG] Epoch 1, batch 460/1920 loss=0.7948, lr=0.00083
+2025-11-24 18:00:33 [DEBUG] Epoch 1, batch 470/1920 loss=0.8050, lr=0.00084
+2025-11-24 18:00:35 [DEBUG] Epoch 1, batch 480/1920 loss=0.7640, lr=0.00084
+2025-11-24 18:00:37 [DEBUG] Epoch 1, batch 490/1920 loss=0.7708, lr=0.00084
+2025-11-24 18:00:39 [DEBUG] Epoch 1, batch 500/1920 loss=0.7825, lr=0.00084
+2025-11-24 18:00:41 [DEBUG] Epoch 1, batch 510/1920 loss=0.7728, lr=0.00084
+2025-11-24 18:00:43 [DEBUG] Epoch 1, batch 520/1920 loss=0.7262, lr=0.00084
+2025-11-24 18:00:45 [DEBUG] Epoch 1, batch 530/1920 loss=0.7615, lr=0.00084
+2025-11-24 18:00:47 [DEBUG] Epoch 1, batch 540/1920 loss=0.7797, lr=0.00085
+2025-11-24 18:00:49 [DEBUG] Epoch 1, batch 550/1920 loss=0.7898, lr=0.00085
+2025-11-24 18:00:51 [DEBUG] Epoch 1, batch 560/1920 loss=0.7597, lr=0.00085
+2025-11-24 18:00:53 [DEBUG] Epoch 1, batch 570/1920 loss=0.8185, lr=0.00085
+2025-11-24 18:00:55 [DEBUG] Epoch 1, batch 580/1920 loss=0.7506, lr=0.00085
+2025-11-24 18:00:57 [DEBUG] Epoch 1, batch 590/1920 loss=0.7478, lr=0.00086
+2025-11-24 18:00:59 [DEBUG] Epoch 1, batch 600/1920 loss=0.6651, lr=0.00086
+2025-11-24 18:01:01 [DEBUG] Epoch 1, batch 610/1920 loss=0.7413, lr=0.00086
+2025-11-24 18:01:03 [DEBUG] Epoch 1, batch 620/1920 loss=0.8995, lr=0.00086
+2025-11-24 18:01:05 [DEBUG] Epoch 1, batch 630/1920 loss=0.7347, lr=0.00086
+2025-11-24 18:01:07 [DEBUG] Epoch 1, batch 640/1920 loss=0.8412, lr=0.00086
+2025-11-24 18:01:09 [DEBUG] Epoch 1, batch 650/1920 loss=0.8090, lr=0.00087
+2025-11-24 18:01:12 [DEBUG] Epoch 1, batch 660/1920 loss=0.6806, lr=0.00087
+2025-11-24 18:01:14 [INFO] Epoch 1 finished in 150.13s
+2025-11-24 18:01:14 [INFO] Training phase finished in 150.13s
+2025-11-24 18:01:18 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 18:01:18 [DEBUG] Prepare phase disabled.
+2025-11-24 18:01:18 [DEBUG] Verify phase disabled.
+2025-11-24 18:01:18 [INFO] Using random split with 7680 train and 1920 validation tiles.
+2025-11-24 18:01:18 [INFO] Dataset split: 7680 train / 1920 val tiles.
+2025-11-24 18:01:18 [INFO] Initialized head 'unet_lite' with 778,500 parameters.
+2025-11-24 18:01:18 [INFO] Training for up to 30 epochs on device cuda.
+2025-11-24 18:01:18 [INFO] Training phase starting
+2025-11-24 18:01:18 [INFO] Epoch 1 starting
+2025-11-24 18:01:32 [DEBUG] Epoch 1, batch 10/1920 loss=2.0431, lr=0.00080
+2025-11-24 18:01:34 [DEBUG] Epoch 1, batch 20/1920 loss=1.9967, lr=0.00080
+2025-11-24 18:01:36 [DEBUG] Epoch 1, batch 30/1920 loss=1.9700, lr=0.00080
+2025-11-24 18:01:38 [DEBUG] Epoch 1, batch 40/1920 loss=1.8685, lr=0.00080
+2025-11-24 18:01:40 [DEBUG] Epoch 1, batch 50/1920 loss=1.8037, lr=0.00080
+2025-11-24 18:01:42 [DEBUG] Epoch 1, batch 60/1920 loss=1.7387, lr=0.00080
+2025-11-24 18:01:44 [DEBUG] Epoch 1, batch 70/1920 loss=1.7438, lr=0.00080
+2025-11-24 18:01:46 [DEBUG] Epoch 1, batch 80/1920 loss=1.6676, lr=0.00080
+2025-11-24 18:01:48 [DEBUG] Epoch 1, batch 90/1920 loss=1.5978, lr=0.00080
+2025-11-24 18:01:51 [DEBUG] Epoch 1, batch 100/1920 loss=1.5492, lr=0.00080
+2025-11-24 18:01:53 [DEBUG] Epoch 1, batch 110/1920 loss=1.5055, lr=0.00080
+2025-11-24 18:01:55 [DEBUG] Epoch 1, batch 120/1920 loss=1.5007, lr=0.00080
+2025-11-24 18:01:57 [DEBUG] Epoch 1, batch 130/1920 loss=1.4431, lr=0.00080
+2025-11-24 18:01:59 [DEBUG] Epoch 1, batch 140/1920 loss=1.3872, lr=0.00080
+2025-11-24 18:02:01 [DEBUG] Epoch 1, batch 150/1920 loss=1.3603, lr=0.00080
+2025-11-24 18:02:03 [DEBUG] Epoch 1, batch 160/1920 loss=1.3427, lr=0.00080
+2025-11-24 18:02:05 [DEBUG] Epoch 1, batch 170/1920 loss=1.3016, lr=0.00080
+2025-11-24 18:02:07 [DEBUG] Epoch 1, batch 180/1920 loss=1.2923, lr=0.00081
+2025-11-24 18:02:09 [DEBUG] Epoch 1, batch 190/1920 loss=1.2517, lr=0.00081
+2025-11-24 18:02:11 [DEBUG] Epoch 1, batch 200/1920 loss=1.1973, lr=0.00081
+2025-11-24 18:02:13 [DEBUG] Epoch 1, batch 210/1920 loss=1.1868, lr=0.00081
+2025-11-24 18:02:15 [DEBUG] Epoch 1, batch 220/1920 loss=1.1579, lr=0.00081
+2025-11-24 18:02:17 [DEBUG] Epoch 1, batch 230/1920 loss=1.1399, lr=0.00081
+2025-11-24 18:02:19 [DEBUG] Epoch 1, batch 240/1920 loss=1.1223, lr=0.00081
+2025-11-24 18:02:21 [DEBUG] Epoch 1, batch 250/1920 loss=1.0777, lr=0.00081
+2025-11-24 18:02:23 [DEBUG] Epoch 1, batch 260/1920 loss=1.0755, lr=0.00081
+2025-11-24 18:02:25 [DEBUG] Epoch 1, batch 270/1920 loss=1.0531, lr=0.00081
+2025-11-24 18:02:27 [DEBUG] Epoch 1, batch 280/1920 loss=1.0147, lr=0.00081
+2025-11-24 18:02:29 [DEBUG] Epoch 1, batch 290/1920 loss=1.0065, lr=0.00081
+2025-11-24 18:02:31 [DEBUG] Epoch 1, batch 300/1920 loss=0.9950, lr=0.00081
+2025-11-24 18:02:34 [DEBUG] Epoch 1, batch 310/1920 loss=0.9666, lr=0.00082
+2025-11-24 18:02:36 [DEBUG] Epoch 1, batch 320/1920 loss=0.9604, lr=0.00082
+2025-11-24 18:02:38 [DEBUG] Epoch 1, batch 330/1920 loss=0.9496, lr=0.00082
+2025-11-24 18:02:40 [DEBUG] Epoch 1, batch 340/1920 loss=1.0385, lr=0.00082
+2025-11-24 18:02:42 [DEBUG] Epoch 1, batch 350/1920 loss=0.9178, lr=0.00082
+2025-11-24 18:02:44 [DEBUG] Epoch 1, batch 360/1920 loss=0.9949, lr=0.00082
+2025-11-24 18:02:46 [DEBUG] Epoch 1, batch 370/1920 loss=0.8502, lr=0.00082
+2025-11-24 18:02:48 [DEBUG] Epoch 1, batch 380/1920 loss=0.8627, lr=0.00082
+2025-11-24 18:02:50 [DEBUG] Epoch 1, batch 390/1920 loss=0.8646, lr=0.00082
+2025-11-24 18:02:52 [DEBUG] Epoch 1, batch 400/1920 loss=0.8864, lr=0.00083
+2025-11-24 18:02:54 [DEBUG] Epoch 1, batch 410/1920 loss=0.8382, lr=0.00083
+2025-11-24 18:02:56 [DEBUG] Epoch 1, batch 420/1920 loss=0.9486, lr=0.00083
+2025-11-24 18:02:58 [DEBUG] Epoch 1, batch 430/1920 loss=0.8349, lr=0.00083
+2025-11-24 18:03:00 [DEBUG] Epoch 1, batch 440/1920 loss=0.8638, lr=0.00083
+2025-11-24 18:03:02 [DEBUG] Epoch 1, batch 450/1920 loss=0.8809, lr=0.00083
+2025-11-24 18:03:04 [DEBUG] Epoch 1, batch 460/1920 loss=0.7948, lr=0.00083
+2025-11-24 18:03:06 [DEBUG] Epoch 1, batch 470/1920 loss=0.8051, lr=0.00084
+2025-11-24 18:03:09 [DEBUG] Epoch 1, batch 480/1920 loss=0.7639, lr=0.00084
+2025-11-24 18:03:11 [DEBUG] Epoch 1, batch 490/1920 loss=0.7703, lr=0.00084
+2025-11-24 18:03:13 [DEBUG] Epoch 1, batch 500/1920 loss=0.7825, lr=0.00084
+2025-11-24 18:03:15 [DEBUG] Epoch 1, batch 510/1920 loss=0.7728, lr=0.00084
+2025-11-24 18:03:17 [DEBUG] Epoch 1, batch 520/1920 loss=0.7264, lr=0.00084
+2025-11-24 18:03:19 [DEBUG] Epoch 1, batch 530/1920 loss=0.7613, lr=0.00084
+2025-11-24 18:03:21 [DEBUG] Epoch 1, batch 540/1920 loss=0.7805, lr=0.00085
+2025-11-24 18:03:23 [DEBUG] Epoch 1, batch 550/1920 loss=0.7891, lr=0.00085
+2025-11-24 18:03:25 [DEBUG] Epoch 1, batch 560/1920 loss=0.7596, lr=0.00085
+2025-11-24 18:03:27 [DEBUG] Epoch 1, batch 570/1920 loss=0.8180, lr=0.00085
+2025-11-24 18:03:29 [DEBUG] Epoch 1, batch 580/1920 loss=0.7506, lr=0.00085
+2025-11-24 18:03:31 [DEBUG] Epoch 1, batch 590/1920 loss=0.7476, lr=0.00086
+2025-11-24 18:03:33 [DEBUG] Epoch 1, batch 600/1920 loss=0.6655, lr=0.00086
+2025-11-24 18:03:35 [DEBUG] Epoch 1, batch 610/1920 loss=0.7412, lr=0.00086
+2025-11-24 18:03:37 [DEBUG] Epoch 1, batch 620/1920 loss=0.8998, lr=0.00086
+2025-11-24 18:03:39 [DEBUG] Epoch 1, batch 630/1920 loss=0.7345, lr=0.00086
+2025-11-24 18:03:41 [DEBUG] Epoch 1, batch 640/1920 loss=0.8417, lr=0.00086
+2025-11-24 18:03:43 [DEBUG] Epoch 1, batch 650/1920 loss=0.8093, lr=0.00087
+2025-11-24 18:03:45 [DEBUG] Epoch 1, batch 660/1920 loss=0.6839, lr=0.00087
+2025-11-24 18:03:47 [DEBUG] Epoch 1, batch 670/1920 loss=0.7857, lr=0.00087
+2025-11-24 18:03:49 [DEBUG] Epoch 1, batch 680/1920 loss=0.7315, lr=0.00087
+2025-11-24 18:03:52 [DEBUG] Epoch 1, batch 690/1920 loss=0.7922, lr=0.00088
+2025-11-24 18:03:54 [DEBUG] Epoch 1, batch 700/1920 loss=0.7459, lr=0.00088
+2025-11-24 18:03:56 [DEBUG] Epoch 1, batch 710/1920 loss=0.7900, lr=0.00088
+2025-11-24 18:03:58 [DEBUG] Epoch 1, batch 720/1920 loss=0.9456, lr=0.00088
+2025-11-24 18:04:00 [DEBUG] Epoch 1, batch 730/1920 loss=0.7946, lr=0.00088
+2025-11-24 18:04:02 [DEBUG] Epoch 1, batch 740/1920 loss=1.1229, lr=0.00089
+2025-11-24 18:04:04 [DEBUG] Epoch 1, batch 750/1920 loss=0.8847, lr=0.00089
+2025-11-24 18:04:06 [DEBUG] Epoch 1, batch 760/1920 loss=0.7264, lr=0.00089
+2025-11-24 18:04:08 [DEBUG] Epoch 1, batch 770/1920 loss=0.7283, lr=0.00089
+2025-11-24 18:04:10 [DEBUG] Epoch 1, batch 780/1920 loss=0.7147, lr=0.00090
+2025-11-24 18:04:12 [DEBUG] Epoch 1, batch 790/1920 loss=0.9347, lr=0.00090
+2025-11-24 18:04:14 [DEBUG] Epoch 1, batch 800/1920 loss=0.7169, lr=0.00090
+2025-11-24 18:04:16 [DEBUG] Epoch 1, batch 810/1920 loss=0.7261, lr=0.00090
+2025-11-24 18:04:18 [DEBUG] Epoch 1, batch 820/1920 loss=0.8140, lr=0.00091
+2025-11-24 18:04:20 [DEBUG] Epoch 1, batch 830/1920 loss=0.7247, lr=0.00091
+2025-11-24 18:04:22 [DEBUG] Epoch 1, batch 840/1920 loss=0.9024, lr=0.00091
+2025-11-24 18:04:24 [DEBUG] Epoch 1, batch 850/1920 loss=0.6648, lr=0.00091
+2025-11-24 18:04:26 [DEBUG] Epoch 1, batch 860/1920 loss=0.7286, lr=0.00092
+2025-11-24 18:04:28 [DEBUG] Epoch 1, batch 870/1920 loss=0.7316, lr=0.00092
+2025-11-24 18:04:30 [DEBUG] Epoch 1, batch 880/1920 loss=0.5368, lr=0.00092
+2025-11-24 18:04:32 [DEBUG] Epoch 1, batch 890/1920 loss=0.9710, lr=0.00093
+2025-11-24 18:04:34 [DEBUG] Epoch 1, batch 900/1920 loss=0.7279, lr=0.00093
+2025-11-24 18:04:37 [DEBUG] Epoch 1, batch 910/1920 loss=0.5087, lr=0.00093
+2025-11-24 18:04:39 [DEBUG] Epoch 1, batch 920/1920 loss=1.0252, lr=0.00093
+2025-11-24 18:04:41 [DEBUG] Epoch 1, batch 930/1920 loss=0.9693, lr=0.00094
+2025-11-24 18:04:43 [DEBUG] Epoch 1, batch 940/1920 loss=0.8637, lr=0.00094
+2025-11-24 18:04:45 [DEBUG] Epoch 1, batch 950/1920 loss=0.7342, lr=0.00094
+2025-11-24 18:04:47 [DEBUG] Epoch 1, batch 960/1920 loss=0.8187, lr=0.00095
+2025-11-24 18:04:49 [DEBUG] Epoch 1, batch 970/1920 loss=0.3742, lr=0.00095
+2025-11-24 18:04:51 [DEBUG] Epoch 1, batch 980/1920 loss=0.7607, lr=0.00095
+2025-11-24 18:04:53 [DEBUG] Epoch 1, batch 990/1920 loss=0.4755, lr=0.00096
+2025-11-24 18:04:55 [DEBUG] Epoch 1, batch 1000/1920 loss=0.4839, lr=0.00096
+2025-11-24 18:04:57 [DEBUG] Epoch 1, batch 1010/1920 loss=0.4073, lr=0.00096
+2025-11-24 18:04:59 [DEBUG] Epoch 1, batch 1020/1920 loss=0.5634, lr=0.00096
+2025-11-24 18:05:01 [DEBUG] Epoch 1, batch 1030/1920 loss=0.6567, lr=0.00097
+2025-11-24 18:05:03 [DEBUG] Epoch 1, batch 1040/1920 loss=0.4218, lr=0.00097
+2025-11-24 18:05:05 [DEBUG] Epoch 1, batch 1050/1920 loss=0.8269, lr=0.00097
+2025-11-24 18:05:07 [DEBUG] Epoch 1, batch 1060/1920 loss=0.5229, lr=0.00098
+2025-11-24 18:05:09 [DEBUG] Epoch 1, batch 1070/1920 loss=0.5963, lr=0.00098
+2025-11-24 18:05:12 [DEBUG] Epoch 1, batch 1080/1920 loss=0.6325, lr=0.00098
+2025-11-24 18:05:14 [DEBUG] Epoch 1, batch 1090/1920 loss=0.6958, lr=0.00099
+2025-11-24 18:05:16 [DEBUG] Epoch 1, batch 1100/1920 loss=0.6924, lr=0.00099
+2025-11-24 18:05:18 [DEBUG] Epoch 1, batch 1110/1920 loss=0.6345, lr=0.00099
+2025-11-24 18:05:20 [DEBUG] Epoch 1, batch 1120/1920 loss=0.4893, lr=0.00100
+2025-11-24 18:05:22 [DEBUG] Epoch 1, batch 1130/1920 loss=0.7360, lr=0.00100
+2025-11-24 18:05:24 [DEBUG] Epoch 1, batch 1140/1920 loss=0.6594, lr=0.00101
+2025-11-24 18:05:26 [DEBUG] Epoch 1, batch 1150/1920 loss=0.7437, lr=0.00101
+2025-11-24 18:05:28 [DEBUG] Epoch 1, batch 1160/1920 loss=0.7378, lr=0.00101
+2025-11-24 18:05:30 [DEBUG] Epoch 1, batch 1170/1920 loss=0.6051, lr=0.00102
+2025-11-24 18:05:32 [DEBUG] Epoch 1, batch 1180/1920 loss=0.7311, lr=0.00102
+2025-11-24 18:05:34 [DEBUG] Epoch 1, batch 1190/1920 loss=0.7905, lr=0.00102
+2025-11-24 18:05:36 [DEBUG] Epoch 1, batch 1200/1920 loss=0.6463, lr=0.00103
+2025-11-24 18:05:38 [DEBUG] Epoch 1, batch 1210/1920 loss=0.3220, lr=0.00103
+2025-11-24 18:05:40 [DEBUG] Epoch 1, batch 1220/1920 loss=0.4468, lr=0.00104
+2025-11-24 18:05:42 [DEBUG] Epoch 1, batch 1230/1920 loss=0.6092, lr=0.00104
+2025-11-24 18:05:44 [DEBUG] Epoch 1, batch 1240/1920 loss=0.4100, lr=0.00104
+2025-11-24 18:05:46 [DEBUG] Epoch 1, batch 1250/1920 loss=0.3427, lr=0.00105
+2025-11-24 18:05:48 [DEBUG] Epoch 1, batch 1260/1920 loss=0.8672, lr=0.00105
+2025-11-24 18:05:50 [DEBUG] Epoch 1, batch 1270/1920 loss=0.7147, lr=0.00105
+2025-11-24 18:05:53 [DEBUG] Epoch 1, batch 1280/1920 loss=0.6890, lr=0.00106
+2025-11-24 18:05:55 [DEBUG] Epoch 1, batch 1290/1920 loss=0.2591, lr=0.00106
+2025-11-24 18:05:57 [DEBUG] Epoch 1, batch 1300/1920 loss=0.2479, lr=0.00107
+2025-11-24 18:05:59 [DEBUG] Epoch 1, batch 1310/1920 loss=0.7324, lr=0.00107
+2025-11-24 18:06:01 [DEBUG] Epoch 1, batch 1320/1920 loss=0.6481, lr=0.00108
+2025-11-24 18:06:03 [DEBUG] Epoch 1, batch 1330/1920 loss=0.5760, lr=0.00108
+2025-11-24 18:06:05 [DEBUG] Epoch 1, batch 1340/1920 loss=0.7656, lr=0.00108
+2025-11-24 18:06:07 [DEBUG] Epoch 1, batch 1350/1920 loss=0.2350, lr=0.00109
+2025-11-24 18:06:09 [DEBUG] Epoch 1, batch 1360/1920 loss=0.4439, lr=0.00109
+2025-11-24 18:06:11 [DEBUG] Epoch 1, batch 1370/1920 loss=0.3709, lr=0.00110
+2025-11-24 18:06:13 [DEBUG] Epoch 1, batch 1380/1920 loss=0.4560, lr=0.00110
+2025-11-24 18:06:15 [DEBUG] Epoch 1, batch 1390/1920 loss=0.2180, lr=0.00110
+2025-11-24 18:06:17 [DEBUG] Epoch 1, batch 1400/1920 loss=0.7423, lr=0.00111
+2025-11-24 18:06:20 [DEBUG] Epoch 1, batch 1410/1920 loss=0.5269, lr=0.00111
+2025-11-24 18:06:22 [DEBUG] Epoch 1, batch 1420/1920 loss=0.7960, lr=0.00112
+2025-11-24 18:06:24 [DEBUG] Epoch 1, batch 1430/1920 loss=0.6833, lr=0.00112
+2025-11-24 18:06:26 [DEBUG] Epoch 1, batch 1440/1920 loss=0.6918, lr=0.00113
+2025-11-24 18:06:28 [DEBUG] Epoch 1, batch 1450/1920 loss=0.7200, lr=0.00113
+2025-11-24 18:06:30 [DEBUG] Epoch 1, batch 1460/1920 loss=0.7855, lr=0.00114
+2025-11-24 18:06:32 [DEBUG] Epoch 1, batch 1470/1920 loss=0.2242, lr=0.00114
+2025-11-24 18:06:34 [DEBUG] Epoch 1, batch 1480/1920 loss=0.7368, lr=0.00115
+2025-11-24 18:06:36 [DEBUG] Epoch 1, batch 1490/1920 loss=0.7307, lr=0.00115
+2025-11-24 18:06:38 [DEBUG] Epoch 1, batch 1500/1920 loss=0.4560, lr=0.00115
+2025-11-24 18:06:40 [DEBUG] Epoch 1, batch 1510/1920 loss=0.4916, lr=0.00116
+2025-11-24 18:06:42 [DEBUG] Epoch 1, batch 1520/1920 loss=0.8002, lr=0.00116
+2025-11-24 18:06:44 [DEBUG] Epoch 1, batch 1530/1920 loss=0.7277, lr=0.00117
+2025-11-24 18:06:46 [DEBUG] Epoch 1, batch 1540/1920 loss=0.2373, lr=0.00117
+2025-11-24 18:06:48 [DEBUG] Epoch 1, batch 1550/1920 loss=0.4617, lr=0.00118
+2025-11-24 18:06:50 [DEBUG] Epoch 1, batch 1560/1920 loss=0.2206, lr=0.00118
+2025-11-24 18:06:52 [DEBUG] Epoch 1, batch 1570/1920 loss=0.2459, lr=0.00119
+2025-11-24 18:06:54 [DEBUG] Epoch 1, batch 1580/1920 loss=0.7211, lr=0.00119
+2025-11-24 18:06:57 [DEBUG] Epoch 1, batch 1590/1920 loss=0.3597, lr=0.00120
+2025-11-24 18:06:59 [DEBUG] Epoch 1, batch 1600/1920 loss=0.3544, lr=0.00120
+2025-11-24 18:07:01 [DEBUG] Epoch 1, batch 1610/1920 loss=0.7443, lr=0.00121
+2025-11-24 18:07:03 [DEBUG] Epoch 1, batch 1620/1920 loss=0.8419, lr=0.00121
+2025-11-24 18:07:05 [DEBUG] Epoch 1, batch 1630/1920 loss=0.5027, lr=0.00122
+2025-11-24 18:07:07 [DEBUG] Epoch 1, batch 1640/1920 loss=0.8424, lr=0.00122
+2025-11-24 18:07:09 [DEBUG] Epoch 1, batch 1650/1920 loss=0.2521, lr=0.00123
+2025-11-24 18:07:11 [DEBUG] Epoch 1, batch 1660/1920 loss=0.7131, lr=0.00123
+2025-11-24 18:07:13 [DEBUG] Epoch 1, batch 1670/1920 loss=0.4761, lr=0.00124
+2025-11-24 18:07:15 [DEBUG] Epoch 1, batch 1680/1920 loss=0.1282, lr=0.00124
+2025-11-24 18:07:17 [DEBUG] Epoch 1, batch 1690/1920 loss=0.8535, lr=0.00125
+2025-11-24 18:07:19 [DEBUG] Epoch 1, batch 1700/1920 loss=0.4937, lr=0.00125
+2025-11-24 18:07:21 [DEBUG] Epoch 1, batch 1710/1920 loss=0.7930, lr=0.00126
+2025-11-24 18:07:23 [DEBUG] Epoch 1, batch 1720/1920 loss=0.5547, lr=0.00127
+2025-11-24 18:07:25 [DEBUG] Epoch 1, batch 1730/1920 loss=0.7164, lr=0.00127
+2025-11-24 18:07:27 [DEBUG] Epoch 1, batch 1740/1920 loss=0.7876, lr=0.00128
+2025-11-24 18:07:29 [DEBUG] Epoch 1, batch 1750/1920 loss=0.7322, lr=0.00128
+2025-11-24 18:07:31 [DEBUG] Epoch 1, batch 1760/1920 loss=0.7668, lr=0.00129
+2025-11-24 18:07:33 [DEBUG] Epoch 1, batch 1770/1920 loss=0.7134, lr=0.00129
+2025-11-24 18:07:36 [DEBUG] Epoch 1, batch 1780/1920 loss=0.5124, lr=0.00130
+2025-11-24 18:07:38 [DEBUG] Epoch 1, batch 1790/1920 loss=0.2728, lr=0.00130
+2025-11-24 18:07:40 [DEBUG] Epoch 1, batch 1800/1920 loss=0.1622, lr=0.00131
+2025-11-24 18:07:42 [DEBUG] Epoch 1, batch 1810/1920 loss=0.2862, lr=0.00132
+2025-11-24 18:07:44 [DEBUG] Epoch 1, batch 1820/1920 loss=0.3001, lr=0.00132
+2025-11-24 18:07:46 [DEBUG] Epoch 1, batch 1830/1920 loss=0.3731, lr=0.00133
+2025-11-24 18:07:48 [DEBUG] Epoch 1, batch 1840/1920 loss=0.5243, lr=0.00133
+2025-11-24 18:07:50 [DEBUG] Epoch 1, batch 1850/1920 loss=0.8108, lr=0.00134
+2025-11-24 18:07:52 [DEBUG] Epoch 1, batch 1860/1920 loss=0.3580, lr=0.00134
+2025-11-24 18:07:54 [DEBUG] Epoch 1, batch 1870/1920 loss=0.2902, lr=0.00135
+2025-11-24 18:07:56 [DEBUG] Epoch 1, batch 1880/1920 loss=0.4626, lr=0.00136
+2025-11-24 18:07:58 [DEBUG] Epoch 1, batch 1890/1920 loss=0.7446, lr=0.00136
+2025-11-24 18:08:00 [DEBUG] Epoch 1, batch 1900/1920 loss=0.4781, lr=0.00137
+2025-11-24 18:08:02 [DEBUG] Epoch 1, batch 1910/1920 loss=0.3029, lr=0.00137
+2025-11-24 18:08:04 [DEBUG] Epoch 1, batch 1920/1920 loss=0.1596, lr=0.00138
+2025-11-24 18:11:20 [DEBUG] Validation loss: 0.5497 | mIoU: 0.7110
+2025-11-24 18:11:20 [INFO] Epoch 1 | Train Loss: 0.7701 | Val Loss: 0.5497 | Val mIoU: 0.7110
+2025-11-24 18:11:20 [INFO] Epoch 1 finished in 602.72s
+2025-11-24 18:11:20 [INFO] Epoch 2 starting
+2025-11-24 18:11:23 [DEBUG] Epoch 2, batch 10/1920 loss=0.3064, lr=0.00139
+2025-11-24 18:11:25 [DEBUG] Epoch 2, batch 20/1920 loss=0.7234, lr=0.00139
+2025-11-24 18:11:27 [DEBUG] Epoch 2, batch 30/1920 loss=0.2770, lr=0.00140
+2025-11-24 18:11:29 [DEBUG] Epoch 2, batch 40/1920 loss=0.6610, lr=0.00140
+2025-11-24 18:11:31 [DEBUG] Epoch 2, batch 50/1920 loss=0.3635, lr=0.00141
+2025-11-24 18:11:33 [DEBUG] Epoch 2, batch 60/1920 loss=0.6728, lr=0.00142
+2025-11-24 18:11:35 [DEBUG] Epoch 2, batch 70/1920 loss=0.3201, lr=0.00142
+2025-11-24 18:11:37 [DEBUG] Epoch 2, batch 80/1920 loss=0.2418, lr=0.00143
+2025-11-24 18:11:39 [DEBUG] Epoch 2, batch 90/1920 loss=0.5220, lr=0.00143
+2025-11-24 18:11:41 [DEBUG] Epoch 2, batch 100/1920 loss=0.3938, lr=0.00144
+2025-11-24 18:11:43 [DEBUG] Epoch 2, batch 110/1920 loss=0.3699, lr=0.00145
+2025-11-24 18:11:46 [DEBUG] Epoch 2, batch 120/1920 loss=0.4525, lr=0.00145
+2025-11-24 18:11:48 [DEBUG] Epoch 2, batch 130/1920 loss=0.4965, lr=0.00146
+2025-11-24 18:11:50 [DEBUG] Epoch 2, batch 140/1920 loss=0.7236, lr=0.00147
+2025-11-24 18:11:52 [DEBUG] Epoch 2, batch 150/1920 loss=0.2761, lr=0.00147
+2025-11-24 18:11:54 [DEBUG] Epoch 2, batch 160/1920 loss=0.3486, lr=0.00148
+2025-11-24 18:11:56 [DEBUG] Epoch 2, batch 170/1920 loss=0.2410, lr=0.00148
+2025-11-24 18:11:58 [DEBUG] Epoch 2, batch 180/1920 loss=0.7471, lr=0.00149
+2025-11-24 18:12:00 [DEBUG] Epoch 2, batch 190/1920 loss=0.1266, lr=0.00150
+2025-11-24 18:12:02 [DEBUG] Epoch 2, batch 200/1920 loss=0.8851, lr=0.00150
+2025-11-24 18:12:04 [DEBUG] Epoch 2, batch 210/1920 loss=0.7695, lr=0.00151
+2025-11-24 18:12:06 [DEBUG] Epoch 2, batch 220/1920 loss=0.2494, lr=0.00152
+2025-11-24 18:12:08 [DEBUG] Epoch 2, batch 230/1920 loss=0.2199, lr=0.00152
+2025-11-24 18:12:11 [DEBUG] Epoch 2, batch 240/1920 loss=0.3831, lr=0.00153
+2025-11-24 18:12:13 [DEBUG] Epoch 2, batch 250/1920 loss=0.3847, lr=0.00154
+2025-11-24 18:12:15 [DEBUG] Epoch 2, batch 260/1920 loss=0.3097, lr=0.00154
+2025-11-24 18:12:17 [DEBUG] Epoch 2, batch 270/1920 loss=0.2854, lr=0.00155
+2025-11-24 18:12:19 [DEBUG] Epoch 2, batch 280/1920 loss=0.7027, lr=0.00156
+2025-11-24 18:12:21 [DEBUG] Epoch 2, batch 290/1920 loss=0.7880, lr=0.00156
+2025-11-24 18:12:23 [DEBUG] Epoch 2, batch 300/1920 loss=0.2934, lr=0.00157
+2025-11-24 18:12:25 [DEBUG] Epoch 2, batch 310/1920 loss=0.2484, lr=0.00158
+2025-11-24 18:12:27 [DEBUG] Epoch 2, batch 320/1920 loss=0.1865, lr=0.00159
+2025-11-24 18:12:29 [DEBUG] Epoch 2, batch 330/1920 loss=0.2517, lr=0.00159
+2025-11-24 18:12:31 [DEBUG] Epoch 2, batch 340/1920 loss=0.7617, lr=0.00160
+2025-11-24 18:12:33 [DEBUG] Epoch 2, batch 350/1920 loss=0.4775, lr=0.00161
+2025-11-24 18:12:35 [DEBUG] Epoch 2, batch 360/1920 loss=0.4471, lr=0.00161
+2025-11-24 18:12:37 [DEBUG] Epoch 2, batch 370/1920 loss=0.1526, lr=0.00162
+2025-11-24 18:12:39 [DEBUG] Epoch 2, batch 380/1920 loss=0.7539, lr=0.00163
+2025-11-24 18:12:41 [DEBUG] Epoch 2, batch 390/1920 loss=0.7336, lr=0.00163
+2025-11-24 18:12:43 [DEBUG] Epoch 2, batch 400/1920 loss=0.8509, lr=0.00164
+2025-11-24 18:12:46 [DEBUG] Epoch 2, batch 410/1920 loss=0.7253, lr=0.00165
+2025-11-24 18:12:48 [DEBUG] Epoch 2, batch 420/1920 loss=0.8700, lr=0.00166
+2025-11-24 18:12:50 [DEBUG] Epoch 2, batch 430/1920 loss=0.4646, lr=0.00166
+2025-11-24 18:12:52 [DEBUG] Epoch 2, batch 440/1920 loss=0.2997, lr=0.00167
+2025-11-24 18:12:54 [DEBUG] Epoch 2, batch 450/1920 loss=0.2012, lr=0.00168
+2025-11-24 18:12:56 [DEBUG] Epoch 2, batch 460/1920 loss=0.7056, lr=0.00168
+2025-11-24 18:12:58 [DEBUG] Epoch 2, batch 470/1920 loss=0.1860, lr=0.00169
+2025-11-24 18:13:00 [DEBUG] Epoch 2, batch 480/1920 loss=0.3265, lr=0.00170
+2025-11-24 18:13:02 [DEBUG] Epoch 2, batch 490/1920 loss=0.7214, lr=0.00171
+2025-11-24 18:13:04 [DEBUG] Epoch 2, batch 500/1920 loss=0.7073, lr=0.00171
+2025-11-24 18:13:06 [DEBUG] Epoch 2, batch 510/1920 loss=0.7026, lr=0.00172
+2025-11-24 18:13:08 [DEBUG] Epoch 2, batch 520/1920 loss=0.7151, lr=0.00173
+2025-11-24 18:13:10 [DEBUG] Epoch 2, batch 530/1920 loss=0.3299, lr=0.00174
+2025-11-24 18:13:13 [DEBUG] Epoch 2, batch 540/1920 loss=0.7099, lr=0.00174
+2025-11-24 18:13:15 [DEBUG] Epoch 2, batch 550/1920 loss=0.7027, lr=0.00175
+2025-11-24 18:13:17 [DEBUG] Epoch 2, batch 560/1920 loss=0.7962, lr=0.00176
+2025-11-24 18:13:19 [DEBUG] Epoch 2, batch 570/1920 loss=0.7047, lr=0.00177
+2025-11-24 18:13:21 [DEBUG] Epoch 2, batch 580/1920 loss=0.2701, lr=0.00177
+2025-11-24 18:13:23 [DEBUG] Epoch 2, batch 590/1920 loss=0.2204, lr=0.00178
+2025-11-24 18:13:25 [DEBUG] Epoch 2, batch 600/1920 loss=0.1513, lr=0.00179
+2025-11-24 18:13:27 [DEBUG] Epoch 2, batch 610/1920 loss=0.7570, lr=0.00180
+2025-11-24 18:13:30 [DEBUG] Epoch 2, batch 620/1920 loss=0.5126, lr=0.00181
+2025-11-24 18:13:32 [DEBUG] Epoch 2, batch 630/1920 loss=0.1423, lr=0.00181
+2025-11-24 18:13:34 [DEBUG] Epoch 2, batch 640/1920 loss=0.1679, lr=0.00182
+2025-11-24 18:13:36 [DEBUG] Epoch 2, batch 650/1920 loss=0.7066, lr=0.00183
+2025-11-24 18:13:38 [DEBUG] Epoch 2, batch 660/1920 loss=0.3933, lr=0.00184
+2025-11-24 18:13:40 [DEBUG] Epoch 2, batch 670/1920 loss=0.2234, lr=0.00184
+2025-11-24 18:13:43 [DEBUG] Epoch 2, batch 680/1920 loss=0.1410, lr=0.00185
+2025-11-24 18:13:45 [DEBUG] Epoch 2, batch 690/1920 loss=0.4721, lr=0.00186
+2025-11-24 18:13:47 [DEBUG] Epoch 2, batch 700/1920 loss=0.2163, lr=0.00187
+2025-11-24 18:13:49 [DEBUG] Epoch 2, batch 710/1920 loss=0.2864, lr=0.00188
+2025-11-24 18:13:51 [DEBUG] Epoch 2, batch 720/1920 loss=0.1808, lr=0.00188
+2025-11-24 18:13:54 [DEBUG] Epoch 2, batch 730/1920 loss=0.6072, lr=0.00189
+2025-11-24 18:13:56 [DEBUG] Epoch 2, batch 740/1920 loss=0.3555, lr=0.00190
+2025-11-24 18:13:58 [DEBUG] Epoch 2, batch 750/1920 loss=0.7100, lr=0.00191
+2025-11-24 18:14:00 [DEBUG] Epoch 2, batch 760/1920 loss=0.2630, lr=0.00192
+2025-11-24 18:14:02 [DEBUG] Epoch 2, batch 770/1920 loss=0.6581, lr=0.00193
+2025-11-24 18:14:04 [DEBUG] Epoch 2, batch 780/1920 loss=0.1073, lr=0.00193
+2025-11-24 18:14:06 [DEBUG] Epoch 2, batch 790/1920 loss=0.3367, lr=0.00194
+2025-11-24 18:14:08 [DEBUG] Epoch 2, batch 800/1920 loss=0.4204, lr=0.00195
+2025-11-24 18:14:10 [DEBUG] Epoch 2, batch 810/1920 loss=0.2039, lr=0.00196
+2025-11-24 18:14:12 [DEBUG] Epoch 2, batch 820/1920 loss=0.7098, lr=0.00197
+2025-11-24 18:14:15 [DEBUG] Epoch 2, batch 830/1920 loss=0.7008, lr=0.00198
+2025-11-24 18:14:17 [DEBUG] Epoch 2, batch 840/1920 loss=0.4781, lr=0.00198
+2025-11-24 18:14:19 [DEBUG] Epoch 2, batch 850/1920 loss=0.7593, lr=0.00199
+2025-11-24 18:14:21 [DEBUG] Epoch 2, batch 860/1920 loss=0.7337, lr=0.00200
+2025-11-24 18:14:23 [DEBUG] Epoch 2, batch 870/1920 loss=0.5896, lr=0.00201
+2025-11-24 18:14:25 [DEBUG] Epoch 2, batch 880/1920 loss=0.7655, lr=0.00202
+2025-11-24 18:14:27 [DEBUG] Epoch 2, batch 890/1920 loss=0.7918, lr=0.00203
+2025-11-24 18:14:29 [DEBUG] Epoch 2, batch 900/1920 loss=0.3599, lr=0.00203
+2025-11-24 18:14:31 [DEBUG] Epoch 2, batch 910/1920 loss=0.6348, lr=0.00204
+2025-11-24 18:14:33 [DEBUG] Epoch 2, batch 920/1920 loss=0.3120, lr=0.00205
+2025-11-24 18:14:35 [DEBUG] Epoch 2, batch 930/1920 loss=0.6387, lr=0.00206
+2025-11-24 18:14:37 [DEBUG] Epoch 2, batch 940/1920 loss=0.7191, lr=0.00207
+2025-11-24 18:14:39 [DEBUG] Epoch 2, batch 950/1920 loss=0.3504, lr=0.00208
+2025-11-24 18:14:41 [DEBUG] Epoch 2, batch 960/1920 loss=0.8243, lr=0.00209
+2025-11-24 18:14:43 [DEBUG] Epoch 2, batch 970/1920 loss=0.4341, lr=0.00210
+2025-11-24 18:14:46 [DEBUG] Epoch 2, batch 980/1920 loss=0.6742, lr=0.00210
+2025-11-24 18:14:48 [DEBUG] Epoch 2, batch 990/1920 loss=0.4027, lr=0.00211
+2025-11-24 18:14:50 [DEBUG] Epoch 2, batch 1000/1920 loss=0.1645, lr=0.00212
+2025-11-24 18:14:52 [DEBUG] Epoch 2, batch 1010/1920 loss=0.7017, lr=0.00213
+2025-11-24 18:14:54 [DEBUG] Epoch 2, batch 1020/1920 loss=0.7055, lr=0.00214
+2025-11-24 18:14:56 [DEBUG] Epoch 2, batch 1030/1920 loss=0.2457, lr=0.00215
+2025-11-24 18:14:58 [DEBUG] Epoch 2, batch 1040/1920 loss=0.2315, lr=0.00216
+2025-11-24 18:15:00 [DEBUG] Epoch 2, batch 1050/1920 loss=0.7081, lr=0.00217
+2025-11-24 18:15:02 [DEBUG] Epoch 2, batch 1060/1920 loss=0.5259, lr=0.00217
+2025-11-24 18:15:04 [DEBUG] Epoch 2, batch 1070/1920 loss=0.3792, lr=0.00218
+2025-11-24 18:15:06 [DEBUG] Epoch 2, batch 1080/1920 loss=0.8714, lr=0.00219
+2025-11-24 18:15:08 [DEBUG] Epoch 2, batch 1090/1920 loss=0.7011, lr=0.00220
+2025-11-24 18:15:10 [DEBUG] Epoch 2, batch 1100/1920 loss=0.3802, lr=0.00221
+2025-11-24 18:15:13 [DEBUG] Epoch 2, batch 1110/1920 loss=0.7724, lr=0.00222
+2025-11-24 18:15:15 [DEBUG] Epoch 2, batch 1120/1920 loss=0.4645, lr=0.00223
+2025-11-24 18:15:17 [DEBUG] Epoch 2, batch 1130/1920 loss=0.1915, lr=0.00224
+2025-11-24 18:15:19 [DEBUG] Epoch 2, batch 1140/1920 loss=0.4923, lr=0.00225
+2025-11-24 18:15:21 [DEBUG] Epoch 2, batch 1150/1920 loss=0.1936, lr=0.00226
+2025-11-24 18:15:23 [DEBUG] Epoch 2, batch 1160/1920 loss=0.1700, lr=0.00227
+2025-11-24 18:15:25 [DEBUG] Epoch 2, batch 1170/1920 loss=0.7511, lr=0.00228
+2025-11-24 18:15:27 [DEBUG] Epoch 2, batch 1180/1920 loss=0.7014, lr=0.00228
+2025-11-24 18:15:29 [DEBUG] Epoch 2, batch 1190/1920 loss=0.4630, lr=0.00229
+2025-11-24 18:15:31 [DEBUG] Epoch 2, batch 1200/1920 loss=0.2089, lr=0.00230
+2025-11-24 18:15:33 [DEBUG] Epoch 2, batch 1210/1920 loss=0.7826, lr=0.00231
+2025-11-24 18:15:35 [DEBUG] Epoch 2, batch 1220/1920 loss=0.7008, lr=0.00232
+2025-11-24 18:15:37 [DEBUG] Epoch 2, batch 1230/1920 loss=0.1920, lr=0.00233
+2025-11-24 18:15:39 [DEBUG] Epoch 2, batch 1240/1920 loss=0.1421, lr=0.00234
+2025-11-24 18:15:41 [DEBUG] Epoch 2, batch 1250/1920 loss=0.7832, lr=0.00235
+2025-11-24 18:15:44 [DEBUG] Epoch 2, batch 1260/1920 loss=0.3543, lr=0.00236
+2025-11-24 18:15:46 [DEBUG] Epoch 2, batch 1270/1920 loss=0.2583, lr=0.00237
+2025-11-24 18:15:48 [DEBUG] Epoch 2, batch 1280/1920 loss=0.7373, lr=0.00238
+2025-11-24 18:15:50 [DEBUG] Epoch 2, batch 1290/1920 loss=0.1121, lr=0.00239
+2025-11-24 18:15:52 [DEBUG] Epoch 2, batch 1300/1920 loss=0.3233, lr=0.00240
+2025-11-24 18:15:54 [DEBUG] Epoch 2, batch 1310/1920 loss=0.7271, lr=0.00241
+2025-11-24 18:15:57 [DEBUG] Epoch 2, batch 1320/1920 loss=0.6104, lr=0.00242
+2025-11-24 18:15:59 [DEBUG] Epoch 2, batch 1330/1920 loss=0.7334, lr=0.00243
+2025-11-24 18:16:02 [DEBUG] Epoch 2, batch 1340/1920 loss=0.4565, lr=0.00244
+2025-11-24 18:16:04 [DEBUG] Epoch 2, batch 1350/1920 loss=0.8406, lr=0.00245
+2025-11-24 18:16:06 [DEBUG] Epoch 2, batch 1360/1920 loss=0.7162, lr=0.00246
+2025-11-24 18:16:08 [DEBUG] Epoch 2, batch 1370/1920 loss=0.7026, lr=0.00247
+2025-11-24 18:16:10 [DEBUG] Epoch 2, batch 1380/1920 loss=0.7107, lr=0.00248
+2025-11-24 18:16:12 [DEBUG] Epoch 2, batch 1390/1920 loss=0.7474, lr=0.00249
+2025-11-24 18:16:14 [DEBUG] Epoch 2, batch 1400/1920 loss=0.4181, lr=0.00250
+2025-11-24 18:16:16 [DEBUG] Epoch 2, batch 1410/1920 loss=0.7444, lr=0.00251
+2025-11-24 18:16:18 [DEBUG] Epoch 2, batch 1420/1920 loss=0.8638, lr=0.00252
+2025-11-24 18:16:20 [DEBUG] Epoch 2, batch 1430/1920 loss=0.6075, lr=0.00253
+2025-11-24 18:16:22 [DEBUG] Epoch 2, batch 1440/1920 loss=0.3264, lr=0.00254
+2025-11-24 18:16:24 [DEBUG] Epoch 2, batch 1450/1920 loss=0.7647, lr=0.00255
+2025-11-24 18:16:26 [DEBUG] Epoch 2, batch 1460/1920 loss=0.7669, lr=0.00256
+2025-11-24 18:16:28 [DEBUG] Epoch 2, batch 1470/1920 loss=0.1723, lr=0.00257
+2025-11-24 18:16:31 [DEBUG] Epoch 2, batch 1480/1920 loss=0.7505, lr=0.00258
+2025-11-24 18:16:33 [DEBUG] Epoch 2, batch 1490/1920 loss=0.3701, lr=0.00259
+2025-11-24 18:16:35 [DEBUG] Epoch 2, batch 1500/1920 loss=0.7019, lr=0.00260
+2025-11-24 18:16:37 [DEBUG] Epoch 2, batch 1510/1920 loss=0.7007, lr=0.00261
+2025-11-24 18:16:39 [DEBUG] Epoch 2, batch 1520/1920 loss=0.2020, lr=0.00262
+2025-11-24 18:16:41 [DEBUG] Epoch 2, batch 1530/1920 loss=0.5244, lr=0.00263
+2025-11-24 18:16:43 [DEBUG] Epoch 2, batch 1540/1920 loss=0.4049, lr=0.00264
+2025-11-24 18:16:45 [DEBUG] Epoch 2, batch 1550/1920 loss=0.3255, lr=0.00265
+2025-11-24 18:16:47 [DEBUG] Epoch 2, batch 1560/1920 loss=0.2713, lr=0.00266
+2025-11-24 18:16:49 [DEBUG] Epoch 2, batch 1570/1920 loss=0.8627, lr=0.00267
+2025-11-24 18:16:51 [DEBUG] Epoch 2, batch 1580/1920 loss=0.4819, lr=0.00268
+2025-11-24 18:16:53 [DEBUG] Epoch 2, batch 1590/1920 loss=0.5042, lr=0.00269
+2025-11-24 18:16:55 [DEBUG] Epoch 2, batch 1600/1920 loss=0.2989, lr=0.00270
+2025-11-24 18:16:57 [DEBUG] Epoch 2, batch 1610/1920 loss=0.3940, lr=0.00271
+2025-11-24 18:16:59 [DEBUG] Epoch 2, batch 1620/1920 loss=0.4278, lr=0.00272
+2025-11-24 18:17:02 [DEBUG] Epoch 2, batch 1630/1920 loss=0.7034, lr=0.00273
+2025-11-24 18:17:04 [DEBUG] Epoch 2, batch 1640/1920 loss=0.7144, lr=0.00274
+2025-11-24 18:17:06 [DEBUG] Epoch 2, batch 1650/1920 loss=0.5132, lr=0.00275
+2025-11-24 18:17:08 [DEBUG] Epoch 2, batch 1660/1920 loss=0.2553, lr=0.00276
+2025-11-24 18:17:10 [DEBUG] Epoch 2, batch 1670/1920 loss=0.2069, lr=0.00277
+2025-11-24 18:17:12 [DEBUG] Epoch 2, batch 1680/1920 loss=0.1334, lr=0.00278
+2025-11-24 18:17:14 [DEBUG] Epoch 2, batch 1690/1920 loss=0.4295, lr=0.00279
+2025-11-24 18:17:16 [DEBUG] Epoch 2, batch 1700/1920 loss=0.3530, lr=0.00281
+2025-11-24 18:17:18 [DEBUG] Epoch 2, batch 1710/1920 loss=0.6492, lr=0.00282
+2025-11-24 18:17:20 [DEBUG] Epoch 2, batch 1720/1920 loss=0.7213, lr=0.00283
+2025-11-24 18:17:22 [DEBUG] Epoch 2, batch 1730/1920 loss=0.7025, lr=0.00284
+2025-11-24 18:17:24 [DEBUG] Epoch 2, batch 1740/1920 loss=0.6758, lr=0.00285
+2025-11-24 18:17:26 [DEBUG] Epoch 2, batch 1750/1920 loss=0.2559, lr=0.00286
+2025-11-24 18:17:28 [DEBUG] Epoch 2, batch 1760/1920 loss=0.3885, lr=0.00287
+2025-11-24 18:17:31 [DEBUG] Epoch 2, batch 1770/1920 loss=0.5859, lr=0.00288
+2025-11-24 18:17:33 [DEBUG] Epoch 2, batch 1780/1920 loss=0.4853, lr=0.00289
+2025-11-24 18:17:35 [DEBUG] Epoch 2, batch 1790/1920 loss=0.7429, lr=0.00290
+2025-11-24 18:17:37 [DEBUG] Epoch 2, batch 1800/1920 loss=0.7503, lr=0.00291
+2025-11-24 18:17:39 [DEBUG] Epoch 2, batch 1810/1920 loss=0.7691, lr=0.00292
+2025-11-24 18:17:41 [DEBUG] Epoch 2, batch 1820/1920 loss=0.2380, lr=0.00294
+2025-11-24 18:17:43 [DEBUG] Epoch 2, batch 1830/1920 loss=0.3059, lr=0.00295
+2025-11-24 18:17:45 [DEBUG] Epoch 2, batch 1840/1920 loss=0.4768, lr=0.00296
+2025-11-24 18:17:47 [DEBUG] Epoch 2, batch 1850/1920 loss=0.4428, lr=0.00297
+2025-11-24 18:17:49 [DEBUG] Epoch 2, batch 1860/1920 loss=0.5563, lr=0.00298
+2025-11-24 18:17:51 [DEBUG] Epoch 2, batch 1870/1920 loss=0.3806, lr=0.00299
+2025-11-24 18:17:53 [DEBUG] Epoch 2, batch 1880/1920 loss=0.5367, lr=0.00300
+2025-11-24 18:17:55 [DEBUG] Epoch 2, batch 1890/1920 loss=0.6940, lr=0.00301
+2025-11-24 18:17:58 [DEBUG] Epoch 2, batch 1900/1920 loss=0.1523, lr=0.00302
+2025-11-24 18:18:01 [DEBUG] Epoch 2, batch 1910/1920 loss=0.6705, lr=0.00304
+2025-11-24 18:18:03 [DEBUG] Epoch 2, batch 1920/1920 loss=0.7186, lr=0.00305
+2025-11-24 18:21:23 [DEBUG] Validation loss: 0.4632 | mIoU: 0.7481
+2025-11-24 18:21:23 [INFO] Epoch 2 | Train Loss: 0.4810 | Val Loss: 0.4632 | Val mIoU: 0.7481
+2025-11-24 18:21:23 [INFO] Epoch 2 finished in 602.62s
+2025-11-24 18:21:23 [INFO] Epoch 3 starting
+2025-11-24 18:21:26 [DEBUG] Epoch 3, batch 10/1920 loss=0.7463, lr=0.00306
+2025-11-24 18:21:28 [DEBUG] Epoch 3, batch 20/1920 loss=0.7131, lr=0.00307
+2025-11-24 18:21:30 [DEBUG] Epoch 3, batch 30/1920 loss=0.4730, lr=0.00308
+2025-11-24 18:21:32 [DEBUG] Epoch 3, batch 40/1920 loss=0.2269, lr=0.00309
+2025-11-24 18:21:34 [DEBUG] Epoch 3, batch 50/1920 loss=0.3111, lr=0.00310
+2025-11-24 18:21:36 [DEBUG] Epoch 3, batch 60/1920 loss=0.7004, lr=0.00311
+2025-11-24 18:21:38 [DEBUG] Epoch 3, batch 70/1920 loss=0.4256, lr=0.00313
+2025-11-24 18:21:40 [DEBUG] Epoch 3, batch 80/1920 loss=0.8010, lr=0.00314
+2025-11-24 18:21:42 [DEBUG] Epoch 3, batch 90/1920 loss=0.7164, lr=0.00315
+2025-11-24 18:21:44 [DEBUG] Epoch 3, batch 100/1920 loss=0.3469, lr=0.00316
+2025-11-24 18:21:46 [DEBUG] Epoch 3, batch 110/1920 loss=0.4114, lr=0.00317
+2025-11-24 18:21:48 [DEBUG] Epoch 3, batch 120/1920 loss=0.1645, lr=0.00318
+2025-11-24 18:21:50 [DEBUG] Epoch 3, batch 130/1920 loss=0.3973, lr=0.00319
+2025-11-24 18:21:52 [DEBUG] Epoch 3, batch 140/1920 loss=0.4678, lr=0.00321
+2025-11-24 18:21:54 [DEBUG] Epoch 3, batch 150/1920 loss=0.1510, lr=0.00322
+2025-11-24 18:21:56 [DEBUG] Epoch 3, batch 160/1920 loss=0.1731, lr=0.00323
+2025-11-24 18:21:59 [DEBUG] Epoch 3, batch 170/1920 loss=0.7079, lr=0.00324
+2025-11-24 18:22:01 [DEBUG] Epoch 3, batch 180/1920 loss=0.4086, lr=0.00325
+2025-11-24 18:22:03 [DEBUG] Epoch 3, batch 190/1920 loss=0.4202, lr=0.00326
+2025-11-24 18:22:05 [DEBUG] Epoch 3, batch 200/1920 loss=0.3078, lr=0.00328
+2025-11-24 18:22:07 [DEBUG] Epoch 3, batch 210/1920 loss=0.7270, lr=0.00329
+2025-11-24 18:22:09 [DEBUG] Epoch 3, batch 220/1920 loss=0.6217, lr=0.00330
+2025-11-24 18:22:12 [DEBUG] Epoch 3, batch 230/1920 loss=0.7027, lr=0.00331
+2025-11-24 18:22:14 [DEBUG] Epoch 3, batch 240/1920 loss=0.1812, lr=0.00332
+2025-11-24 18:22:16 [DEBUG] Epoch 3, batch 250/1920 loss=0.3924, lr=0.00333
+2025-11-24 18:22:18 [DEBUG] Epoch 3, batch 260/1920 loss=0.2843, lr=0.00335
+2025-11-24 18:22:20 [DEBUG] Epoch 3, batch 270/1920 loss=0.6926, lr=0.00336
+2025-11-24 18:22:22 [DEBUG] Epoch 3, batch 280/1920 loss=0.1606, lr=0.00337
+2025-11-24 18:22:24 [DEBUG] Epoch 3, batch 290/1920 loss=0.1787, lr=0.00338
+2025-11-24 18:22:27 [DEBUG] Epoch 3, batch 300/1920 loss=0.7343, lr=0.00339
+2025-11-24 18:22:29 [DEBUG] Epoch 3, batch 310/1920 loss=0.1500, lr=0.00341
+2025-11-24 18:22:31 [DEBUG] Epoch 3, batch 320/1920 loss=0.7098, lr=0.00342
+2025-11-24 18:22:33 [DEBUG] Epoch 3, batch 330/1920 loss=0.3096, lr=0.00343
+2025-11-24 18:22:35 [DEBUG] Epoch 3, batch 340/1920 loss=0.7574, lr=0.00344
+2025-11-24 18:22:37 [DEBUG] Epoch 3, batch 350/1920 loss=0.3534, lr=0.00345
+2025-11-24 18:22:39 [DEBUG] Epoch 3, batch 360/1920 loss=0.7152, lr=0.00347
+2025-11-24 18:22:41 [DEBUG] Epoch 3, batch 370/1920 loss=0.4554, lr=0.00348
+2025-11-24 18:22:43 [DEBUG] Epoch 3, batch 380/1920 loss=0.6725, lr=0.00349
+2025-11-24 18:22:45 [DEBUG] Epoch 3, batch 390/1920 loss=0.7995, lr=0.00350
+2025-11-24 18:22:47 [DEBUG] Epoch 3, batch 400/1920 loss=0.3915, lr=0.00351
+2025-11-24 18:22:49 [DEBUG] Epoch 3, batch 410/1920 loss=0.7901, lr=0.00353
+2025-11-24 18:22:51 [DEBUG] Epoch 3, batch 420/1920 loss=0.7290, lr=0.00354
+2025-11-24 18:22:53 [DEBUG] Epoch 3, batch 430/1920 loss=0.7033, lr=0.00355
+2025-11-24 18:22:55 [DEBUG] Epoch 3, batch 440/1920 loss=0.7024, lr=0.00356
+2025-11-24 18:22:57 [DEBUG] Epoch 3, batch 450/1920 loss=0.6468, lr=0.00358
+2025-11-24 18:22:59 [DEBUG] Epoch 3, batch 460/1920 loss=0.7008, lr=0.00359
+2025-11-24 18:23:02 [DEBUG] Epoch 3, batch 470/1920 loss=0.8306, lr=0.00360
+2025-11-24 18:23:04 [DEBUG] Epoch 3, batch 480/1920 loss=0.7126, lr=0.00361
+2025-11-24 18:23:06 [DEBUG] Epoch 3, batch 490/1920 loss=0.2593, lr=0.00362
+2025-11-24 18:23:08 [DEBUG] Epoch 3, batch 500/1920 loss=0.7067, lr=0.00364
+2025-11-24 18:23:10 [DEBUG] Epoch 3, batch 510/1920 loss=0.2517, lr=0.00365
+2025-11-24 18:23:12 [DEBUG] Epoch 3, batch 520/1920 loss=0.7289, lr=0.00366
+2025-11-24 18:23:14 [DEBUG] Epoch 3, batch 530/1920 loss=0.2957, lr=0.00367
+2025-11-24 18:23:16 [DEBUG] Epoch 3, batch 540/1920 loss=0.7064, lr=0.00369
+2025-11-24 18:23:18 [DEBUG] Epoch 3, batch 550/1920 loss=0.4233, lr=0.00370
+2025-11-24 18:23:20 [DEBUG] Epoch 3, batch 560/1920 loss=0.3584, lr=0.00371
+2025-11-24 18:23:22 [DEBUG] Epoch 3, batch 570/1920 loss=0.6545, lr=0.00372
+2025-11-24 18:23:24 [DEBUG] Epoch 3, batch 580/1920 loss=0.1802, lr=0.00374
+2025-11-24 18:23:26 [DEBUG] Epoch 3, batch 590/1920 loss=0.7325, lr=0.00375
+2025-11-24 18:23:28 [DEBUG] Epoch 3, batch 600/1920 loss=0.1703, lr=0.00376
+2025-11-24 18:23:30 [DEBUG] Epoch 3, batch 610/1920 loss=0.7123, lr=0.00377
+2025-11-24 18:23:32 [DEBUG] Epoch 3, batch 620/1920 loss=0.5682, lr=0.00379
+2025-11-24 18:23:35 [DEBUG] Epoch 3, batch 630/1920 loss=0.5094, lr=0.00380
+2025-11-24 18:23:37 [DEBUG] Epoch 3, batch 640/1920 loss=0.2568, lr=0.00381
+2025-11-24 18:23:39 [DEBUG] Epoch 3, batch 650/1920 loss=0.5448, lr=0.00383
+2025-11-24 18:23:41 [DEBUG] Epoch 3, batch 660/1920 loss=0.7475, lr=0.00384
+2025-11-24 18:23:43 [DEBUG] Epoch 3, batch 670/1920 loss=0.4538, lr=0.00385
+2025-11-24 18:23:45 [DEBUG] Epoch 3, batch 680/1920 loss=0.5613, lr=0.00386
+2025-11-24 18:23:47 [DEBUG] Epoch 3, batch 690/1920 loss=0.3029, lr=0.00388
+2025-11-24 18:23:49 [DEBUG] Epoch 3, batch 700/1920 loss=0.7171, lr=0.00389
+2025-11-24 18:23:51 [DEBUG] Epoch 3, batch 710/1920 loss=0.3161, lr=0.00390
+2025-11-24 18:23:53 [INFO] Epoch 3 finished in 149.89s
+2025-11-24 18:23:53 [INFO] Training phase finished in 1355.23s
+2025-11-24 18:24:08 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 18:24:08 [DEBUG] Prepare phase disabled.
+2025-11-24 18:24:08 [DEBUG] Verify phase disabled.
+2025-11-24 18:24:08 [DEBUG] Train phase disabled.
+2025-11-24 18:24:10 [INFO] Loading checkpoint /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/weights/dinounet_best.pth
+2025-11-24 18:24:59 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 18:24:59 [DEBUG] Prepare phase disabled.
+2025-11-24 18:24:59 [DEBUG] Verify phase disabled.
+2025-11-24 18:24:59 [DEBUG] Train phase disabled.
+2025-11-24 18:25:00 [INFO] Loading checkpoint /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/weights/unet_lite_best.pth
+2025-11-24 18:25:00 [INFO] Running inference on 196 tiles with stride 384.
+2025-11-24 18:25:00 [INFO] Inference phase starting
+2025-11-24 18:25:04 [INFO] Inference phase finished in 4.59s
+2025-11-24 18:26:33 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 18:26:33 [DEBUG] Prepare phase disabled.
+2025-11-24 18:26:33 [DEBUG] Verify phase disabled.
+2025-11-24 18:26:33 [DEBUG] Train phase disabled.
+2025-11-24 18:26:34 [INFO] Loading checkpoint /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/weights/unet_lite_best.pth
+2025-11-24 18:26:34 [INFO] Running inference on 196 tiles with stride 384.
+2025-11-24 18:26:34 [INFO] Inference phase starting
+2025-11-24 18:26:44 [INFO] Inference progress: 50/196 tiles.
+2025-11-24 18:26:53 [INFO] Inference progress: 100/196 tiles.
+2025-11-24 18:27:02 [INFO] Inference progress: 150/196 tiles.
+2025-11-24 18:27:10 [INFO] Inference progress: 196/196 tiles.
+2025-11-24 18:27:10 [INFO] Inference phase finished in 36.69s
+2025-11-24 18:27:11 [INFO] Saved prediction to /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/test/dop20_596000_5973000_1km_20cm_labels.tif
+2025-11-24 18:27:11 [INFO] All enabled phases completed.
+2025-11-24 18:30:13 [INFO] Loaded configuration from /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/config.yml
+2025-11-24 18:30:13 [DEBUG] Prepare phase disabled.
+2025-11-24 18:30:13 [DEBUG] Verify phase disabled.
+2025-11-24 18:30:13 [DEBUG] Train phase disabled.
+2025-11-24 18:30:13 [INFO] Loading checkpoint /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/weights/unet_lite_best.pth
+2025-11-24 18:30:13 [INFO] Running inference on 196 tiles with stride 384.
+2025-11-24 18:30:13 [INFO] Inference phase starting
+2025-11-24 18:30:23 [INFO] Inference progress: 50/196 tiles.
+2025-11-24 18:30:33 [INFO] Inference progress: 100/196 tiles.
+2025-11-24 18:30:42 [INFO] Inference progress: 150/196 tiles.
+2025-11-24 18:30:50 [INFO] Inference progress: 196/196 tiles.
+2025-11-24 18:30:50 [INFO] Inference phase finished in 36.61s
+2025-11-24 18:30:50 [INFO] Saved prediction to /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/test/dop20_592000_5975000_1km_20cm_labels.tif
+2025-11-24 18:30:50 [INFO] All enabled phases completed.
