@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 import yaml
 
-DEFAULT_CONFIG_PATH = "config.yml"
+DEFAULT_CONFIG_PATH = "config_hpc.yml"
 CONFIG_ENV_VAR = "DINOV3SEG_CONFIG"
 
 
