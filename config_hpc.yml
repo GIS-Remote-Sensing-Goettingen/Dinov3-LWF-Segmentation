@@ -6,7 +6,7 @@ resources:
 logging:
   level: debug
   timestamps: true
-  file: /user/davide.mattioli/u20330/SegEdge/experiments/dinov3Seg/logs/run.log
+  file: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/logs/run.log
 
 paths:
   raw_images_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_1/
@@ -45,7 +45,7 @@ train:
   enable: true
   device: cuda
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
-  weights_dir: /user/davide.mattioli/u20330/SegEdge/experiments/dinov3Seg/weights/
+  weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/
   batch_size: 4
   epochs: 30
   muon_lr: 0.02
