@@ -72,7 +72,7 @@ def load_config(path: str | None = None) -> Dict[str, Any]:
 
     >>> import tempfile, os
     >>> tmpdir = tempfile.mkdtemp()
-    >>> cfg_path = Path(tmpdir) / "config.yml"
+    >>> cfg_path = Path(tmpdir) / DEFAULT_CONFIG_PATH
     >>> _ = cfg_path.write_text("logging:\\n  level: error\\n")
     >>> cwd = os.getcwd()
     >>> prev = os.environ.pop(CONFIG_ENV_VAR, None)

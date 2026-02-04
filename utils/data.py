@@ -10,6 +10,7 @@ import gc
 import glob
 import os
 import random
+import time
 from typing import TYPE_CHECKING, List, Optional, Sequence
 
 import numpy as np
@@ -282,6 +283,25 @@ def prepare_data_tiles(
         if logger:
             logger.debug(message)
 
+    def _format_eta(seconds: float) -> str:
+        """Format seconds as HH:MM:SS.
+
+        Args:
+            seconds (float): Remaining seconds estimate.
+
+        Returns:
+            str: Formatted ETA string.
+
+        Examples:
+            >>> _format_eta(65.2)
+            '00:01:05'
+        """
+
+        total_seconds = max(0, int(seconds))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
     _log_info("--- PHASE 1: TILING & PRE-COMPUTING ---")
     os.makedirs(output_dir, exist_ok=True)
     existing = glob.glob(os.path.join(output_dir, "*.pt"))
@@ -294,9 +314,15 @@ def prepare_data_tiles(
         model = AutoModel.from_pretrained(model_name).eval().to(device)
     image_paths = glob.glob(os.path.join(img_dir, "*.tif"))
     ps = 14 if "vitl14" in model_name else 16
-    for img_path in tqdm(image_paths, desc="Processing Large Images"):
+    total_images = len(image_paths)
+    start_time = time.time()
+    for idx, img_path in enumerate(
+        tqdm(image_paths, desc="Processing Large Images"), start=1
+    ):
         basename = os.path.splitext(os.path.basename(img_path))[0]
-        _log_info(f"Processing image {basename}")
+        elapsed = time.time() - start_time
+        eta = _format_eta((elapsed / max(1, idx)) * (total_images - idx))
+        _log_info(f"Processing image {idx}/{total_images} (ETA {eta}): {basename}")
         torch.cuda.empty_cache()
         gc.collect()
         try:

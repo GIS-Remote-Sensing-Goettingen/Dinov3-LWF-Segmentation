@@ -15,6 +15,7 @@ paths:
 
 dataset:
   cache_features: false
+  max_tiles: 0
   augmentations:
     enable: true
     hflip: true

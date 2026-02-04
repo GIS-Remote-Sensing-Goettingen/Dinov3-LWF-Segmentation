@@ -77,6 +77,7 @@ def resolve_dataset_splits(
     processed_dir: str,
     split_cfg: dict,
     val_fraction: float,
+    max_tiles: int | None,
     logger: VerbosityLogger,
 ) -> tuple[list[str], list[str]]:
     """Resolve train/validation file lists for cached tiles.
@@ -85,6 +86,7 @@ def resolve_dataset_splits(
         processed_dir (str): Directory containing cached tiles.
         split_cfg (dict): Split configuration block.
         val_fraction (float): Fraction of tiles reserved for validation.
+        max_tiles (int | None): Optional cap on the number of tiles to use.
         logger (VerbosityLogger): Logger for split details.
 
     Returns:
@@ -101,6 +103,12 @@ def resolve_dataset_splits(
     all_files = sorted(glob.glob(os.path.join(processed_dir, "*.pt")))
     if not all_files:
         raise ValueError(f"No cached tiles found in {processed_dir}")
+    if not split_cfg.get("train_list") and max_tiles and max_tiles > 0:
+        if len(all_files) > max_tiles:
+            logger.info(
+                f"Sampling {max_tiles} tiles from {len(all_files)} total cached tiles."
+            )
+            all_files = random.sample(all_files, k=max_tiles)
     if split_cfg.get("train_list"):
         train_names = set(_read_name_list(split_cfg["train_list"]))
         train_files = [f for f in all_files if _file_stem(f) in train_names]
@@ -153,8 +161,13 @@ def create_dataloaders(
     augment_cfg = dataset_cfg.get("augmentations", {})
     split_cfg = dataset_cfg.get("splits", {})
     val_fraction = train_cfg.get("val_fraction", 0.2)
+    max_tiles = dataset_cfg.get("max_tiles")
     train_files, val_files = resolve_dataset_splits(
-        processed_dir, split_cfg, val_fraction, logger
+        processed_dir,
+        split_cfg,
+        val_fraction,
+        max_tiles,
+        logger,
     )
     train_dataset = PrecomputedDataset(
         processed_dir,
