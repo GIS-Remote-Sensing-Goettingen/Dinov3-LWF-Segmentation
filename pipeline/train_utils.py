@@ -195,6 +195,11 @@ def evaluate(
     use_amp: bool,
     logger: VerbosityLogger | None = None,
     num_classes: int = 2,
+    cache_features: bool = True,
+    backbone: Any | None = None,
+    processor: Any | None = None,
+    layers: list[int] | None = None,
+    ps: int = 16,
 ) -> tuple[float, dict[str, Any]]:
     """Evaluate the model on the validation set.
 
@@ -206,6 +211,11 @@ def evaluate(
         use_amp (bool): Whether to use AMP.
         logger (VerbosityLogger | None): Logger for debug messages.
         num_classes (int): Number of classes.
+        cache_features (bool): Whether cached features are available.
+        backbone (Any | None): DINO backbone for on-the-fly extraction.
+        processor (Any | None): Image processor for on-the-fly extraction.
+        layers (list[int] | None): Backbone layers to extract.
+        ps (int): Patch size for the backbone.
 
     Returns:
         tuple[float, dict[str, Any]]: Average loss and metrics summary.
@@ -231,7 +241,21 @@ def evaluate(
         for batch_idx, (img, features, y) in enumerate(loader, 1):
             img = img.to(device)
             y = y.to(device)
-            feats = move_features_to_device(features, device)
+            if cache_features and features:
+                feats = move_features_to_device(features, device)
+            else:
+                if backbone is None or processor is None or layers is None:
+                    raise ValueError(
+                        "Backbone/processor/layers required for on-the-fly eval"
+                    )
+                feats = extract_multiscale_features_batch(
+                    img,
+                    backbone,
+                    processor,
+                    device,
+                    layers,
+                    ps,
+                )
             model_call = cast(Any, model)
             with autocast:
                 if hasattr(model_call, "forward_with_aux"):

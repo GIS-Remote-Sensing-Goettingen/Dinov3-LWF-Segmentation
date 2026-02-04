@@ -435,6 +435,15 @@ class TrainPhase(Phase):
                         if ema
                         else unwrap_model(cast(torch.nn.Module, model))
                     )
+                    if not cache_features and (backbone is None or processor is None):
+                        processor = AutoImageProcessor.from_pretrained(
+                            model_cfg["backbone"]
+                        )
+                        backbone = (
+                            AutoModel.from_pretrained(model_cfg["backbone"])
+                            .eval()
+                            .to(device)
+                        )
                     val_loss, val_metrics = evaluate(
                         eval_model,
                         val_loader,
@@ -443,6 +452,11 @@ class TrainPhase(Phase):
                         use_amp,
                         context.logger if context.dist_ctx.is_main else None,
                         model_cfg["num_classes"],
+                        cache_features=cache_features,
+                        backbone=backbone,
+                        processor=processor,
+                        layers=model_cfg["layers"],
+                        ps=ps,
                     )
                     if context.dist_ctx.enabled:
                         loss_tensor = torch.tensor(
