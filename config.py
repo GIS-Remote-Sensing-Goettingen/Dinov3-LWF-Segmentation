@@ -75,11 +75,14 @@ def load_config(path: str | None = None) -> Dict[str, Any]:
     >>> cfg_path = Path(tmpdir) / "config.yml"
     >>> _ = cfg_path.write_text("logging:\\n  level: error\\n")
     >>> cwd = os.getcwd()
+    >>> prev = os.environ.pop(CONFIG_ENV_VAR, None)
     >>> try:
     ...     os.chdir(tmpdir)
     ...     cfg = load_config()
     ... finally:
     ...     os.chdir(cwd)
+    ...     if prev is not None:
+    ...         os.environ[CONFIG_ENV_VAR] = prev
     >>> cfg["logging"]["level"]
     'error'
     """

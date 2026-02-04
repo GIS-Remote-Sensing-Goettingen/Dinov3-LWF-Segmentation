@@ -141,6 +141,8 @@ def build_logger(config: dict, enabled: bool = True) -> VerbosityLogger:
     level = logging_cfg.get("level", "info")
     timestamps = logging_cfg.get("timestamps", True)
     log_file = logging_cfg.get("file")
+    if log_file:
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     return VerbosityLogger(
         level=level, timestamps=timestamps, log_file=log_file, enabled=enabled
     )
