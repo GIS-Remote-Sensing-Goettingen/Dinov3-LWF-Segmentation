@@ -39,7 +39,14 @@ from .constants import (
 )
 from .context import InferenceError, PhaseOutcome, RunContext, TrainingError
 from .data_splits import create_dataloaders, dataset_size
-from .inference_utils import build_tta_transforms
+from .inference_utils import (
+    build_dashboard,
+    build_tta_transforms,
+    compute_attention_maps,
+    compute_xai_maps,
+    overlay_heatmap,
+    upsample_map,
+)
 from .phase_runner import Phase
 from .train_utils import (
     ModelEMA,
@@ -584,8 +591,10 @@ class InferencePhase(Phase):
         state_dict = torch.load(checkpoint, map_location=device)
         head.load_state_dict(state_dict, strict=False)
         head.eval()
-        input_tif = infer_cfg["input_tif"]
-        output_tif = infer_cfg["output_tif"]
+        input_dir = infer_cfg.get("input_dir")
+        input_tif = infer_cfg.get("input_tif")
+        output_dir = infer_cfg.get("output_dir")
+        output_tif = infer_cfg.get("output_tif")
         tile_size = infer_cfg.get("tile_size", 512)
         ps = 14 if "vitl14" in model_cfg["backbone"] else 16
         overlap_cfg = infer_cfg.get("overlap", 0.0)
@@ -594,6 +603,121 @@ class InferencePhase(Phase):
         )
         stride = max(1, tile_size - overlap_px)
         tta_transforms = build_tta_transforms(infer_cfg.get("tta", {}))
+        autocast = torch.cuda.amp.autocast() if device.type == "cuda" else nullcontext()
+        explain_cfg = infer_cfg.get("explain", {})
+        explain_enabled = bool(explain_cfg.get("enable", False))
+        plots_dir = explain_cfg.get("output_dir")
+        class_index = int(explain_cfg.get("class_index", 1))
+        layout = explain_cfg.get("dashboard_layout", "4x3")
+        plot_every_n = explain_cfg.get("plot_every_n")
+        output_suffix = infer_cfg.get("output_suffix", "_pred.tif")
+        glob_pattern = infer_cfg.get("glob", "*.tif")
+        if input_dir:
+            if not output_dir:
+                raise InferenceError("output_dir is required when input_dir is set")
+            os.makedirs(output_dir, exist_ok=True)
+            if explain_enabled:
+                plots_dir = plots_dir or os.path.join(output_dir, "plots")
+                os.makedirs(plots_dir, exist_ok=True)
+            tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
+            if not tile_files:
+                raise InferenceError(f"No input tiles found in {input_dir}")
+            if plot_every_n is None:
+                plot_every_n = 10 if len(tile_files) > 50 else 1
+
+            def _infer_tile_file(path: str, index: int) -> None:
+                """Run inference for a single tile file and write outputs.
+
+                Args:
+                    path (str): Input tile path.
+                    index (int): 1-based tile index for plotting frequency.
+                """
+
+                with rasterio.open(path) as src:
+                    profile = src.profile.copy()
+                    img = src.read()
+                img = np.transpose(img, (1, 2, 0))
+                if img.shape[2] != 3:
+                    raise InferenceError("Expected 3-band imagery.")
+                orig_h, orig_w = img.shape[:2]
+                probs_accum = np.zeros(
+                    (model_cfg["num_classes"], orig_h, orig_w), dtype=np.float32
+                )
+                for transform in tta_transforms:
+                    aug_img = transform.apply(img)
+                    img_norm = (aug_img.astype(np.float32) / 255.0).astype(np.float32)
+                    img_t = (
+                        torch.from_numpy(img_norm)
+                        .permute(2, 0, 1)
+                        .unsqueeze(0)
+                        .to(device)
+                    )
+                    feats = extract_multiscale_features(
+                        aug_img.astype(np.float32),
+                        backbone,
+                        processor,
+                        device,
+                        model_cfg["layers"],
+                        ps=ps,
+                    )
+                    feats_batched = [f.to(device).unsqueeze(0) for f in feats]
+                    with torch.no_grad(), autocast:
+                        logits = head(img_t, feats_batched)
+                        logits = transform.invert_logits(logits)
+                        if logits.shape[-2:] != img_t.shape[-2:]:
+                            logits = F.interpolate(
+                                logits,
+                                size=img_t.shape[-2:],
+                                mode="bilinear",
+                                align_corners=False,
+                            )
+                        probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+                    probs_accum += probs
+                probs_accum /= len(tta_transforms)
+                pred = probs_accum.argmax(axis=0).astype(np.uint8)
+                profile.update(dtype=rasterio.uint8, count=1, nodata=0)
+                base = os.path.splitext(os.path.basename(path))[0]
+                out_path = os.path.join(output_dir, f"{base}{output_suffix}")
+                with rasterio.open(out_path, "w", **profile) as dst:
+                    dst.write(pred, 1)
+                if explain_enabled and plot_every_n and index % plot_every_n == 0:
+                    rgb = np.clip(img, 0, 255).astype(np.uint8)
+                    attn_cls, attn_rollout = compute_attention_maps(
+                        img.astype(np.float32), backbone, processor, device, ps
+                    )
+                    attn_cls = upsample_map(attn_cls, orig_h, orig_w)
+                    attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
+                    conf, ent, class_prob = compute_xai_maps(probs_accum, class_index)
+                    overlay_pred = overlay_heatmap(
+                        rgb,
+                        pred.astype(np.float32) / max(1, model_cfg["num_classes"] - 1),
+                    )
+                    overlay_attn = overlay_heatmap(rgb, attn_cls)
+                    plot_path = os.path.join(plots_dir, f"{base}_dashboard.png")
+                    build_dashboard(
+                        plot_path,
+                        rgb,
+                        pred,
+                        conf,
+                        ent,
+                        class_prob,
+                        attn_cls,
+                        attn_rollout,
+                        overlay_pred,
+                        overlay_attn,
+                        layout=layout,
+                    )
+
+            for idx, tile_path in enumerate(tile_files, start=1):
+                context.logger.info(f"Running tile inference {idx}/{len(tile_files)}")
+                _infer_tile_file(tile_path, idx)
+            metrics = {"files_total": float(len(tile_files))}
+            artifacts = {"output_dir": output_dir, "checkpoint": checkpoint}
+            return PhaseOutcome(metrics=metrics, artifacts=artifacts)
+        if not input_tif or not output_tif:
+            raise InferenceError(
+                "input_tif and output_tif are required for single-file inference"
+            )
         with rasterio.open(input_tif) as src:
             profile = src.profile.copy()
             height, width = src.height, src.width
@@ -608,8 +732,12 @@ class InferencePhase(Phase):
         context.logger.info(
             f"Running inference on {total_tiles} tiles with stride {stride}."
         )
+        if explain_enabled:
+            plots_dir = plots_dir or os.path.join(os.path.dirname(output_tif), "plots")
+            os.makedirs(plots_dir, exist_ok=True)
+            if plot_every_n is None:
+                plot_every_n = 10 if total_tiles > 50 else 1
         tile_counter = 0
-        autocast = torch.cuda.amp.autocast() if device.type == "cuda" else nullcontext()
         with (
             rasterio.open(input_tif) as src,
             TimedBlock(context.logger, "Inference phase"),
@@ -624,6 +752,7 @@ class InferencePhase(Phase):
                     img_tile = np.transpose(img_tile, (1, 2, 0))
                     if np.max(img_tile) == 0:
                         continue
+                    img_tile_raw = img_tile
                     orig_h, orig_w = img_tile.shape[:2]
                     pad_h = max(0, tile_size - orig_h)
                     pad_w = max(0, tile_size - orig_w)
@@ -672,6 +801,47 @@ class InferencePhase(Phase):
                         probs = probs[:, :orig_h, :orig_w]
                         tile_probs += probs
                     tile_probs /= len(tta_transforms)
+                    if (
+                        explain_enabled
+                        and plot_every_n
+                        and tile_counter % plot_every_n == 0
+                    ):
+                        rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
+                        attn_cls, attn_rollout = compute_attention_maps(
+                            img_tile_raw.astype(np.float32),
+                            backbone,
+                            processor,
+                            device,
+                            ps,
+                        )
+                        attn_cls = upsample_map(attn_cls, orig_h, orig_w)
+                        attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
+                        conf, ent, class_prob = compute_xai_maps(
+                            tile_probs, class_index
+                        )
+                        pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
+                        overlay_pred = overlay_heatmap(
+                            rgb,
+                            pred_tile.astype(np.float32)
+                            / max(1, model_cfg["num_classes"] - 1),
+                        )
+                        overlay_attn = overlay_heatmap(rgb, attn_cls)
+                        plot_path = os.path.join(
+                            plots_dir, f"tile_y{y}_x{x}_dashboard.png"
+                        )
+                        build_dashboard(
+                            plot_path,
+                            rgb,
+                            pred_tile,
+                            conf,
+                            ent,
+                            class_prob,
+                            attn_cls,
+                            attn_rollout,
+                            overlay_pred,
+                            overlay_attn,
+                            layout=layout,
+                        )
                     prob_accum[:, y:y_max, x:x_max] += tile_probs
                     count_accum[y:y_max, x:x_max] += 1
                     if tile_counter % 50 == 0 or tile_counter == total_tiles:

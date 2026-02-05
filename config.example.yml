@@ -71,10 +71,19 @@ inference:
   enable: false
   device: cuda
   input_tif: /path/to/scene.tif
+  input_dir:
   output_tif: test/output_prediction.tif
+  output_dir:
+  output_suffix: _pred.tif
+  glob: "*.tif"
   checkpoint: weights/unet_v2_best.pth
   tile_size: 512
   overlap: 0.25
   tta:
     horizontal_flip: true
     vertical_flip: false
+  explain:
+    enable: true
+    output_dir: plots
+    class_index: 1
+    dashboard_layout: "4x3"
