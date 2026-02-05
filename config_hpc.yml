@@ -29,7 +29,7 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: UnetLite
+  head: unet_lite
   num_classes: 2
   dino_channels: 1024
 
