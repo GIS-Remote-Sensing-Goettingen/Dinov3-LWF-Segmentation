@@ -84,6 +84,7 @@ class PreparePhase(Phase):
         """
 
         section = context.config.get(self.config_key, {})
+        dataset_cfg = context.config.get("dataset", {})
         model_cfg = get_model_config(context.config)
         img_dir = resolve_path(
             context.config, section, "img_dir", DEFAULT_RAW_IMAGES_DIR
@@ -99,6 +100,7 @@ class PreparePhase(Phase):
             device = torch.device(f"cuda:{context.dist_ctx.local_rank}")
         before_count = len(glob.glob(os.path.join(output_dir, "*.pt")))
         cache_features = bool(section.get("cache_features", True))
+        max_tiles = dataset_cfg.get("max_tiles")
         with TimedBlock(context.logger, "Preparation phase"):
             prepare_data_tiles(
                 img_dir=img_dir,
@@ -110,6 +112,7 @@ class PreparePhase(Phase):
                 tile_size=section.get("tile_size", 512),
                 cache_features=cache_features,
                 workers=section.get("workers"),
+                max_tiles=max_tiles,
                 logger=context.logger,
             )
         after_count = len(glob.glob(os.path.join(output_dir, "*.pt")))

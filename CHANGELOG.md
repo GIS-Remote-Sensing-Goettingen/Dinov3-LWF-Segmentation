@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-06
+### Added
+- Respect `dataset.max_tiles` during preparation to avoid tiling the full dataset when sampling (utils/data.py, pipeline/phases.py).
+
 ## [0.1.0] - 2026-02-06
 ### Added
 - Phase-based orchestration with MLflow-compatible logging to improve maintainability and tracking (main.py, utils/*.py, models/*.py, config.py).

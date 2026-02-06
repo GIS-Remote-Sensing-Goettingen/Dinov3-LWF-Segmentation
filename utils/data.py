@@ -8,11 +8,12 @@ from __future__ import annotations
 import concurrent.futures
 import gc
 import glob
+import multiprocessing
 import os
 import random
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence
 
 import numpy as np
 import rasterio
@@ -110,6 +111,9 @@ def process_image_tiles_no_features(
     label_path: str,
     output_dir: str,
     tile_size: int,
+    max_tiles: int | None = None,
+    counter: Any | None = None,
+    lock: Any | None = None,
 ) -> dict:
     """Process one image into tiles without DINO features.
 
@@ -118,6 +122,9 @@ def process_image_tiles_no_features(
         label_path (str): Path to the label raster.
         output_dir (str): Output directory for tiles.
         tile_size (int): Tile size in pixels.
+        max_tiles (int | None): Optional tile limit.
+        counter (multiprocessing.Value | None): Shared tile counter.
+        lock (multiprocessing.Lock | None): Shared lock for counter.
 
     Returns:
         dict: Status and tile counts for the processed image.
@@ -132,6 +139,9 @@ def process_image_tiles_no_features(
     tiles_written = 0
     for y in range(0, h, tile_size):
         for x in range(0, w, tile_size):
+            if max_tiles is not None and counter is not None:
+                if counter.value >= max_tiles:
+                    return {"status": "limit", "tiles_written": tiles_written}
             y_min, x_min = y, x
             y_max, x_max = y + tile_size, x + tile_size
             if y_max > h:
@@ -148,6 +158,11 @@ def process_image_tiles_no_features(
                 continue
             if np.isnan(img_crop).any():
                 img_crop = np.nan_to_num(img_crop)
+            if max_tiles is not None and counter is not None and lock is not None:
+                with lock:
+                    if counter.value >= max_tiles:
+                        return {"status": "limit", "tiles_written": tiles_written}
+                    counter.value += 1
             payload = {
                 "image": torch.from_numpy(img_crop),
                 "features": [],
@@ -287,6 +302,7 @@ def prepare_data_tiles(
     tile_size: int = 512,
     cache_features: bool = True,
     workers: int | None = None,
+    max_tiles: int | None = None,
     logger: Optional["VerbosityLogger"] = None,
 ) -> None:
     """
@@ -302,6 +318,7 @@ def prepare_data_tiles(
         tile_size (int): Tile size in pixels.
         cache_features (bool): Whether to cache DINO features on disk.
         workers (int | None): Number of worker processes for tiling.
+        max_tiles (int | None): Optional tile limit for preparation.
         logger (Optional["VerbosityLogger"]): Logger instance.
 
     >>> # Light-touch doctest ensures function signature works by calling with
@@ -365,6 +382,13 @@ def prepare_data_tiles(
     existing = glob.glob(os.path.join(output_dir, "*.pt"))
     if existing:
         _log_info(f"[INFO] Found {len(existing)} existing tiles.")
+    if max_tiles is not None and max_tiles <= 0:
+        max_tiles = None
+    count_existing = cache_features
+    if max_tiles is not None and count_existing and existing:
+        if len(existing) >= max_tiles:
+            _log_info("Max tiles already satisfied by existing cache. Skipping tiling.")
+            return
     if workers is None:
         workers = 1
     if cache_features and workers > 1:
@@ -376,10 +400,19 @@ def prepare_data_tiles(
         processor = AutoImageProcessor.from_pretrained(model_name)
         model = AutoModel.from_pretrained(model_name).eval().to(device)
     image_paths = glob.glob(os.path.join(img_dir, "*.tif"))
+    if max_tiles is not None:
+        random.shuffle(image_paths)
     ps = 14 if "vitl14" in model_name else 16
     total_images = len(image_paths)
     start_time = time.time()
+    tiles_written = len(existing) if count_existing else 0
     if workers > 1 and not cache_features:
+        counter = None
+        lock = None
+        if max_tiles is not None:
+            manager = multiprocessing.Manager()
+            counter = manager.Value("i", tiles_written)
+            lock = manager.Lock()
         with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(
@@ -388,6 +421,9 @@ def prepare_data_tiles(
                     label_path,
                     output_dir,
                     tile_size,
+                    max_tiles,
+                    counter,
+                    lock,
                 ): img_path
                 for img_path in image_paths
             }
@@ -406,6 +442,9 @@ def prepare_data_tiles(
                 except Exception as exc:
                     _log_debug(f"Skipping corrupted image {basename}: {exc}")
                     continue
+                if result.get("status") == "limit":
+                    _log_info("Reached max tiles during multiprocessing. Stopping.")
+                    return
                 if result.get("status") != "ok":
                     _log_debug(
                         f"Skipping corrupted image {basename}: {result.get('error')}."
@@ -421,6 +460,9 @@ def prepare_data_tiles(
     for idx, img_path in enumerate(
         tqdm(image_paths, desc="Processing Large Images"), start=1
     ):
+        if max_tiles is not None and tiles_written >= max_tiles:
+            _log_info("Reached max tiles. Stopping tiling.")
+            return
         basename = os.path.splitext(os.path.basename(img_path))[0]
         elapsed = time.time() - start_time
         eta = _format_eta((elapsed / max(1, idx)) * (total_images - idx))
@@ -436,6 +478,9 @@ def prepare_data_tiles(
         H, W, _ = full_img.shape
         for y in range(0, H, tile_size):
             for x in range(0, W, tile_size):
+                if max_tiles is not None and tiles_written >= max_tiles:
+                    _log_info("Reached max tiles. Stopping tiling.")
+                    return
                 y_min, x_min = y, x
                 y_max, x_max = y + tile_size, x + tile_size
                 if y_max > H:
@@ -476,6 +521,7 @@ def prepare_data_tiles(
                     torch.save(payload, temp_path)
                     os.rename(temp_path, save_path)
                     del feats, payload, img_crop, lbl_crop
+                    tiles_written += 1
                 except RuntimeError as e:
                     if "CUDA" in str(e):
                         del img_crop
