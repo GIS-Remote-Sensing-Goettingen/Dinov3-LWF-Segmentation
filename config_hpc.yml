@@ -34,7 +34,7 @@ model:
   dino_channels: 1024
 
 prepare:
-  enable: true
+  enable: false
   tile_size: 512
   device: cuda
   cache_features: false
@@ -45,7 +45,7 @@ verify:
   workers: 8
 
 train:
-  enable: true
+  enable: false
   device: cuda
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
   weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/
@@ -74,7 +74,7 @@ inference:
   output_dir: test/
   output_suffix: _pred.tif
   glob: "*.tif"
-  checkpoint: weights/unet_best.pth
+  checkpoint: weights/unet_lite_best.pth
   tile_size: 512
   overlap: 0.25
   tta:
