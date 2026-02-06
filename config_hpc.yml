@@ -64,9 +64,9 @@ train:
   epoch_plot_dir: output/plot
   epoch_plot_cmap: tab20
   loss:
-    ce_weight: 0.5
+    ce_weight: 1.0
     dice_weight: 1.0
-    aux_weight: 0.5
+    aux_weight: 0.4
 
 inference:
   enable: true
