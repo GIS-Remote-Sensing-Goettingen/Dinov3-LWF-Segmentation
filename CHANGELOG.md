@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-02-06
+### Changed
+- Restore HPC training defaults while keeping 1024 tile size for preparation (config_hpc.yml).
+
 ## [0.1.1] - 2026-02-06
 ### Added
 - Respect `dataset.max_tiles` during preparation to avoid tiling the full dataset when sampling (utils/data.py, pipeline/phases.py).

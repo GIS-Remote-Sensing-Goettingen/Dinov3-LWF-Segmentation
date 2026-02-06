@@ -16,7 +16,7 @@ paths:
 
 dataset:
   cache_features: false
-  max_tiles: 500
+  max_tiles: 1000
   augmentations:
     enable: true
     hflip: true
@@ -49,12 +49,12 @@ train:
   device: cuda
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
   weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/
-  batch_size: 8
-  epochs: 50
+  batch_size: 32
+  epochs: 300
   muon_lr: 0.02
   adamw_lr: 0.001
   momentum: 0.95
-  patience: 30
+  patience: 300
   val_fraction: 0.2
   num_workers: 4
   grad_accum_steps: 1
