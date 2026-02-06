@@ -45,6 +45,7 @@ from .inference_utils import (
     build_dashboard,
     build_tta_transforms,
     compute_attention_maps,
+    compute_gradcam_map,
     compute_xai_maps,
     overlay_heatmap,
     upsample_map,
@@ -756,7 +757,7 @@ class InferencePhase(Phase):
                 if explain_enabled and plot_every_n and index % plot_every_n == 0:
                     try:
                         rgb = np.clip(img, 0, 255).astype(np.uint8)
-                        attn_cls, attn_rollout = compute_attention_maps(
+                        attn_cls, attn_rollout, had_attn = compute_attention_maps(
                             img.astype(np.float32),
                             backbone,
                             processor,
@@ -764,6 +765,20 @@ class InferencePhase(Phase):
                             ps,
                             logger=context.logger,
                         )
+                        if not had_attn:
+                            gradcam = compute_gradcam_map(
+                                img.astype(np.float32),
+                                backbone,
+                                head,
+                                processor,
+                                device,
+                                model_cfg["layers"],
+                                ps,
+                                class_index,
+                                logger=context.logger,
+                            )
+                            attn_cls = gradcam
+                            attn_rollout = gradcam
                         attn_cls = upsample_map(attn_cls, orig_h, orig_w)
                         attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
                         conf, ent, class_prob = compute_xai_maps(
@@ -895,7 +910,7 @@ class InferencePhase(Phase):
                     ):
                         try:
                             rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
-                            attn_cls, attn_rollout = compute_attention_maps(
+                            attn_cls, attn_rollout, had_attn = compute_attention_maps(
                                 img_tile_raw.astype(np.float32),
                                 backbone,
                                 processor,
@@ -903,6 +918,20 @@ class InferencePhase(Phase):
                                 ps,
                                 logger=context.logger,
                             )
+                            if not had_attn:
+                                gradcam = compute_gradcam_map(
+                                    img_tile_raw.astype(np.float32),
+                                    backbone,
+                                    head,
+                                    processor,
+                                    device,
+                                    model_cfg["layers"],
+                                    ps,
+                                    class_index,
+                                    logger=context.logger,
+                                )
+                                attn_cls = gradcam
+                                attn_rollout = gradcam
                             attn_cls = upsample_map(attn_cls, orig_h, orig_w)
                             attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
                             conf, ent, class_prob = compute_xai_maps(

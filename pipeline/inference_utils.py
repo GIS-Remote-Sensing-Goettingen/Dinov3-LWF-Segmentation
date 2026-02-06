@@ -132,7 +132,7 @@ def compute_attention_maps(
     device: torch.device,
     ps: int,
     logger: Any | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, bool]:
     """Compute CLS and rollout attention maps for a single image.
 
     Args:
@@ -144,7 +144,8 @@ def compute_attention_maps(
         logger (Any | None): Optional logger for fallback events.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: CLS and rollout attention maps.
+        tuple[np.ndarray, np.ndarray, bool]: CLS map, rollout map, and
+        a flag indicating whether attentions were available.
     """
 
     proc = processor
@@ -165,7 +166,7 @@ def compute_attention_maps(
             if logger:
                 logger.info("Backbone returned no attentions; using zeros.")
             zeros = np.zeros((hp, wp), dtype=np.float32)
-            return zeros, zeros
+            return zeros, zeros, False
         last = attentions[-1].mean(dim=1)
         cls_attn = last[:, 0, 1 + r_tokens :]
         cls_map = cls_attn.reshape(hp, wp).detach().cpu().numpy()
@@ -179,12 +180,89 @@ def compute_attention_maps(
             rollout = attn @ rollout
         rollout_cls = rollout[:, 0, 1 + r_tokens :].reshape(hp, wp)
         rollout_map = rollout_cls.detach().cpu().numpy()
-        return normalize_map(cls_map), normalize_map(rollout_map)
+        return normalize_map(cls_map), normalize_map(rollout_map), True
     except Exception:
         if logger:
             logger.info("Attention extraction failed; using zeros.")
         zeros = np.zeros((hp, wp), dtype=np.float32)
-        return zeros, zeros
+        return zeros, zeros, False
+
+
+def compute_gradcam_map(
+    image_hw3: np.ndarray,
+    backbone: torch.nn.Module,
+    head: torch.nn.Module,
+    processor: Any,
+    device: torch.device,
+    layers: list[int],
+    ps: int,
+    class_index: int,
+    logger: Any | None = None,
+) -> np.ndarray:
+    """Compute a Grad-CAM map using the DINO backbone and head.
+
+    Args:
+        image_hw3 (np.ndarray): Input image in HWC format.
+        backbone (torch.nn.Module): DINO backbone.
+        head (torch.nn.Module): Segmentation head.
+        processor (Any): Image processor.
+        device (torch.device): Device for inference.
+        layers (list[int]): Backbone layers used by the head.
+        ps (int): Patch size for the backbone.
+        class_index (int): Target class index for Grad-CAM.
+        logger (Any | None): Optional logger for errors.
+
+    Returns:
+        np.ndarray: Grad-CAM map in [0, 1].
+    """
+
+    inputs = processor(
+        images=image_hw3,
+        return_tensors="pt",
+        do_resize=False,
+        do_center_crop=False,
+    ).to(device)
+    R = getattr(backbone.config, "num_register_tokens", 0)
+    img_norm = (image_hw3.astype(np.float32) / 255.0).astype(np.float32)
+    img_t = torch.from_numpy(img_norm).permute(2, 0, 1).unsqueeze(0).to(device)
+    with torch.enable_grad():
+        backbone.zero_grad(set_to_none=True)
+        head.zero_grad(set_to_none=True)
+        out = backbone(**inputs, output_hidden_states=True)
+        hidden_states = out.hidden_states
+        _, _, h_proc, w_proc = inputs["pixel_values"].shape
+        hp, wp = h_proc // ps, w_proc // ps
+        feat_maps = []
+        cam_layer = layers[-1]
+        cam_feature = None
+        for layer_idx in layers:
+            layer_output = hidden_states[layer_idx]
+            patch_tokens = layer_output[:, 1 + R :, :]
+            feats = patch_tokens.reshape(1, hp, wp, -1).permute(0, 3, 1, 2)
+            if layer_idx == cam_layer:
+                cam_feature = feats
+                cam_feature.retain_grad()
+            feat_maps.append(feats)
+        if cam_feature is None:
+            if logger:
+                logger.info("Grad-CAM layer not found; using zeros.")
+            return np.zeros((hp, wp), dtype=np.float32)
+        logits = head(img_t, feat_maps)
+        if logits.dim() == 4:
+            target = logits[:, class_index].mean()
+        else:
+            target = logits.mean()
+        target.backward()
+        grads = cam_feature.grad
+        if grads is None:
+            if logger:
+                logger.info("Grad-CAM gradients missing; using zeros.")
+            return np.zeros((hp, wp), dtype=np.float32)
+        weights = grads.mean(dim=(2, 3), keepdim=True)
+        cam = (weights * cam_feature).sum(dim=1)
+        cam = torch.relu(cam)
+        cam_map = cam.squeeze(0).detach().cpu().numpy()
+        return normalize_map(cam_map)
 
 
 def build_dashboard(

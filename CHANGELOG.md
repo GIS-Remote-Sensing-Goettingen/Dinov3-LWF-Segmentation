@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+- Rule: Every completed task must create a new version entry and move changes from Unreleased into that release.
+
+## [0.1.0] - 2026-02-06
 - Description: Refactored the pipeline orchestration with phases, hooks, and MLflow-compatible file logging.
 - file touched: main.py, utils/*.py, models/*.py, config.py
 - reason: Improve maintainability, extensibility, and tracking for research workflows.
@@ -37,6 +40,10 @@
 - file touched: pipeline/phases.py, config_*.yml
 - reason: Provide visual training feedback each epoch.
 - problems fixed: Missing qualitative monitoring of segmentation outputs.
+- Description: Add Grad-CAM fallback for inference attention maps.
+- file touched: pipeline/inference_utils.py, pipeline/phases.py
+- reason: Ensure explainability plots remain available when attentions are missing.
+- problems fixed: Attention maps returning zeros for DINO backbones without attentions.
 
 EXAMPLE
 ## [0.0.1]
