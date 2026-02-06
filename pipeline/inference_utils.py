@@ -131,6 +131,7 @@ def compute_attention_maps(
     processor: Any,
     device: torch.device,
     ps: int,
+    logger: Any | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute CLS and rollout attention maps for a single image.
 
@@ -140,6 +141,7 @@ def compute_attention_maps(
         processor (object): Image processor.
         device (torch.device): Device for inference.
         ps (int): Patch size for the backbone.
+        logger (Any | None): Optional logger for fallback events.
 
     Returns:
         tuple[np.ndarray, np.ndarray]: CLS and rollout attention maps.
@@ -153,25 +155,36 @@ def compute_attention_maps(
         do_center_crop=False,
     ).to(device)
     r_tokens = getattr(backbone.config, "num_register_tokens", 0)
-    with torch.no_grad():
-        out = backbone(**inputs, output_attentions=True)
-    attentions = out.attentions
-    last = attentions[-1].mean(dim=1)
-    cls_attn = last[:, 0, 1 + r_tokens :]
     _, _, h_proc, w_proc = inputs["pixel_values"].shape
     hp, wp = h_proc // ps, w_proc // ps
-    cls_map = cls_attn.reshape(hp, wp).detach().cpu().numpy()
-    tokens = last.shape[-1]
-    rollout = torch.eye(tokens, device=last.device).unsqueeze(0)
-    rollout = rollout.repeat(last.shape[0], 1, 1)
-    for layer in attentions:
-        attn = layer.mean(dim=1)
-        attn = attn + torch.eye(tokens, device=attn.device)
-        attn = attn / attn.sum(dim=-1, keepdim=True)
-        rollout = attn @ rollout
-    rollout_cls = rollout[:, 0, 1 + r_tokens :].reshape(hp, wp)
-    rollout_map = rollout_cls.detach().cpu().numpy()
-    return normalize_map(cls_map), normalize_map(rollout_map)
+    try:
+        with torch.no_grad():
+            out = backbone(**inputs, output_attentions=True)
+        attentions = out.attentions
+        if attentions is None:
+            if logger:
+                logger.info("Backbone returned no attentions; using zeros.")
+            zeros = np.zeros((hp, wp), dtype=np.float32)
+            return zeros, zeros
+        last = attentions[-1].mean(dim=1)
+        cls_attn = last[:, 0, 1 + r_tokens :]
+        cls_map = cls_attn.reshape(hp, wp).detach().cpu().numpy()
+        tokens = last.shape[-1]
+        rollout = torch.eye(tokens, device=last.device).unsqueeze(0)
+        rollout = rollout.repeat(last.shape[0], 1, 1)
+        for layer in attentions:
+            attn = layer.mean(dim=1)
+            attn = attn + torch.eye(tokens, device=attn.device)
+            attn = attn / attn.sum(dim=-1, keepdim=True)
+            rollout = attn @ rollout
+        rollout_cls = rollout[:, 0, 1 + r_tokens :].reshape(hp, wp)
+        rollout_map = rollout_cls.detach().cpu().numpy()
+        return normalize_map(cls_map), normalize_map(rollout_map)
+    except Exception:
+        if logger:
+            logger.info("Attention extraction failed; using zeros.")
+        zeros = np.zeros((hp, wp), dtype=np.float32)
+        return zeros, zeros
 
 
 def build_dashboard(

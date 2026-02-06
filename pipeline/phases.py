@@ -6,6 +6,7 @@ import glob
 import math
 import os
 import time
+import traceback
 from contextlib import nullcontext
 from typing import Any, cast
 
@@ -681,32 +682,46 @@ class InferencePhase(Phase):
                 with rasterio.open(out_path, "w", **profile) as dst:
                     dst.write(pred, 1)
                 if explain_enabled and plot_every_n and index % plot_every_n == 0:
-                    rgb = np.clip(img, 0, 255).astype(np.uint8)
-                    attn_cls, attn_rollout = compute_attention_maps(
-                        img.astype(np.float32), backbone, processor, device, ps
-                    )
-                    attn_cls = upsample_map(attn_cls, orig_h, orig_w)
-                    attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
-                    conf, ent, class_prob = compute_xai_maps(probs_accum, class_index)
-                    overlay_pred = overlay_heatmap(
-                        rgb,
-                        pred.astype(np.float32) / max(1, model_cfg["num_classes"] - 1),
-                    )
-                    overlay_attn = overlay_heatmap(rgb, attn_cls)
-                    plot_path = os.path.join(plots_dir, f"{base}_dashboard.png")
-                    build_dashboard(
-                        plot_path,
-                        rgb,
-                        pred,
-                        conf,
-                        ent,
-                        class_prob,
-                        attn_cls,
-                        attn_rollout,
-                        overlay_pred,
-                        overlay_attn,
-                        layout=layout,
-                    )
+                    try:
+                        rgb = np.clip(img, 0, 255).astype(np.uint8)
+                        attn_cls, attn_rollout = compute_attention_maps(
+                            img.astype(np.float32),
+                            backbone,
+                            processor,
+                            device,
+                            ps,
+                            logger=context.logger,
+                        )
+                        attn_cls = upsample_map(attn_cls, orig_h, orig_w)
+                        attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
+                        conf, ent, class_prob = compute_xai_maps(
+                            probs_accum, class_index
+                        )
+                        overlay_pred = overlay_heatmap(
+                            rgb,
+                            pred.astype(np.float32)
+                            / max(1, model_cfg["num_classes"] - 1),
+                        )
+                        overlay_attn = overlay_heatmap(rgb, attn_cls)
+                        plot_path = os.path.join(plots_dir, f"{base}_dashboard.png")
+                        build_dashboard(
+                            plot_path,
+                            rgb,
+                            pred,
+                            conf,
+                            ent,
+                            class_prob,
+                            attn_cls,
+                            attn_rollout,
+                            overlay_pred,
+                            overlay_attn,
+                            layout=layout,
+                        )
+                    except Exception:
+                        context.logger.error(
+                            "XAI plotting failed for %s\n%s"
+                            % (base, traceback.format_exc())
+                        )
 
             for idx, tile_path in enumerate(tile_files, start=1):
                 context.logger.info(f"Running tile inference {idx}/{len(tile_files)}")
@@ -806,42 +821,49 @@ class InferencePhase(Phase):
                         and plot_every_n
                         and tile_counter % plot_every_n == 0
                     ):
-                        rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
-                        attn_cls, attn_rollout = compute_attention_maps(
-                            img_tile_raw.astype(np.float32),
-                            backbone,
-                            processor,
-                            device,
-                            ps,
-                        )
-                        attn_cls = upsample_map(attn_cls, orig_h, orig_w)
-                        attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
-                        conf, ent, class_prob = compute_xai_maps(
-                            tile_probs, class_index
-                        )
-                        pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
-                        overlay_pred = overlay_heatmap(
-                            rgb,
-                            pred_tile.astype(np.float32)
-                            / max(1, model_cfg["num_classes"] - 1),
-                        )
-                        overlay_attn = overlay_heatmap(rgb, attn_cls)
-                        plot_path = os.path.join(
-                            plots_dir, f"tile_y{y}_x{x}_dashboard.png"
-                        )
-                        build_dashboard(
-                            plot_path,
-                            rgb,
-                            pred_tile,
-                            conf,
-                            ent,
-                            class_prob,
-                            attn_cls,
-                            attn_rollout,
-                            overlay_pred,
-                            overlay_attn,
-                            layout=layout,
-                        )
+                        try:
+                            rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
+                            attn_cls, attn_rollout = compute_attention_maps(
+                                img_tile_raw.astype(np.float32),
+                                backbone,
+                                processor,
+                                device,
+                                ps,
+                                logger=context.logger,
+                            )
+                            attn_cls = upsample_map(attn_cls, orig_h, orig_w)
+                            attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
+                            conf, ent, class_prob = compute_xai_maps(
+                                tile_probs, class_index
+                            )
+                            pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
+                            overlay_pred = overlay_heatmap(
+                                rgb,
+                                pred_tile.astype(np.float32)
+                                / max(1, model_cfg["num_classes"] - 1),
+                            )
+                            overlay_attn = overlay_heatmap(rgb, attn_cls)
+                            plot_path = os.path.join(
+                                plots_dir, f"tile_y{y}_x{x}_dashboard.png"
+                            )
+                            build_dashboard(
+                                plot_path,
+                                rgb,
+                                pred_tile,
+                                conf,
+                                ent,
+                                class_prob,
+                                attn_cls,
+                                attn_rollout,
+                                overlay_pred,
+                                overlay_attn,
+                                layout=layout,
+                            )
+                        except Exception:
+                            context.logger.error(
+                                "XAI plotting failed for tile y=%s x=%s\n%s"
+                                % (y, x, traceback.format_exc())
+                            )
                     prob_accum[:, y:y_max, x:x_max] += tile_probs
                     count_accum[y:y_max, x:x_max] += 1
                     if tile_counter % 50 == 0 or tile_counter == total_tiles:
