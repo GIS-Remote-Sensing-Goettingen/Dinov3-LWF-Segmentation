@@ -8,6 +8,7 @@ from __future__ import annotations
 import concurrent.futures
 import gc
 import glob
+import json
 import multiprocessing
 import os
 import random
@@ -31,6 +32,242 @@ from transformers import AutoImageProcessor, AutoModel
 
 if TYPE_CHECKING:
     from utils.logging import VerbosityLogger
+
+
+CACHE_META_FILENAME = "cache_meta.json"
+
+
+def _cache_subdir_name(tile_size: int, cache_features: bool) -> str:
+    """Build a cache subdirectory name for tile size and feature mode.
+
+    Args:
+        tile_size (int): Tile size in pixels.
+        cache_features (bool): Whether features are cached.
+
+    Returns:
+        str: Subdirectory name.
+
+    Examples:
+        >>> _cache_subdir_name(512, True)
+        'tiles_512_feat'
+        >>> _cache_subdir_name(1024, False)
+        'tiles_1024_nofeat'
+    """
+
+    suffix = "feat" if cache_features else "nofeat"
+    return f"tiles_{tile_size}_{suffix}"
+
+
+def _cache_meta_path(cache_dir: str) -> str:
+    """Return the metadata path for a cache directory.
+
+    Args:
+        cache_dir (str): Cache directory path.
+
+    Returns:
+        str: Metadata file path.
+
+    Examples:
+        >>> _cache_meta_path("/tmp/cache")
+        '/tmp/cache/cache_meta.json'
+    """
+
+    return os.path.join(cache_dir, CACHE_META_FILENAME)
+
+
+def _load_cache_metadata(cache_dir: str) -> dict[str, Any] | None:
+    """Load cache metadata if present.
+
+    Args:
+        cache_dir (str): Cache directory path.
+
+    Returns:
+        dict[str, Any] | None: Metadata if available.
+
+    Examples:
+        >>> _load_cache_metadata("/tmp/does_not_exist") is None
+        True
+    """
+
+    meta_path = _cache_meta_path(cache_dir)
+    if not os.path.exists(meta_path):
+        return None
+    with open(meta_path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _write_cache_metadata(
+    cache_dir: str,
+    tile_size: int,
+    cache_features: bool,
+    model_name: str | None,
+    layers: Sequence[int] | None,
+) -> None:
+    """Write cache metadata for a tile directory.
+
+    Args:
+        cache_dir (str): Cache directory path.
+        tile_size (int): Tile size in pixels.
+        cache_features (bool): Whether features are cached.
+        model_name (str | None): Backbone model name.
+        layers (Sequence[int] | None): Backbone layer indices.
+
+    Returns:
+        None: Metadata is written to disk.
+    """
+
+    meta = {
+        "tile_size": tile_size,
+        "cache_features": cache_features,
+        "model_name": model_name,
+        "layers": list(layers) if layers is not None else None,
+    }
+    meta_path = _cache_meta_path(cache_dir)
+    with open(meta_path, "w", encoding="utf-8") as handle:
+        json.dump(meta, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def _validate_cache_metadata(
+    meta: dict[str, Any],
+    tile_size: int | None,
+    cache_features: bool | None,
+    model_name: str | None,
+    layers: Sequence[int] | None,
+) -> None:
+    """Validate cache metadata against expected settings.
+
+    Args:
+        meta (dict[str, Any]): Metadata loaded from cache.
+        tile_size (int | None): Expected tile size.
+        cache_features (bool | None): Expected cache_features setting.
+        model_name (str | None): Expected model name.
+        layers (Sequence[int] | None): Expected backbone layers.
+
+    Raises:
+        ValueError: If a metadata value does not match expectations.
+    """
+
+    mismatches = []
+    if tile_size is not None and meta.get("tile_size") != tile_size:
+        mismatches.append(f"tile_size={meta.get('tile_size')} expected {tile_size}")
+    if cache_features is not None and meta.get("cache_features") != cache_features:
+        mismatches.append(
+            f"cache_features={meta.get('cache_features')} expected {cache_features}"
+        )
+    if model_name is not None and meta.get("model_name") != model_name:
+        mismatches.append(f"model_name={meta.get('model_name')} expected {model_name}")
+    if layers is not None and meta.get("layers") != list(layers):
+        mismatches.append(f"layers={meta.get('layers')} expected {list(layers)}")
+    if mismatches:
+        raise ValueError("Cache metadata mismatch: " + "; ".join(mismatches))
+
+
+def resolve_cache_dir_for_prepare(
+    base_dir: str,
+    tile_size: int,
+    cache_features: bool,
+    model_name: str,
+    layers: Sequence[int],
+    logger: Optional["VerbosityLogger"] = None,
+) -> str:
+    """Return the cache directory for prepare, creating it if needed.
+
+    Args:
+        base_dir (str): Base cache directory.
+        tile_size (int): Tile size in pixels.
+        cache_features (bool): Whether features are cached.
+        model_name (str): Backbone model name.
+        layers (Sequence[int]): Backbone layer indices.
+        logger (VerbosityLogger | None): Optional logger.
+
+    Returns:
+        str: Resolved cache directory.
+    """
+
+    meta = _load_cache_metadata(base_dir)
+    if meta is not None:
+        _validate_cache_metadata(meta, tile_size, cache_features, model_name, layers)
+        return base_dir
+
+    cache_dir = os.path.join(base_dir, _cache_subdir_name(tile_size, cache_features))
+    os.makedirs(cache_dir, exist_ok=True)
+    meta = _load_cache_metadata(cache_dir)
+    if meta is not None:
+        _validate_cache_metadata(meta, tile_size, cache_features, model_name, layers)
+    else:
+        _write_cache_metadata(cache_dir, tile_size, cache_features, model_name, layers)
+    if logger and glob.glob(os.path.join(base_dir, "*.pt")):
+        logger.info(
+            "Legacy cached tiles detected in %s; writing new tiles to %s."
+            % (base_dir, cache_dir)
+        )
+    return cache_dir
+
+
+def resolve_cache_dir_for_train(
+    base_dir: str,
+    tile_size: int | None,
+    cache_features: bool | None,
+    logger: Optional["VerbosityLogger"] = None,
+) -> str:
+    """Return the cache directory for training/verification.
+
+    Args:
+        base_dir (str): Base cache directory.
+        tile_size (int | None): Expected tile size.
+        cache_features (bool | None): Expected cache_features setting.
+        logger (VerbosityLogger | None): Optional logger.
+
+    Returns:
+        str: Resolved cache directory.
+
+    Raises:
+        ValueError: If multiple matching cache directories are found.
+    """
+
+    meta = _load_cache_metadata(base_dir)
+    if meta is not None:
+        _validate_cache_metadata(meta, tile_size, cache_features, None, None)
+        return base_dir
+
+    derived = None
+    if tile_size is not None and cache_features is not None:
+        derived = os.path.join(base_dir, _cache_subdir_name(tile_size, cache_features))
+        if os.path.exists(derived):
+            meta = _load_cache_metadata(derived)
+            if meta is not None:
+                _validate_cache_metadata(meta, tile_size, cache_features, None, None)
+            return derived
+
+    cache_dirs = []
+    if os.path.isdir(base_dir):
+        for entry in os.scandir(base_dir):
+            if not entry.is_dir():
+                continue
+            meta = _load_cache_metadata(entry.path)
+            if meta is None:
+                continue
+            if tile_size is not None and meta.get("tile_size") != tile_size:
+                continue
+            if (
+                cache_features is not None
+                and meta.get("cache_features") != cache_features
+            ):
+                continue
+            cache_dirs.append(entry.path)
+    if len(cache_dirs) == 1:
+        if logger:
+            logger.info("Using cached tiles from %s." % cache_dirs[0])
+        return cache_dirs[0]
+    if len(cache_dirs) > 1:
+        raise ValueError(
+            "Multiple cached tile directories found; set prepare.tile_size "
+            "or point processed_dir to a specific cache directory."
+        )
+    if glob.glob(os.path.join(base_dir, "*.pt")):
+        return base_dir
+    return derived or base_dir
 
 
 def extract_multiscale_features(

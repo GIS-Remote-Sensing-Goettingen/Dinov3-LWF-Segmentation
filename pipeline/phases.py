@@ -30,6 +30,8 @@ from utils import (
     TimedBlock,
     extract_multiscale_features,
     prepare_data_tiles,
+    resolve_cache_dir_for_prepare,
+    resolve_cache_dir_for_train,
     verify_and_clean_dataset_fast,
 )
 
@@ -98,8 +100,17 @@ class PreparePhase(Phase):
         device = torch.device(section.get("device", DEFAULT_DEVICE))
         if context.dist_ctx.enabled:
             device = torch.device(f"cuda:{context.dist_ctx.local_rank}")
-        before_count = len(glob.glob(os.path.join(output_dir, "*.pt")))
         cache_features = bool(section.get("cache_features", True))
+        tile_size = section.get("tile_size", 512)
+        output_dir = resolve_cache_dir_for_prepare(
+            output_dir,
+            tile_size,
+            cache_features,
+            model_cfg["backbone"],
+            model_cfg["layers"],
+            context.logger,
+        )
+        before_count = len(glob.glob(os.path.join(output_dir, "*.pt")))
         max_tiles = dataset_cfg.get("max_tiles")
         with TimedBlock(context.logger, "Preparation phase"):
             prepare_data_tiles(
@@ -109,7 +120,7 @@ class PreparePhase(Phase):
                 model_name=model_cfg["backbone"],
                 layers=model_cfg["layers"],
                 device=device,
-                tile_size=section.get("tile_size", 512),
+                tile_size=tile_size,
                 cache_features=cache_features,
                 workers=section.get("workers"),
                 max_tiles=max_tiles,
@@ -146,8 +157,18 @@ class VerifyPhase(Phase):
         """
 
         section = context.config.get(self.config_key, {})
+        dataset_cfg = context.config.get("dataset", {})
+        prepare_cfg = context.config.get("prepare", {})
         processed_dir = resolve_path(
             context.config, section, "processed_dir", DEFAULT_PROCESSED_DIR
+        )
+        cache_features = dataset_cfg.get("cache_features")
+        tile_size = dataset_cfg.get("tile_size", prepare_cfg.get("tile_size"))
+        processed_dir = resolve_cache_dir_for_train(
+            processed_dir,
+            tile_size,
+            cache_features if cache_features is not None else None,
+            context.logger,
         )
         before_count = len(glob.glob(os.path.join(processed_dir, "*.pt")))
         with TimedBlock(context.logger, "Verification phase"):
@@ -207,6 +228,7 @@ class TrainPhase(Phase):
 
         section = context.config.get(self.config_key, {})
         dataset_cfg = context.config.get("dataset", {})
+        prepare_cfg = context.config.get("prepare", {})
         model_cfg = get_model_config(context.config)
         processed_dir = resolve_path(
             context.config, section, "processed_dir", DEFAULT_PROCESSED_DIR
@@ -218,6 +240,13 @@ class TrainPhase(Phase):
             device = torch.device(f"cuda:{context.dist_ctx.local_rank}")
         batch_size = section.get("batch_size", 4)
         cache_features = bool(dataset_cfg.get("cache_features", True))
+        tile_size = dataset_cfg.get("tile_size", prepare_cfg.get("tile_size"))
+        processed_dir = resolve_cache_dir_for_train(
+            processed_dir,
+            tile_size,
+            cache_features,
+            context.logger,
+        )
         max_tiles = dataset_cfg.get("max_tiles")
         context.logger.info(
             "Building dataloaders with batch_size=%s, num_workers=%s, "

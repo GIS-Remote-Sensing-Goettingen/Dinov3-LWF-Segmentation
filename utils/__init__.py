@@ -8,6 +8,8 @@ from .data import (
     PrecomputedDataset,
     extract_multiscale_features,
     prepare_data_tiles,
+    resolve_cache_dir_for_prepare,
+    resolve_cache_dir_for_train,
     subset_label_to_image_bounds,
     verify_and_clean_dataset_fast,
 )
@@ -23,6 +25,8 @@ __all__ = [
     "PrecomputedDataset",
     "extract_multiscale_features",
     "prepare_data_tiles",
+    "resolve_cache_dir_for_prepare",
+    "resolve_cache_dir_for_train",
     "subset_label_to_image_bounds",
     "verify_and_clean_dataset_fast",
     "EarlyStopping",

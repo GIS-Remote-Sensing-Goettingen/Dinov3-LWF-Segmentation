@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-02-06
+### Changed
+- Partition cached tiles by tile size/feature mode and auto-select the matching cache directory for training and verification (utils/data.py, pipeline/phases.py).
+
 ## [0.1.2] - 2026-02-06
 ### Changed
 - Restore HPC training defaults while keeping 1024 tile size for preparation (config_hpc.yml).
