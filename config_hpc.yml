@@ -35,7 +35,7 @@ model:
 
 prepare:
   enable: true
-  tile_size: 512
+  tile_size: 1024
   device: cuda
   cache_features: false
   workers: 16
@@ -77,8 +77,8 @@ inference:
   output_dir: test/
   output_suffix: _pred.tif
   glob: "*.tif"
-  checkpoint: weights/unet_lite_VALLOSS_0.4632_MIOU_0.7481_EPOCH_2.pth
-  tile_size: 512
+  checkpoint: weights/unet_lite_best.pth
+  tile_size: 1024
   overlap: 0.25
   tta:
     horizontal_flip: false
