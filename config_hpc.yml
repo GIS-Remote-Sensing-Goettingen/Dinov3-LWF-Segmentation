@@ -16,7 +16,7 @@ paths:
 
 dataset:
   cache_features: false
-  max_tiles: 1000
+  max_tiles: 2000
   augmentations:
     enable: true
     hflip: true
@@ -34,7 +34,7 @@ model:
   dino_channels: 1024
 
 prepare:
-  enable: ture
+  enable: true
   tile_size: 512
   device: cuda
   cache_features: false
@@ -50,7 +50,7 @@ train:
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
   weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/
   batch_size: 32
-  epochs: 300
+  epochs: 50
   muon_lr: 0.02
   adamw_lr: 0.001
   momentum: 0.95
@@ -64,9 +64,9 @@ train:
   epoch_plot_dir: output/plot
   epoch_plot_cmap: tab20
   loss:
-    ce_weight: 1.0
+    ce_weight: 0.5
     dice_weight: 1.0
-    aux_weight: 0.4
+    aux_weight: 0.5
 
 inference:
   enable: true
