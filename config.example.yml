@@ -62,6 +62,9 @@ train:
   grad_accum_steps: 1
   compile: false
   ema_decay: 0.0
+  epoch_plot: true
+  epoch_plot_dir: output/plot
+  epoch_plot_cmap: tab20
   loss:
     ce_weight: 1.0
     dice_weight: 1.0

@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import math
 import os
+import random
 import time
 import traceback
 from contextlib import nullcontext
@@ -305,6 +306,9 @@ class TrainPhase(Phase):
         grad_accum = max(1, section.get("grad_accum_steps", 1))
         log_batch_metrics = get_hook_option(context.config, "log_batch_metrics", False)
         log_batch_interval = get_hook_option(context.config, "log_batch_interval", 10)
+        plot_enabled = bool(section.get("epoch_plot", False))
+        plot_dir = section.get("epoch_plot_dir", os.path.join("output", "plot"))
+        plot_cmap = section.get("epoch_plot_cmap", "tab20")
 
         context.logger.info(f"Training for up to {epochs} epochs on device {device}.")
         best_miou = 0.0
@@ -466,6 +470,74 @@ class TrainPhase(Phase):
                         layers=model_cfg["layers"],
                         ps=ps,
                     )
+                    if (
+                        plot_enabled
+                        and val_loader is not None
+                        and context.dist_ctx.is_main
+                    ):
+                        os.makedirs(plot_dir, exist_ok=True)
+                        target_batch = random.randint(1, len(val_loader))
+                        sampled = None
+                        for batch_idx, (v_img, v_feats, v_y) in enumerate(
+                            val_loader, 1
+                        ):
+                            if batch_idx == target_batch:
+                                sampled = (v_img, v_feats, v_y)
+                                break
+                        if sampled is not None:
+                            v_img, v_feats, v_y = sampled
+                            v_img = v_img.to(device)
+                            v_y = v_y.to(device)
+                            if cache_features and v_feats:
+                                v_feats = move_features_to_device(v_feats, device)
+                            else:
+                                if backbone is None or processor is None:
+                                    processor = AutoImageProcessor.from_pretrained(
+                                        model_cfg["backbone"]
+                                    )
+                                    backbone = (
+                                        AutoModel.from_pretrained(model_cfg["backbone"])
+                                        .eval()
+                                        .to(device)
+                                    )
+                                v_feats = extract_multiscale_features_batch(
+                                    v_img,
+                                    backbone,
+                                    processor,
+                                    device,
+                                    model_cfg["layers"],
+                                    ps,
+                                )
+                            eval_call = cast(Any, eval_model)
+                            with torch.no_grad(), autocast:
+                                if hasattr(eval_call, "forward_with_aux"):
+                                    v_logits, _ = eval_call.forward_with_aux(
+                                        v_img, v_feats
+                                    )
+                                else:
+                                    v_logits = eval_call(v_img, v_feats)
+                                if v_logits.shape[-2:] != v_img.shape[-2:]:
+                                    v_logits = F.interpolate(
+                                        v_logits,
+                                        size=v_img.shape[-2:],
+                                        mode="bilinear",
+                                        align_corners=False,
+                                    )
+                            pred_mask = v_logits.argmax(dim=1).detach().cpu().numpy()
+                            gt_mask = v_y.detach().cpu().numpy()
+                            rgb = v_img.detach().cpu().numpy().transpose(0, 2, 3, 1)
+                            rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+                            sample_idx = random.randint(0, pred_mask.shape[0] - 1)
+                            out_path = os.path.join(
+                                plot_dir, f"epoch_{epoch + 1:04d}.png"
+                            )
+                            save_epoch_plot(
+                                out_path,
+                                rgb[sample_idx],
+                                gt_mask[sample_idx],
+                                pred_mask[sample_idx],
+                                plot_cmap,
+                            )
                     if context.dist_ctx.enabled:
                         loss_tensor = torch.tensor(
                             [val_loss, val_metrics["miou"]], device=device
@@ -887,3 +959,37 @@ class InferencePhase(Phase):
         metrics = {"tiles_total": float(total_tiles)}
         artifacts = {"output_tif": output_tif, "checkpoint": checkpoint}
         return PhaseOutcome(metrics=metrics, artifacts=artifacts)
+
+
+def save_epoch_plot(
+    output_path: str,
+    rgb: np.ndarray,
+    gt_mask: np.ndarray,
+    pred_mask: np.ndarray,
+    cmap: str,
+) -> None:
+    """Save a 1x3 epoch plot of RGB, ground truth, and prediction.
+
+    Args:
+        output_path (str): PNG output path.
+        rgb (np.ndarray): RGB image (H, W, 3).
+        gt_mask (np.ndarray): Ground-truth mask (H, W).
+        pred_mask (np.ndarray): Prediction mask (H, W).
+        cmap (str): Matplotlib colormap name.
+    """
+
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axes[0].imshow(rgb)
+    axes[0].set_title("RGB")
+    axes[0].axis("off")
+    axes[1].imshow(gt_mask, cmap=cmap)
+    axes[1].set_title("Ground Truth")
+    axes[1].axis("off")
+    axes[2].imshow(pred_mask, cmap=cmap)
+    axes[2].set_title("Prediction")
+    axes[2].axis("off")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
