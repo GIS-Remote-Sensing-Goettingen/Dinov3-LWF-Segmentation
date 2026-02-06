@@ -164,7 +164,7 @@ def compute_attention_maps(
         attentions = out.attentions
         if attentions is None:
             if logger:
-                logger.info("Backbone returned no attentions; using zeros.")
+                logger.info("Backbone returned no attentions.")
             zeros = np.zeros((hp, wp), dtype=np.float32)
             return zeros, zeros, False
         last = attentions[-1].mean(dim=1)
@@ -183,7 +183,7 @@ def compute_attention_maps(
         return normalize_map(cls_map), normalize_map(rollout_map), True
     except Exception:
         if logger:
-            logger.info("Attention extraction failed; using zeros.")
+            logger.info("Attention extraction failed.")
         zeros = np.zeros((hp, wp), dtype=np.float32)
         return zeros, zeros, False
 

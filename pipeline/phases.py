@@ -766,6 +766,7 @@ class InferencePhase(Phase):
                             logger=context.logger,
                         )
                         if not had_attn:
+                            context.logger.info(f"Using Grad-CAM fallback for {base}.")
                             gradcam = compute_gradcam_map(
                                 img.astype(np.float32),
                                 backbone,
@@ -919,6 +920,9 @@ class InferencePhase(Phase):
                                 logger=context.logger,
                             )
                             if not had_attn:
+                                context.logger.info(
+                                    f"Using Grad-CAM fallback for tile y={y} x={x}."
+                                )
                                 gradcam = compute_gradcam_map(
                                     img_tile_raw.astype(np.float32),
                                     backbone,
