@@ -93,6 +93,12 @@ train:
   grad_accum_steps: 1
   compile: false
   ema_decay: 0.0
+  epoch_plot: true
+  epoch_plot_dir: output/plot
+  epoch_plot_cmap: tab20
+  epoch_plot_pairs: 4
+  epoch_plot_seed_offset: 1000
+  epoch_plot_metric_class_index: 1
   loss:
     ce_weight: 1.0
     dice_weight: 1.0
@@ -158,7 +164,7 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, and validation metrics (mIoU/mDice) that drive early stopping.
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, and per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1.
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
 
 ## Testing

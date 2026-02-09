@@ -4,6 +4,8 @@
 - Every completed task must create a new version entry and move changes from Unreleased into that release.
 
 ## [Unreleased]
+### Changed
+- Replace single validation epoch tile plot with deterministic multi-tile grids (4 tile pairs / 8 subplots by default), showing GT overlays and prediction tiles with per-tile IoU/F1 titles (pipeline/phases.py, config_*.yml, README.md).
 
 ## [0.1.4] - 2026-02-09
 ### Changed

@@ -362,6 +362,9 @@ class TrainPhase(Phase):
         plot_enabled = bool(section.get("epoch_plot", False))
         plot_dir = section.get("epoch_plot_dir", os.path.join("output", "plot"))
         plot_cmap = section.get("epoch_plot_cmap", "tab20")
+        plot_pairs = max(1, int(section.get("epoch_plot_pairs", 4)))
+        plot_seed_offset = int(section.get("epoch_plot_seed_offset", 1000))
+        plot_metric_class_index = int(section.get("epoch_plot_metric_class_index", 1))
 
         context.logger.info(f"Training for up to {epochs} epochs on device {device}.")
         best_miou = 0.0
@@ -732,68 +735,142 @@ class TrainPhase(Phase):
                         and context.dist_ctx.is_main
                     ):
                         os.makedirs(plot_dir, exist_ok=True)
-                        target_batch = random.randint(1, len(val_loader))
-                        sampled = None
-                        for batch_idx, (v_img, v_feats, v_y) in enumerate(
-                            val_loader, 1
-                        ):
-                            if batch_idx == target_batch:
-                                sampled = (v_img, v_feats, v_y)
-                                break
-                        if sampled is not None:
-                            v_img, v_feats, v_y = sampled
-                            v_img = v_img.to(device)
-                            v_y = v_y.to(device)
-                            if cache_features and v_feats:
-                                v_feats = move_features_to_device(v_feats, device)
-                            else:
-                                if backbone is None or processor is None:
-                                    processor = AutoImageProcessor.from_pretrained(
-                                        model_cfg["backbone"]
-                                    )
-                                    backbone = (
-                                        AutoModel.from_pretrained(model_cfg["backbone"])
-                                        .eval()
-                                        .to(device)
-                                    )
-                                v_feats = extract_multiscale_features_batch(
-                                    v_img,
-                                    backbone,
-                                    processor,
-                                    device,
-                                    model_cfg["layers"],
-                                    ps,
-                                )
+                        val_count = dataset_size(val_loader.dataset)
+                        if val_count <= 0:
+                            context.logger.error(
+                                "Epoch validation plotting skipped: empty validation dataset."
+                            )
+                        else:
+                            desired_pairs = min(plot_pairs, val_count)
+                            seed_value = int(
+                                context.config.get("resources", {}).get("seed", 1337)
+                            )
+                            rng = random.Random(seed_value + plot_seed_offset + epoch)
+                            selected_global_indices = set(
+                                rng.sample(range(val_count), k=desired_pairs)
+                            )
+                            sample_plots: list[dict[str, Any]] = []
                             eval_call = cast(Any, eval_model)
-                            with torch.no_grad(), autocast:
-                                if hasattr(eval_call, "forward_with_aux"):
-                                    v_logits, _ = eval_call.forward_with_aux(
-                                        v_img, v_feats
+                            running_idx = 0
+                            for v_img, v_feats, v_y in val_loader:
+                                batch_size = int(v_img.shape[0])
+                                wanted_local = [
+                                    local_idx
+                                    for local_idx in range(batch_size)
+                                    if (running_idx + local_idx)
+                                    in selected_global_indices
+                                ]
+                                running_idx += batch_size
+                                if not wanted_local:
+                                    if len(sample_plots) >= desired_pairs:
+                                        break
+                                    continue
+                                v_img = v_img.to(device)
+                                v_y = v_y.to(device)
+                                feats_device: list[torch.Tensor] = []
+                                if cache_features and v_feats:
+                                    feats_device = move_features_to_device(
+                                        v_feats, device
                                     )
-                                else:
-                                    v_logits = eval_call(v_img, v_feats)
-                                if v_logits.shape[-2:] != v_img.shape[-2:]:
-                                    v_logits = F.interpolate(
-                                        v_logits,
-                                        size=v_img.shape[-2:],
-                                        mode="bilinear",
-                                        align_corners=False,
+                                for local_idx in wanted_local:
+                                    sample_img = v_img[local_idx : local_idx + 1]
+                                    sample_gt = v_y[local_idx : local_idx + 1]
+                                    if cache_features and feats_device:
+                                        sample_feats = [
+                                            feat[local_idx : local_idx + 1]
+                                            for feat in feats_device
+                                        ]
+                                    else:
+                                        if backbone is None or processor is None:
+                                            processor = (
+                                                AutoImageProcessor.from_pretrained(
+                                                    model_cfg["backbone"]
+                                                )
+                                            )
+                                            backbone = (
+                                                AutoModel.from_pretrained(
+                                                    model_cfg["backbone"]
+                                                )
+                                                .eval()
+                                                .to(device)
+                                            )
+                                        sample_feats = (
+                                            extract_multiscale_features_batch(
+                                                sample_img,
+                                                backbone,
+                                                processor,
+                                                device,
+                                                model_cfg["layers"],
+                                                ps,
+                                            )
+                                        )
+                                    with torch.no_grad(), autocast:
+                                        if hasattr(eval_call, "forward_with_aux"):
+                                            sample_logits, _ = (
+                                                eval_call.forward_with_aux(
+                                                    sample_img, sample_feats
+                                                )
+                                            )
+                                        else:
+                                            sample_logits = eval_call(
+                                                sample_img, sample_feats
+                                            )
+                                        if (
+                                            sample_logits.shape[-2:]
+                                            != sample_img.shape[-2:]
+                                        ):
+                                            sample_logits = F.interpolate(
+                                                sample_logits,
+                                                size=sample_img.shape[-2:],
+                                                mode="bilinear",
+                                                align_corners=False,
+                                            )
+                                    pred_mask = (
+                                        sample_logits.argmax(dim=1)
+                                        .detach()
+                                        .cpu()
+                                        .numpy()[0]
                                     )
-                            pred_mask = v_logits.argmax(dim=1).detach().cpu().numpy()
-                            gt_mask = v_y.detach().cpu().numpy()
-                            rgb = v_img.detach().cpu().numpy().transpose(0, 2, 3, 1)
-                            rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-                            sample_idx = random.randint(0, pred_mask.shape[0] - 1)
-                            out_path = os.path.join(
-                                plot_dir, f"epoch_{epoch + 1:04d}.png"
-                            )
-                            save_epoch_plot(
-                                out_path,
-                                rgb[sample_idx],
-                                gt_mask[sample_idx],
-                                pred_mask[sample_idx],
-                                plot_cmap,
-                            )
+                                    gt_mask = sample_gt.detach().cpu().numpy()[0]
+                                    rgb = (
+                                        sample_img.detach()
+                                        .cpu()
+                                        .numpy()
+                                        .transpose(0, 2, 3, 1)[0]
+                                    )
+                                    rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+                                    tile_iou, tile_f1 = compute_tile_iou_f1(
+                                        pred_mask,
+                                        gt_mask,
+                                        class_index=plot_metric_class_index,
+                                        ignore_index=loss_ignore_index,
+                                    )
+                                    sample_plots.append(
+                                        {
+                                            "rgb": rgb,
+                                            "gt_mask": gt_mask,
+                                            "pred_mask": pred_mask,
+                                            "iou": tile_iou,
+                                            "f1": tile_f1,
+                                        }
+                                    )
+                                    if len(sample_plots) >= desired_pairs:
+                                        break
+                                if len(sample_plots) >= desired_pairs:
+                                    break
+                            if sample_plots:
+                                out_path = os.path.join(
+                                    plot_dir, f"epoch_{epoch + 1:04d}.png"
+                                )
+                                save_epoch_plot(
+                                    out_path,
+                                    sample_plots,
+                                    plot_cmap,
+                                )
+                            else:
+                                context.logger.error(
+                                    "Epoch validation plotting skipped: no samples collected."
+                                )
                     if context.dist_ctx.enabled:
                         loss_tensor = torch.tensor(
                             [val_loss, val_metrics["miou"]], device=device
@@ -1307,33 +1384,81 @@ class InferencePhase(Phase):
 
 def save_epoch_plot(
     output_path: str,
-    rgb: np.ndarray,
-    gt_mask: np.ndarray,
-    pred_mask: np.ndarray,
+    samples: list[dict[str, Any]],
     cmap: str,
+    gt_overlay_alpha: float = 0.35,
 ) -> None:
-    """Save a 1x3 epoch plot of RGB, ground truth, and prediction.
+    """Save a per-epoch validation grid with GT overlays and predictions.
 
     Args:
         output_path (str): PNG output path.
-        rgb (np.ndarray): RGB image (H, W, 3).
-        gt_mask (np.ndarray): Ground-truth mask (H, W).
-        pred_mask (np.ndarray): Prediction mask (H, W).
+        samples (list[dict[str, Any]]): Plot samples with rgb/gt/pred/iou/f1 keys.
         cmap (str): Matplotlib colormap name.
+        gt_overlay_alpha (float): Alpha for GT overlay on RGB.
     """
 
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    axes[0].imshow(rgb)
-    axes[0].set_title("RGB")
-    axes[0].axis("off")
-    axes[1].imshow(gt_mask, cmap=cmap)
-    axes[1].set_title("Ground Truth")
-    axes[1].axis("off")
-    axes[2].imshow(pred_mask, cmap=cmap)
-    axes[2].set_title("Prediction")
-    axes[2].axis("off")
+    rows = len(samples)
+    if rows == 0:
+        return
+    fig, axes = plt.subplots(rows, 2, figsize=(10, rows * 3.6))
+    if rows == 1:
+        axes = np.expand_dims(axes, axis=0)
+    axes_arr = np.asarray(axes, dtype=object)
+    for row_idx, sample in enumerate(samples):
+        rgb = sample["rgb"]
+        gt_mask = sample["gt_mask"]
+        pred_mask = sample["pred_mask"]
+        iou = float(sample["iou"])
+        f1 = float(sample["f1"])
+        left_ax = axes_arr[row_idx, 0]
+        right_ax = axes_arr[row_idx, 1]
+        left_ax.imshow(rgb)
+        gt_overlay = np.ma.masked_where(gt_mask == 0, gt_mask)
+        left_ax.imshow(gt_overlay, cmap=cmap, alpha=gt_overlay_alpha)
+        left_ax.set_title(f"Tile {row_idx + 1} | GT overlay")
+        left_ax.axis("off")
+        right_ax.imshow(pred_mask, cmap=cmap)
+        right_ax.set_title(f"Tile {row_idx + 1} | Pred IoU={iou:.3f} F1={f1:.3f}")
+        right_ax.axis("off")
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
+
+
+def compute_tile_iou_f1(
+    pred_mask: np.ndarray,
+    gt_mask: np.ndarray,
+    class_index: int = 1,
+    ignore_index: int | None = None,
+) -> tuple[float, float]:
+    """Compute binary IoU and F1 for one validation tile.
+
+    Args:
+        pred_mask (np.ndarray): Predicted class mask.
+        gt_mask (np.ndarray): Ground-truth class mask.
+        class_index (int): Positive class index for binary metrics.
+        ignore_index (int | None): Optional label index ignored in metric counts.
+
+    Returns:
+        tuple[float, float]: IoU and F1 values for the selected class.
+    """
+
+    pred = pred_mask.astype(np.int64)
+    gt = gt_mask.astype(np.int64)
+    valid = np.ones_like(gt, dtype=bool)
+    if ignore_index is not None:
+        valid &= gt != int(ignore_index)
+    if not np.any(valid):
+        return 0.0, 0.0
+    pred_pos = pred[valid] == int(class_index)
+    gt_pos = gt[valid] == int(class_index)
+    tp = int(np.logical_and(pred_pos, gt_pos).sum())
+    fp = int(np.logical_and(pred_pos, np.logical_not(gt_pos)).sum())
+    fn = int(np.logical_and(np.logical_not(pred_pos), gt_pos).sum())
+    denom_iou = tp + fp + fn
+    iou = tp / denom_iou if denom_iou > 0 else 0.0
+    denom_f1 = 2 * tp + fp + fn
+    f1 = (2 * tp) / denom_f1 if denom_f1 > 0 else 0.0
+    return float(iou), float(f1)

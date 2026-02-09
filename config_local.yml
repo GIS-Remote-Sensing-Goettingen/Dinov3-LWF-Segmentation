@@ -70,6 +70,9 @@ train:
   epoch_plot: true
   epoch_plot_dir: output/plot
   epoch_plot_cmap: tab20
+  epoch_plot_pairs: 4
+  epoch_plot_seed_offset: 1000
+  epoch_plot_metric_class_index: 1
   loss:
     ce_weight: 1.0
     dice_weight: 1.0
