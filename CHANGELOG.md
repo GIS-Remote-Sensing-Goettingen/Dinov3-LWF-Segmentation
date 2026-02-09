@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-02-09
+### Changed
+- Add systemic numeric-stability controls (`train.stability`) and dataset semantic validation controls (`dataset.validation`) across config, runtime context, and docs.
+- Harden training/validation loops with fp32 loss under AMP, non-finite detection, gradient clipping, step accounting, and checkpoint gating when model state is non-finite.
+- Extend cache verification to remove unreadable, non-finite, or label-invalid tiles and report detailed verification counters.
+- Harden Muon optimizer and Newton-Schulz orthogonalization against non-finite gradients/updates while exposing per-step skip/update stats.
+
 ## [0.1.3] - 2026-02-06
 ### Changed
 - Partition cached tiles by tile size/feature mode and auto-select the matching cache directory for training and verification (utils/data.py, pipeline/phases.py).

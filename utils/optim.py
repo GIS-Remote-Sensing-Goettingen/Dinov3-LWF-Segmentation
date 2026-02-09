@@ -30,9 +30,14 @@ def zeropower_via_newtonschulz5(
 
     if G.ndim != 2:
         raise ValueError("Input must be a 2D matrix.")
+    if not torch.isfinite(G).all():
+        return torch.zeros_like(G)
     a, b, c = (3.4445, -4.7750, 2.0315)
-    X = G.bfloat16()
-    X /= X.norm() + eps
+    X = G.float()
+    norm = X.norm()
+    if not torch.isfinite(norm) or norm <= eps:
+        return torch.zeros_like(G)
+    X /= norm + eps
     transposed = False
     if G.size(0) > G.size(1):
         X = X.T
@@ -41,6 +46,8 @@ def zeropower_via_newtonschulz5(
         A = X @ X.T
         B = b * A + c * A @ A
         X = a * X + B @ X
+        if not torch.isfinite(X).all():
+            return torch.zeros_like(G)
     if transposed:
         X = X.T
     return X.to(G.dtype)
@@ -63,6 +70,7 @@ class Muon(optim.Optimizer):
         adamw_lr: float = 1e-4,
         adamw_betas: tuple[float, float] = (0.9, 0.95),
         adamw_wd: float = 0.01,
+        update_max_norm: float | None = None,
     ) -> None:
         """
         Build the Muon optimizer.
@@ -77,6 +85,7 @@ class Muon(optim.Optimizer):
             adamw_lr (float): Learning rate for AdamW updates.
             adamw_betas (tuple[float, float]): AdamW beta coefficients.
             adamw_wd (float): AdamW weight decay.
+            update_max_norm (float | None): Optional max norm for each Muon update.
 
         >>> _ = torch.manual_seed(0)
         >>> w = torch.nn.Parameter(torch.randn(2, 2))
@@ -94,8 +103,15 @@ class Muon(optim.Optimizer):
             adamw_lr=adamw_lr,
             adamw_betas=adamw_betas,
             adamw_wd=adamw_wd,
+            update_max_norm=update_max_norm,
         )
         super().__init__(params, defaults)
+        self.last_step_stats: dict[str, int] = {
+            "muon_params_skipped": 0,
+            "muon_params_updated": 0,
+            "adamw_params_skipped": 0,
+            "adamw_params_updated": 0,
+        }
 
     def step(self, closure=None) -> None:  # type: ignore[override]
         """
@@ -117,17 +133,29 @@ class Muon(optim.Optimizer):
 
         if closure is not None:
             _ = closure()
+        step_stats = {
+            "muon_params_skipped": 0,
+            "muon_params_updated": 0,
+            "adamw_params_skipped": 0,
+            "adamw_params_updated": 0,
+        }
         for group in self.param_groups:
             if group["adamw_params"] is not None:
-                self._step_adamw(group)
+                adamw_updated, adamw_skipped = self._step_adamw(group)
+                step_stats["adamw_params_updated"] += adamw_updated
+                step_stats["adamw_params_skipped"] += adamw_skipped
             lr = group["lr"]
             momentum = group["momentum"]
             nesterov = group["nesterov"]
             ns_steps = group["ns_steps"]
+            update_max_norm = group.get("update_max_norm")
             for p in group["params"]:
                 if p.grad is None:
                     continue
                 g = p.grad
+                if not torch.isfinite(g).all():
+                    step_stats["muon_params_skipped"] += 1
+                    continue
                 if g.ndim > 2:
                     g = g.view(g.size(0), -1)
                 state = self.state[p]
@@ -138,12 +166,24 @@ class Muon(optim.Optimizer):
                 else:
                     g = buf
                 g = zeropower_via_newtonschulz5(g, steps=ns_steps)
+                if not torch.isfinite(g).all():
+                    step_stats["muon_params_skipped"] += 1
+                    continue
+                if update_max_norm is not None and update_max_norm > 0:
+                    upd_norm = g.norm()
+                    if torch.isfinite(upd_norm) and upd_norm > update_max_norm:
+                        g = g * (float(update_max_norm) / (upd_norm.item() + 1e-12))
                 if g.shape != p.shape:
                     g = g.view_as(p)
                 p.data.add_(g, alpha=-lr)
+                if not torch.isfinite(p.data).all():
+                    step_stats["muon_params_skipped"] += 1
+                    continue
+                step_stats["muon_params_updated"] += 1
+        self.last_step_stats = step_stats
         return None
 
-    def _step_adamw(self, group) -> None:
+    def _step_adamw(self, group) -> tuple[int, int]:
         """
         Handle AdamW updates for the provided parameter subset.
 
@@ -155,16 +195,22 @@ class Muon(optim.Optimizer):
         >>> p.grad = torch.tensor([0.1, -0.2])
         >>> opt = Muon([base], adamw_params=[p])
         >>> opt._step_adamw(opt.param_groups[0])
+        (1, 0)
         """
 
         lr = group["adamw_lr"]
         beta1, beta2 = group["adamw_betas"]
         wd = group["adamw_wd"]
         eps = 1e-8
+        updated = 0
+        skipped = 0
         for p in group["adamw_params"]:
             if p.grad is None:
                 continue
             g = p.grad
+            if not torch.isfinite(g).all():
+                skipped += 1
+                continue
             state = self.state[p]
             if "step" not in state:
                 state["step"] = 0
@@ -175,13 +221,19 @@ class Muon(optim.Optimizer):
             exp_avg.mul_(beta1).add_(g, alpha=1 - beta1)
             exp_avg_sq.mul_(beta2).addcmul_(g, g, value=1 - beta2)
             denom = exp_avg_sq.sqrt().add_(eps)
-            step_size = (
-                lr
-                * torch.sqrt(torch.tensor(1 - beta2 ** state["step"]))
-                / (1 - beta1 ** state["step"])
-            )
+            if not torch.isfinite(denom).all():
+                skipped += 1
+                continue
+            bias_correction1 = 1 - beta1 ** state["step"]
+            bias_correction2 = 1 - beta2 ** state["step"]
+            step_size = lr * (bias_correction2**0.5) / bias_correction1
             p.data.mul_(1 - lr * wd)
-            p.data.addcdiv_(exp_avg, denom, value=-step_size.item())
+            p.data.addcdiv_(exp_avg, denom, value=-step_size)
+            if not torch.isfinite(p.data).all():
+                skipped += 1
+                continue
+            updated += 1
+        return updated, skipped
 
 
 class EarlyStopping:

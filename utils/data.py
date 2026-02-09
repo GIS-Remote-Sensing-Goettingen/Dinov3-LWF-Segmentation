@@ -35,6 +35,111 @@ if TYPE_CHECKING:
 
 
 CACHE_META_FILENAME = "cache_meta.json"
+DEFAULT_DATASET_VALIDATION_CONFIG = {
+    "enabled": True,
+    "allowed_labels": (0, 1),
+    "ignore_index": 255,
+    "out_of_range_policy": "map_to_ignore",
+    "require_finite_features": True,
+    "require_finite_images": True,
+}
+
+
+def _normalize_dataset_validation_cfg(
+    validation_cfg: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return normalized dataset validation settings.
+
+    Args:
+        validation_cfg (Optional[dict[str, Any]]): Raw validation config.
+
+    Returns:
+        dict[str, Any]: Normalized validation config.
+    """
+
+    cfg = dict(DEFAULT_DATASET_VALIDATION_CONFIG)
+    if validation_cfg:
+        cfg.update(validation_cfg)
+    allowed_raw = cfg.get("allowed_labels", (0, 1))
+    if isinstance(allowed_raw, (list, tuple, set)):
+        allowed_labels = tuple(sorted({int(v) for v in allowed_raw}))
+    else:
+        allowed_labels = (0, 1)
+    if not allowed_labels:
+        allowed_labels = (0, 1)
+    policy = str(cfg.get("out_of_range_policy", "map_to_ignore")).lower()
+    if policy not in {"map_to_ignore", "error"}:
+        policy = "map_to_ignore"
+    ignore_index = cfg.get("ignore_index", 255)
+    cfg["allowed_labels"] = allowed_labels
+    cfg["ignore_index"] = None if ignore_index is None else int(ignore_index)
+    cfg["out_of_range_policy"] = policy
+    cfg["enabled"] = bool(cfg.get("enabled", True))
+    cfg["require_finite_features"] = bool(cfg.get("require_finite_features", True))
+    cfg["require_finite_images"] = bool(cfg.get("require_finite_images", True))
+    return cfg
+
+
+def _label_validity_mask(
+    label: torch.Tensor,
+    allowed_labels: Sequence[int],
+) -> torch.Tensor:
+    """Build a mask of valid class labels.
+
+    Args:
+        label (torch.Tensor): Label tensor.
+        allowed_labels (Sequence[int]): Allowed class indices.
+
+    Returns:
+        torch.Tensor: Boolean mask where labels are valid.
+    """
+
+    mask = torch.zeros_like(label, dtype=torch.bool)
+    for cls in allowed_labels:
+        mask |= label == int(cls)
+    return mask
+
+
+def _sanitize_label_tensor(
+    label: torch.Tensor,
+    validation_cfg: dict[str, Any],
+    source: str,
+) -> torch.Tensor:
+    """Validate and optionally sanitize invalid label values.
+
+    Args:
+        label (torch.Tensor): Label tensor.
+        validation_cfg (dict[str, Any]): Normalized validation config.
+        source (str): Source identifier for error messages.
+
+    Returns:
+        torch.Tensor: Sanitized label tensor.
+
+    Raises:
+        ValueError: If invalid labels are found and policy is ``error``.
+    """
+
+    if not validation_cfg.get("enabled", True):
+        return label
+    label = label.long()
+    valid_mask = _label_validity_mask(label, validation_cfg["allowed_labels"])
+    if valid_mask.all():
+        return label
+    invalid_values = torch.unique(label[~valid_mask]).cpu().tolist()
+    policy = validation_cfg["out_of_range_policy"]
+    if policy == "error":
+        raise ValueError(
+            f"Invalid labels {invalid_values[:10]} in {source}; "
+            f"allowed={validation_cfg['allowed_labels']}"
+        )
+    ignore_index = validation_cfg.get("ignore_index")
+    if ignore_index is None:
+        raise ValueError(
+            f"Invalid labels {invalid_values[:10]} in {source} and no ignore_index set"
+        )
+    sanitized = label.clone()
+    sanitized[~valid_mask] = int(ignore_index)
+    return sanitized
 
 
 def _cache_subdir_name(tile_size: int, cache_features: bool) -> str:
@@ -485,11 +590,84 @@ def _check_single_file(file_path: str) -> str | None:
         return file_path
 
 
+def verify_tile_semantics(
+    file_path: str,
+    validation_cfg: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Validate readability + semantic integrity for one cached tile file.
+
+    Args:
+        file_path (str): Path to tile file.
+        validation_cfg (Optional[dict[str, Any]]): Dataset validation config.
+
+    Returns:
+        dict[str, Any]: Semantic validation result summary.
+    """
+
+    cfg = _normalize_dataset_validation_cfg(validation_cfg)
+    result = {
+        "path": file_path,
+        "valid": True,
+        "read_error": False,
+        "nonfinite_image": False,
+        "nonfinite_features": False,
+        "bad_labels": False,
+        "invalid_label_values": [],
+    }
+    try:
+        try:
+            data = torch.load(file_path, weights_only=False, map_location="cpu")
+        except TypeError:
+            data = torch.load(file_path, map_location="cpu")
+    except Exception:
+        result["valid"] = False
+        result["read_error"] = True
+        return result
+    if not cfg["enabled"]:
+        return result
+    image = data.get("image")
+    if image is None:
+        result["valid"] = False
+        result["nonfinite_image"] = True
+        return result
+    image_t = image if isinstance(image, torch.Tensor) else torch.as_tensor(image)
+    image_t = image_t.float()
+    if cfg["require_finite_images"] and not torch.isfinite(image_t).all():
+        result["valid"] = False
+        result["nonfinite_image"] = True
+    features = data.get("features", [])
+    if cfg["require_finite_features"]:
+        for feat in features:
+            feat_t = feat if isinstance(feat, torch.Tensor) else torch.as_tensor(feat)
+            if not torch.isfinite(feat_t.float()).all():
+                result["valid"] = False
+                result["nonfinite_features"] = True
+                break
+    label = data.get("label")
+    if label is None:
+        result["valid"] = False
+        result["bad_labels"] = True
+        return result
+    label_t = label if isinstance(label, torch.Tensor) else torch.as_tensor(label)
+    if not torch.isfinite(label_t.float()).all():
+        result["valid"] = False
+        result["bad_labels"] = True
+        return result
+    label_t = label_t.long()
+    valid_mask = _label_validity_mask(label_t, cfg["allowed_labels"])
+    if not valid_mask.all():
+        result["valid"] = False
+        result["bad_labels"] = True
+        result["invalid_label_values"] = torch.unique(label_t[~valid_mask]).tolist()
+    return result
+
+
 def verify_and_clean_dataset_fast(
     output_dir: str,
     num_workers: int | None = None,
     logger: Optional["VerbosityLogger"] = None,
-) -> None:
+    validation_cfg: Optional[dict[str, Any]] = None,
+) -> dict[str, int]:
     """
     Spawn workers to make sure each cached tile is readable; delete corrupt ones.
 
@@ -497,36 +675,65 @@ def verify_and_clean_dataset_fast(
         output_dir (str): Directory containing cached tiles.
         num_workers (int | None): Worker count for verification.
         logger (Optional["VerbosityLogger"]): Logger instance.
+        validation_cfg (Optional[dict[str, Any]]): Dataset validation options.
 
-    >>> verify_and_clean_dataset_fast("/tmp", num_workers=1)  # doctest: +SKIP
+    >>> summary = verify_and_clean_dataset_fast("/tmp", num_workers=1)  # doctest: +SKIP
+    >>> isinstance(summary, dict)  # doctest: +SKIP
+    True
     """
 
+    cfg = _normalize_dataset_validation_cfg(validation_cfg)
+    summary = {
+        "tiles_total": 0,
+        "tiles_removed": 0,
+        "tiles_corrupt": 0,
+        "tiles_nonfinite": 0,
+        "tiles_bad_labels": 0,
+    }
     files = glob.glob(os.path.join(output_dir, "*.pt"))
     if not files:
         if logger:
             logger.info("No cached tiles found for verification.")
-        return
+        return summary
+    summary["tiles_total"] = len(files)
     if num_workers is None:
         num_workers = os.cpu_count() or 1
-    corrupted_files = []
+    invalid_results: list[dict[str, Any]] = []
     if logger:
-        logger.info(f"Verifying {len(files)} cached tiles.")
+        logger.info(
+            f"Verifying {len(files)} cached tiles"
+            f"{' with semantic checks' if cfg['enabled'] else ''}."
+        )
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(_check_single_file, f) for f in files]
+        futures = [executor.submit(verify_tile_semantics, f, cfg) for f in files]
         for future in tqdm(
             concurrent.futures.as_completed(futures), total=len(files), desc="Verifying"
         ):
             result = future.result()
-            if result is not None:
-                corrupted_files.append(result)
-    for f in corrupted_files:
+            if not result["valid"]:
+                invalid_results.append(result)
+    for result in invalid_results:
+        f = result["path"]
+        reason = "corrupt"
+        if result.get("nonfinite_image") or result.get("nonfinite_features"):
+            reason = "non-finite values"
+        elif result.get("bad_labels"):
+            reason = "invalid labels"
+        if result.get("read_error"):
+            summary["tiles_corrupt"] += 1
+        if result.get("nonfinite_image") or result.get("nonfinite_features"):
+            summary["tiles_nonfinite"] += 1
+        if result.get("bad_labels"):
+            summary["tiles_bad_labels"] += 1
         try:
             os.remove(f)
+            summary["tiles_removed"] += 1
             if logger:
-                logger.error(f"Removed corrupted tile {f}")
+                logger.error(f"Removed tile ({reason}) {f}")
         except OSError:
             if logger:
-                logger.error(f"Failed to remove corrupted tile {f}")
+                logger.error(f"Failed to remove tile {f}")
+    return summary
 
 
 def prepare_data_tiles(
@@ -785,6 +992,7 @@ class PrecomputedDataset(Dataset):
         processed_dir: str,
         augmentation_cfg: Optional[dict] = None,
         file_subset: Optional[List[str]] = None,
+        validation_cfg: Optional[dict[str, Any]] = None,
     ) -> None:
         """
         Index every cached tile path.
@@ -793,6 +1001,7 @@ class PrecomputedDataset(Dataset):
             processed_dir (str): Directory containing cached tiles.
             augmentation_cfg (Optional[dict]): Augmentation configuration.
             file_subset (Optional[List[str]]): Optional subset of files.
+            validation_cfg (Optional[dict[str, Any]]): Validation policy settings.
 
         >>> import tempfile
         >>> tmpdir = tempfile.mkdtemp()
@@ -819,6 +1028,7 @@ class PrecomputedDataset(Dataset):
         if not self.processed_files:
             raise ValueError(f"No .pt files found in {processed_dir}.")
         self.augmentation_cfg = augmentation_cfg or {}
+        self.validation_cfg = _normalize_dataset_validation_cfg(validation_cfg)
 
     def __len__(self) -> int:
         """
@@ -863,12 +1073,62 @@ class PrecomputedDataset(Dataset):
             data = torch.load(self.processed_files[idx], weights_only=False)
         except TypeError:
             data = torch.load(self.processed_files[idx])
-        img = data["image"].permute(2, 0, 1).float() / 255.0
-        features = data.get("features", [])
+        image_raw = data["image"]
+        image_tensor = (
+            image_raw
+            if isinstance(image_raw, torch.Tensor)
+            else torch.as_tensor(image_raw)
+        )
+        img = image_tensor.permute(2, 0, 1).float() / 255.0
+        features = [
+            feat if isinstance(feat, torch.Tensor) else torch.as_tensor(feat)
+            for feat in data.get("features", [])
+        ]
         label_raw = data["label"]
-        label_seg = torch.from_numpy(label_raw.astype(np.int64)).long()
+        if isinstance(label_raw, torch.Tensor):
+            label_seg = label_raw.long()
+        else:
+            label_seg = torch.from_numpy(np.asarray(label_raw).astype(np.int64)).long()
+        img, features, label_seg = self._validate_sample(
+            img, features, label_seg, self.processed_files[idx]
+        )
         img, features, label_seg = self._apply_augmentations(img, features, label_seg)
         return img, features, label_seg
+
+    def _validate_sample(
+        self,
+        img: torch.Tensor,
+        features: List[torch.Tensor],
+        label: torch.Tensor,
+        source: str,
+    ) -> tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
+        """Validate finite values and label ranges for one sample.
+
+        Args:
+            img (torch.Tensor): Image tensor.
+            features (List[torch.Tensor]): Feature tensors.
+            label (torch.Tensor): Label tensor.
+            source (str): Source tile path.
+
+        Returns:
+            tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]: Validated tensors.
+        """
+
+        cfg = self.validation_cfg
+        if not cfg.get("enabled", True):
+            return img, features, label
+        if cfg["require_finite_images"] and not torch.isfinite(img).all():
+            raise ValueError(f"Non-finite image values in {source}")
+        if cfg["require_finite_features"]:
+            for idx, feat in enumerate(features):
+                if not torch.isfinite(feat.float()).all():
+                    raise ValueError(
+                        f"Non-finite feature values in {source} (feature {idx})"
+                    )
+        if not torch.isfinite(label.float()).all():
+            raise ValueError(f"Non-finite label values in {source}")
+        label = _sanitize_label_tensor(label, cfg, source)
+        return img, features, label
 
     def _apply_augmentations(
         self,

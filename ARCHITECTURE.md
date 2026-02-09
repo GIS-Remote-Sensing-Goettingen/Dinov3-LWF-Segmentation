@@ -16,6 +16,10 @@ MLflow-compatible artifacts for research workflows.
 - **PhaseRunner:** Executes phases in order and coordinates hooks/processors.
 - **Hooks:** Lifecycle callbacks (run/phase/epoch/batch/tile) for extensibility.
 - **Processors:** Pre/post phase modules for snapshotting and summaries.
+- **Stability policy:** `train.stability` controls AMP mode/dtype, fp32 loss, gradient clipping,
+  non-finite handling, and checkpoint safety gates.
+- **Dataset validation policy:** `dataset.validation` defines finite checks and allowed label
+  values for both dataloading and cache verification.
 
 ## Tracking & Artifacts
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.
@@ -29,6 +33,6 @@ MLflow-compatible artifacts for research workflows.
 
 ## Workflow
 1. Prepare tiles and features (optional)
-2. Verify cached tiles (optional)
+2. Verify cached tiles (readability + semantic checks) (optional)
 3. Train segmentation head (optional)
 4. Run inference (optional)

@@ -12,6 +12,8 @@ from torch.utils.data import DataLoader
 
 from utils import SegmentationLoss, SegmentationMetrics, VerbosityLogger
 
+from .context import StabilityConfig
+
 
 class ModelEMA:
     """Maintain an exponential moving average of model parameters.
@@ -187,6 +189,54 @@ def split_params_for_muon(
     return muon_params, adamw_params
 
 
+def build_autocast(
+    use_amp: bool,
+    amp_dtype: str = "bf16",
+):
+    """Build an autocast context manager with dtype selection.
+
+    Args:
+        use_amp (bool): Whether autocast is enabled.
+        amp_dtype (str): Preferred dtype ("bf16" or "fp16").
+
+    Returns:
+        context manager: Autocast context or nullcontext.
+
+    Examples:
+        >>> ctx = build_autocast(use_amp=False)
+        >>> type(ctx).__name__
+        'nullcontext'
+    """
+
+    if not use_amp:
+        return nullcontext()
+    if amp_dtype == "bf16" and torch.cuda.is_bf16_supported():
+        return torch.cuda.amp.autocast(dtype=torch.bfloat16)
+    return torch.cuda.amp.autocast(dtype=torch.float16)
+
+
+def count_nonfinite_parameters(model: torch.nn.Module) -> int:
+    """Count non-finite parameter values for a model.
+
+    Args:
+        model (torch.nn.Module): Model to inspect.
+
+    Returns:
+        int: Number of NaN/Inf parameter entries.
+
+    Examples:
+        >>> layer = torch.nn.Linear(2, 2)
+        >>> count_nonfinite_parameters(layer)
+        0
+    """
+
+    count = 0
+    with torch.no_grad():
+        for param in model.parameters():
+            count += int((~torch.isfinite(param)).sum().item())
+    return count
+
+
 def evaluate(
     model: torch.nn.Module,
     loader: DataLoader | None,
@@ -200,6 +250,7 @@ def evaluate(
     processor: Any | None = None,
     layers: list[int] | None = None,
     ps: int = 16,
+    stability: StabilityConfig | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Evaluate the model on the validation set.
 
@@ -216,6 +267,7 @@ def evaluate(
         processor (Any | None): Image processor for on-the-fly extraction.
         layers (list[int] | None): Backbone layers to extract.
         ps (int): Patch size for the backbone.
+        stability (StabilityConfig | None): Stability policy controls.
 
     Returns:
         tuple[float, dict[str, Any]]: Average loss and metrics summary.
@@ -225,6 +277,7 @@ def evaluate(
         True
     """
 
+    stability_cfg = stability or StabilityConfig()
     if loader is None:
         zeros = torch.zeros(num_classes)
         return 0.0, {
@@ -232,11 +285,18 @@ def evaluate(
             "per_class_dice": zeros,
             "miou": 0.0,
             "mdice": 0.0,
+            "nonfinite_val_batches": 0.0,
+            "nonfinite_val_loss_batches": 0.0,
+            "max_abs_logit": 0.0,
         }
     model.eval()
     total = 0.0
+    counted_loss_batches = 0
     metrics = SegmentationMetrics(num_classes)
-    autocast = torch.cuda.amp.autocast() if use_amp else nullcontext()
+    nonfinite_val_batches = 0
+    nonfinite_val_loss_batches = 0
+    max_abs_logit = 0.0
+    autocast = build_autocast(use_amp=use_amp, amp_dtype=stability_cfg.amp_dtype)
     with torch.no_grad():
         for batch_idx, (img, features, y) in enumerate(loader, 1):
             img = img.to(device)
@@ -269,13 +329,49 @@ def evaluate(
                     if aux_logits is not None
                     else None
                 )
+                logits_for_loss = logits.float() if stability_cfg.loss_fp32 else logits
+                aux_for_loss = (
+                    aux_logits.float()
+                    if aux_logits is not None and stability_cfg.loss_fp32
+                    else aux_logits
+                )
                 loss = loss_fn(
-                    logits,
+                    logits_for_loss,
                     target_main,
-                    aux_logits=aux_logits,
+                    aux_logits=aux_for_loss,
                     aux_targets=target_aux,
                 )
+            batch_max_abs_logit = float(
+                torch.nan_to_num(
+                    logits.detach().float().abs(),
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                )
+                .max()
+                .item()
+            )
+            max_abs_logit = max(max_abs_logit, batch_max_abs_logit)
+            if not torch.isfinite(logits.detach()).all():
+                nonfinite_val_batches += 1
+                if stability_cfg.nonfinite_action == "stop_run":
+                    raise RuntimeError(
+                        f"Non-finite validation logits at batch {batch_idx}/{len(loader)}"
+                    )
+                if stability_cfg.nonfinite_action == "stop_epoch":
+                    break
+                continue
+            if not torch.isfinite(loss):
+                nonfinite_val_loss_batches += 1
+                if stability_cfg.nonfinite_action == "stop_run":
+                    raise RuntimeError(
+                        f"Non-finite validation loss at batch {batch_idx}/{len(loader)}"
+                    )
+                if stability_cfg.nonfinite_action == "stop_epoch":
+                    break
+                continue
             total += loss.item()
+            counted_loss_batches += 1
             preds = logits.argmax(dim=1)
             metrics.update(preds.cpu(), target_main.cpu())
             if logger and batch_idx % 10 == 0:
@@ -284,11 +380,22 @@ def evaluate(
                     f"loss={loss.item():.4f} "
                     f"running mIoU={metrics.compute()['miou']:.4f}"
                 )
-    avg_loss = total / len(loader)
+    avg_loss = float("nan")
+    if counted_loss_batches:
+        avg_loss = total / counted_loss_batches
     metric_summary = metrics.compute()
+    metric_summary["nonfinite_val_batches"] = float(nonfinite_val_batches)
+    metric_summary["nonfinite_val_loss_batches"] = float(nonfinite_val_loss_batches)
+    metric_summary["max_abs_logit"] = float(max_abs_logit)
     if logger:
         logger.debug(
             f"Validation summary :: loss={avg_loss:.4f}, "
             f"mIoU={metric_summary['miou']:.4f}, mDice={metric_summary['mdice']:.4f}"
         )
+        if nonfinite_val_loss_batches > 0 and torch.isfinite(
+            torch.tensor(metric_summary["miou"])
+        ):
+            logger.error(
+                "Validation has non-finite loss batches while mIoU remains finite."
+            )
     return avg_loss, metric_summary

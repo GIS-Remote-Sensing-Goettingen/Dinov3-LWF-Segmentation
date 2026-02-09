@@ -159,6 +159,7 @@ def create_dataloaders(
     """
 
     augment_cfg = dataset_cfg.get("augmentations", {})
+    validation_cfg = dataset_cfg.get("validation", {})
     split_cfg = dataset_cfg.get("splits", {})
     val_fraction = train_cfg.get("val_fraction", 0.2)
     max_tiles = dataset_cfg.get("max_tiles")
@@ -173,6 +174,7 @@ def create_dataloaders(
         processed_dir,
         augmentation_cfg=augment_cfg,
         file_subset=train_files,
+        validation_cfg=validation_cfg,
     )
     train_sampler = None
     if dist_ctx.enabled:
@@ -199,6 +201,7 @@ def create_dataloaders(
             processed_dir,
             augmentation_cfg={"enable": False},
             file_subset=val_files,
+            validation_cfg=validation_cfg,
         )
         val_workers = train_cfg.get("val_workers", max(1, num_workers // 2))
         val_loader = DataLoader(

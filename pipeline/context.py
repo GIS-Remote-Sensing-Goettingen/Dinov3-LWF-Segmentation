@@ -77,6 +77,64 @@ class DistContext:
 
 
 @dataclass
+class StabilityConfig:
+    """Training-time numeric stability controls.
+
+    Attributes:
+        amp_enabled (str): Autocast mode (auto, on, off).
+        amp_dtype (str): Preferred autocast dtype (bf16 or fp16).
+        loss_fp32 (bool): Compute loss terms in fp32.
+        grad_clip_norm (float): Max norm for gradient clipping.
+        max_abs_logit_warn (float): Warning threshold for absolute logits.
+        nonfinite_action (str): Action on non-finite values.
+        nonfinite_max_consecutive_batches (int): Max consecutive non-finite batches.
+        nonfinite_max_total_batches_per_epoch (int): Max total non-finite batches.
+        save_bad_batch_sample (bool): Persist sample tensors on failures.
+        check_params_every_steps (int): Parameter finite-check cadence.
+
+    Examples:
+        >>> StabilityConfig().nonfinite_action
+        'stop_run'
+    """
+
+    amp_enabled: str = "auto"
+    amp_dtype: str = "bf16"
+    loss_fp32: bool = True
+    grad_clip_norm: float = 1.0
+    max_abs_logit_warn: float = 80.0
+    nonfinite_action: str = "stop_run"
+    nonfinite_max_consecutive_batches: int = 2
+    nonfinite_max_total_batches_per_epoch: int = 5
+    save_bad_batch_sample: bool = True
+    check_params_every_steps: int = 50
+
+
+@dataclass
+class DatasetValidationConfig:
+    """Dataset semantic validation controls for cached tiles.
+
+    Attributes:
+        enabled (bool): Whether semantic validation is active.
+        allowed_labels (tuple[int, ...]): Valid class labels before mapping.
+        ignore_index (int | None): Ignore index used for invalid labels.
+        out_of_range_policy (str): Handling mode for invalid labels.
+        require_finite_features (bool): Require finite cached features.
+        require_finite_images (bool): Require finite input images.
+
+    Examples:
+        >>> DatasetValidationConfig().ignore_index
+        255
+    """
+
+    enabled: bool = True
+    allowed_labels: tuple[int, ...] = (0, 1)
+    ignore_index: int | None = 255
+    out_of_range_policy: str = "map_to_ignore"
+    require_finite_features: bool = True
+    require_finite_images: bool = True
+
+
+@dataclass
 class PhaseError:
     """Structured error metadata for a phase failure.
 
@@ -206,6 +264,8 @@ class RunContext:
         start_time (float): Run start time in seconds since epoch.
         config_path (str | None): Resolved configuration path.
         continue_on_error (bool): Whether to continue after phase failures.
+        stability (StabilityConfig): Numeric stability settings.
+        dataset_validation (DatasetValidationConfig): Dataset validation settings.
 
     Examples:
         >>> isinstance(RunContext, type)
@@ -224,4 +284,6 @@ class RunContext:
     start_time: float
     config_path: str | None
     continue_on_error: bool
+    stability: StabilityConfig
+    dataset_validation: DatasetValidationConfig
     run_results: list[PhaseResult] | None = None

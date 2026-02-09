@@ -23,7 +23,7 @@ from .constants import (
     DEFAULT_NUM_CLASSES,
     DEFAULT_TRACKING_DIR,
 )
-from .context import DistContext, RunContext
+from .context import DatasetValidationConfig, DistContext, RunContext, StabilityConfig
 from .tracking import (
     ConfigSnapshotProcessor,
     Hook,
@@ -271,6 +271,120 @@ def get_hook_option(config: dict, key: str, default: Any) -> Any:
     return options.get(key, default)
 
 
+def parse_stability_config(config: dict) -> StabilityConfig:
+    """Parse numeric stability options from the training config.
+
+    Args:
+        config (dict): Configuration dictionary.
+
+    Returns:
+        StabilityConfig: Parsed stability settings with safe defaults.
+
+    Examples:
+        >>> cfg = {"train": {"stability": {"nonfinite": {"action": "skip_batch"}}}}
+        >>> parse_stability_config(cfg).nonfinite_action
+        'skip_batch'
+    """
+
+    train_cfg = config.get("train", {})
+    stable_cfg = train_cfg.get("stability", {})
+    amp_cfg = stable_cfg.get("amp", {})
+    nonfinite_cfg = stable_cfg.get("nonfinite", {})
+    amp_enabled = str(
+        amp_cfg.get("enabled", stable_cfg.get("amp_enabled", "auto"))
+    ).lower()
+    if amp_enabled in {"true", "1", "yes"}:
+        amp_enabled = "on"
+    if amp_enabled in {"false", "0", "no"}:
+        amp_enabled = "off"
+    if amp_enabled not in {"auto", "on", "off"}:
+        amp_enabled = "auto"
+    amp_dtype = str(amp_cfg.get("dtype", stable_cfg.get("amp_dtype", "bf16"))).lower()
+    if amp_dtype not in {"bf16", "fp16"}:
+        amp_dtype = "bf16"
+    action = str(
+        nonfinite_cfg.get("action", stable_cfg.get("nonfinite_action", "stop_run"))
+    ).lower()
+    if action not in {"stop_run", "stop_epoch", "skip_batch"}:
+        action = "stop_run"
+    check_params_every_steps = int(stable_cfg.get("check_params_every_steps", 50) or 50)
+    return StabilityConfig(
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
+        loss_fp32=bool(stable_cfg.get("loss_fp32", True)),
+        grad_clip_norm=max(0.0, float(stable_cfg.get("grad_clip_norm", 1.0))),
+        max_abs_logit_warn=max(1.0, float(stable_cfg.get("max_abs_logit_warn", 80.0))),
+        nonfinite_action=action,
+        nonfinite_max_consecutive_batches=max(
+            1,
+            int(
+                nonfinite_cfg.get(
+                    "max_consecutive_batches",
+                    stable_cfg.get("nonfinite_max_consecutive_batches", 2),
+                )
+            ),
+        ),
+        nonfinite_max_total_batches_per_epoch=max(
+            1,
+            int(
+                nonfinite_cfg.get(
+                    "max_total_batches_per_epoch",
+                    stable_cfg.get("nonfinite_max_total_batches_per_epoch", 5),
+                )
+            ),
+        ),
+        save_bad_batch_sample=bool(
+            nonfinite_cfg.get(
+                "save_bad_batch_sample",
+                stable_cfg.get("save_bad_batch_sample", True),
+            )
+        ),
+        check_params_every_steps=max(1, check_params_every_steps),
+    )
+
+
+def parse_dataset_validation_config(config: dict) -> DatasetValidationConfig:
+    """Parse dataset semantic validation settings from the config.
+
+    Args:
+        config (dict): Configuration dictionary.
+
+    Returns:
+        DatasetValidationConfig: Parsed dataset validation settings.
+
+    Examples:
+        >>> cfg = {"dataset": {"validation": {"allowed_labels": [0, 1, 2]}}}
+        >>> parse_dataset_validation_config(cfg).allowed_labels
+        (0, 1, 2)
+    """
+
+    dataset_cfg = config.get("dataset", {})
+    validation_cfg = dataset_cfg.get("validation", {})
+    allowed_raw = validation_cfg.get("allowed_labels", [0, 1])
+    allowed_labels: tuple[int, ...]
+    if isinstance(allowed_raw, (list, tuple)):
+        allowed_labels = tuple(sorted({int(v) for v in allowed_raw}))
+    else:
+        allowed_labels = (0, 1)
+    if not allowed_labels:
+        allowed_labels = (0, 1)
+    ignore_index_raw = validation_cfg.get("ignore_index", 255)
+    ignore_index = None if ignore_index_raw is None else int(ignore_index_raw)
+    policy = str(validation_cfg.get("out_of_range_policy", "map_to_ignore")).lower()
+    if policy not in {"map_to_ignore", "error"}:
+        policy = "map_to_ignore"
+    return DatasetValidationConfig(
+        enabled=bool(validation_cfg.get("enabled", True)),
+        allowed_labels=allowed_labels,
+        ignore_index=ignore_index,
+        out_of_range_policy=policy,
+        require_finite_features=bool(
+            validation_cfg.get("require_finite_features", True)
+        ),
+        require_finite_images=bool(validation_cfg.get("require_finite_images", True)),
+    )
+
+
 def collect_run_params(config: dict) -> dict[str, str]:
     """Collect a curated set of run parameters for tracking.
 
@@ -290,6 +404,8 @@ def collect_run_params(config: dict) -> dict[str, str]:
     train_cfg = config.get("train", {})
     resources_cfg = config.get("resources", {})
     dataset_cfg = config.get("dataset", {})
+    stability_cfg = parse_stability_config(config)
+    validation_cfg = parse_dataset_validation_config(config)
     params: dict[str, str] = {
         "model.head": str(model_cfg.get("head", DEFAULT_HEAD)),
         "model.backbone": str(model_cfg.get("backbone", DEFAULT_MODEL_NAME)),
@@ -303,6 +419,10 @@ def collect_run_params(config: dict) -> dict[str, str]:
         "dataset.augmentations": str(
             dataset_cfg.get("augmentations", {}).get("enable", False)
         ),
+        "train.stability.amp_enabled": stability_cfg.amp_enabled,
+        "train.stability.amp_dtype": stability_cfg.amp_dtype,
+        "train.stability.nonfinite_action": stability_cfg.nonfinite_action,
+        "dataset.validation.enabled": str(validation_cfg.enabled),
     }
     return params
 
@@ -423,6 +543,8 @@ def build_run_context(
     continue_on_error = bool(
         config.get("resources", {}).get("continue_on_error", False)
     )
+    stability = parse_stability_config(config)
+    dataset_validation = parse_dataset_validation_config(config)
     return RunContext(
         config=config,
         logger=logger,
@@ -436,5 +558,7 @@ def build_run_context(
         start_time=time.time(),
         config_path=config.get("_config_path"),
         continue_on_error=continue_on_error,
+        stability=stability,
+        dataset_validation=dataset_validation,
         run_results=[],
     )

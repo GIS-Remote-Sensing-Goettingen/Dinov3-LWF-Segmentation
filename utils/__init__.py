@@ -12,6 +12,7 @@ from .data import (
     resolve_cache_dir_for_train,
     subset_label_to_image_bounds,
     verify_and_clean_dataset_fast,
+    verify_tile_semantics,
 )
 from .logging import TimedBlock, VerbosityLogger
 from .losses import SegmentationLoss
@@ -29,6 +30,7 @@ __all__ = [
     "resolve_cache_dir_for_train",
     "subset_label_to_image_bounds",
     "verify_and_clean_dataset_fast",
+    "verify_tile_semantics",
     "EarlyStopping",
     "Muon",
     "zeropower_via_newtonschulz5",

@@ -45,6 +45,7 @@ paths:
   processed_dir: /path/to/cache
 
 dataset:
+  cache_features: false
   augmentations:
     enable: true
     hflip: true
@@ -53,11 +54,18 @@ dataset:
   splits:
     train_list: splits/train.txt
     val_list: splits/val.txt
+  validation:
+    enabled: true
+    allowed_labels: [0, 1]
+    ignore_index: 255
+    out_of_range_policy: map_to_ignore
+    require_finite_features: true
+    require_finite_images: true
 
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_v2          # unet | unet_v2 | maskformer
+  head: unet_v2          # unet | unet_v2 | unet_lite | maskformer
   num_classes: 2
   dino_channels: 1024
 
@@ -89,6 +97,19 @@ train:
     ce_weight: 1.0
     dice_weight: 1.0
     aux_weight: 0.4
+  stability:
+    amp:
+      enabled: auto      # auto | on | off
+      dtype: bf16        # bf16 | fp16
+    loss_fp32: true
+    grad_clip_norm: 1.0
+    max_abs_logit_warn: 80.0
+    nonfinite:
+      action: stop_run   # stop_run | stop_epoch | skip_batch
+      max_consecutive_batches: 2
+      max_total_batches_per_epoch: 5
+      save_bad_batch_sample: true
+    check_params_every_steps: 50
 
 inference:
   enable: false
@@ -130,14 +151,14 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 
 ## Utilities
 
-- `utils/data.py` handles tiling, label alignment, feature extraction, cache verification, and the `PrecomputedDataset`. It also applies optional train-time augmentations (flips/rotations) that keep cached features & labels aligned and supports region-based splits.
+- `utils/data.py` handles tiling, label alignment, feature extraction, cache verification, and the `PrecomputedDataset`. It also applies optional train-time augmentations (flips/rotations), validates finiteness/label ranges, and supports region-based splits.
 - `utils/losses.py` implements the combined CE + Dice loss used for the main head and auxiliary deep supervision.
 - `utils/metrics.py` accumulates per-class IoU/Dice; we early-stop on validation mIoU instead of loss.
 - `utils/optim.py` contains the Muon optimizer (matrix-aware momentum with orthogonalization), AdamW handling, and a configurable EarlyStopping helper that works for min/max metrics.
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, and validation metrics (mIoU/mDice) that drive early stopping.
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, and validation metrics (mIoU/mDice) that drive early stopping.
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
 
 ## Testing
@@ -181,7 +202,7 @@ pip install torch torchvision transformers rasterio tifffile shapely tqdm pyyaml
 ## Notes
 
 - Large imagery and label rasters should share a CRS; the tiling pipeline reprojects labels when needed.
-- Cache verification deletes unreadable `.pt` files, so rerun `prepare` if the dataset was partially generated.
+- Cache verification deletes unreadable or semantically invalid `.pt` files, so rerun `prepare` if the dataset was partially generated.
 - Inference now streams tiles from disk, supports overlapping windows with probability blending, runs under AMP, and can average flip-based TTA predictions.
 - Cached tiles are used for training while inference recomputes DINO features on the fly.
 

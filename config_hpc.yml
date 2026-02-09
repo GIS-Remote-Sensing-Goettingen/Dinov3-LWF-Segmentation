@@ -25,6 +25,13 @@ dataset:
   splits:
     train_list:
     val_list:
+  validation:
+    enabled: true
+    allowed_labels: [0, 1]
+    ignore_index: 255
+    out_of_range_policy: map_to_ignore
+    require_finite_features: true
+    require_finite_images: true
 
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
@@ -67,6 +74,19 @@ train:
     ce_weight: 1.0
     dice_weight: 1.0
     aux_weight: 0.4
+  stability:
+    amp:
+      enabled: auto
+      dtype: bf16
+    loss_fp32: true
+    grad_clip_norm: 1.0
+    max_abs_logit_warn: 80.0
+    nonfinite:
+      action: stop_run
+      max_consecutive_batches: 2
+      max_total_batches_per_epoch: 5
+      save_bad_batch_sample: true
+    check_params_every_steps: 50
 
 inference:
   enable: true

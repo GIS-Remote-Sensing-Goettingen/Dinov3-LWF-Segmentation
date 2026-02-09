@@ -56,6 +56,8 @@ from .phase_runner import Phase
 from .train_utils import (
     ModelEMA,
     align_labels_to_logits,
+    build_autocast,
+    count_nonfinite_parameters,
     evaluate,
     extract_multiscale_features_batch,
     move_features_to_device,
@@ -172,16 +174,20 @@ class VerifyPhase(Phase):
         )
         before_count = len(glob.glob(os.path.join(processed_dir, "*.pt")))
         with TimedBlock(context.logger, "Verification phase"):
-            verify_and_clean_dataset_fast(
+            verify_summary = verify_and_clean_dataset_fast(
                 processed_dir,
                 num_workers=section.get("workers"),
                 logger=context.logger,
+                validation_cfg=context.config.get("dataset", {}).get("validation"),
             )
         after_count = len(glob.glob(os.path.join(processed_dir, "*.pt")))
         removed = max(before_count - after_count, 0)
         metrics = {
             "tiles_total": float(after_count),
             "tiles_removed": float(removed),
+            "tiles_corrupt": float(verify_summary.get("tiles_corrupt", 0)),
+            "tiles_nonfinite": float(verify_summary.get("tiles_nonfinite", 0)),
+            "tiles_bad_labels": float(verify_summary.get("tiles_bad_labels", 0)),
         }
         artifacts = {"processed_dir": processed_dir}
         return PhaseOutcome(metrics=metrics, artifacts=artifacts)
@@ -301,6 +307,7 @@ class TrainPhase(Phase):
             momentum=section.get("momentum", 0.95),
             adamw_params=adamw_params,
             adamw_lr=section.get("adamw_lr", 1e-3),
+            update_max_norm=section.get("optimizer_update_max_norm"),
         )
         steps_per_epoch = math.ceil(
             len(train_loader) / max(1, section.get("grad_accum_steps", 1))
@@ -312,20 +319,33 @@ class TrainPhase(Phase):
             steps_per_epoch=steps_per_epoch,
         )
         loss_cfg = section.get("loss", {})
+        loss_ignore_index = loss_cfg.get("ignore_index")
+        if loss_ignore_index is None and context.dataset_validation.enabled:
+            loss_ignore_index = context.dataset_validation.ignore_index
         loss_fn = SegmentationLoss(
             num_classes=model_cfg["num_classes"],
             ce_weight=loss_cfg.get("ce_weight", 1.0),
             dice_weight=loss_cfg.get("dice_weight", 1.0),
             aux_weight=loss_cfg.get("aux_weight", 0.4),
             class_weights=loss_cfg.get("class_weights"),
-            ignore_index=loss_cfg.get("ignore_index"),
+            ignore_index=loss_ignore_index,
         ).to(device)
         backbone = None
         processor = None
         ps = 14 if "vitl14" in model_cfg["backbone"] else 16
+        stability = context.stability
         use_amp = device.type == "cuda"
-        scaler = torch.cuda.amp.GradScaler() if use_amp else None
-        autocast = torch.cuda.amp.autocast() if use_amp else nullcontext()
+        if stability.amp_enabled == "off":
+            use_amp = False
+        elif stability.amp_enabled == "on" and device.type != "cuda":
+            context.logger.info("AMP requested but CUDA is unavailable; using fp32.")
+            use_amp = False
+        use_grad_scaler = use_amp and stability.amp_dtype == "fp16"
+        scaler = torch.cuda.amp.GradScaler() if use_grad_scaler else None
+        autocast = build_autocast(
+            use_amp=use_amp,
+            amp_dtype=stability.amp_dtype,
+        )
         best_path = os.path.join(weights_dir, f"{model_cfg['head']}_best.pth")
         early_stopping = EarlyStopping(
             patience=section.get("patience", 10),
@@ -353,12 +373,83 @@ class TrainPhase(Phase):
                 epoch_start = time.time()
                 first_batch_logged = False
                 last_log_time = epoch_start
+                epoch_health = {
+                    "nonfinite_batches": 0,
+                    "consecutive_nonfinite_batches": 0,
+                    "skipped_optimizer_steps": 0,
+                    "optimizer_steps": 0,
+                    "scheduler_steps": 0,
+                    "max_abs_logit": 0.0,
+                    "grad_norm": 0.0,
+                    "param_nonfinite_count": 0,
+                }
+                epoch_aborted = False
+
+                def handle_nonfinite(
+                    reason: str,
+                    batch_idx: int,
+                    img_tensor: torch.Tensor | None = None,
+                    target_tensor: torch.Tensor | None = None,
+                    logit_tensor: torch.Tensor | None = None,
+                ) -> str:
+                    """Log and route non-finite events.
+
+                    Args:
+                        reason (str): Failure source label.
+                        batch_idx (int): Batch index where the error occurred.
+                        img_tensor (torch.Tensor | None): Optional input tensor snapshot.
+                        target_tensor (torch.Tensor | None): Optional target tensor snapshot.
+                        logit_tensor (torch.Tensor | None): Optional logits tensor snapshot.
+
+                    Returns:
+                        str: Routing action (`continue`, `break_epoch`, or `raise`).
+                    """
+
+                    epoch_health["nonfinite_batches"] += 1
+                    epoch_health["consecutive_nonfinite_batches"] += 1
+                    context.logger.error(
+                        "Non-finite %s at epoch %s batch %s/%s."
+                        % (reason, epoch + 1, batch_idx, len(train_loader))
+                    )
+                    if context.dist_ctx.is_main and stability.save_bad_batch_sample:
+                        bad_dir = os.path.join(weights_dir, "bad_batches")
+                        os.makedirs(bad_dir, exist_ok=True)
+                        bad_path = os.path.join(
+                            bad_dir, f"epoch_{epoch + 1:04d}_batch_{batch_idx:04d}.pt"
+                        )
+                        payload: dict[str, Any] = {
+                            "epoch": epoch + 1,
+                            "batch_idx": batch_idx,
+                            "reason": reason,
+                        }
+                        if img_tensor is not None:
+                            payload["image"] = img_tensor[:1].detach().cpu()
+                        if target_tensor is not None:
+                            payload["target"] = target_tensor[:1].detach().cpu()
+                        if logit_tensor is not None:
+                            payload["logits"] = logit_tensor[:1].detach().float().cpu()
+                        torch.save(payload, bad_path)
+                    too_many = (
+                        epoch_health["consecutive_nonfinite_batches"]
+                        >= stability.nonfinite_max_consecutive_batches
+                        or epoch_health["nonfinite_batches"]
+                        >= stability.nonfinite_max_total_batches_per_epoch
+                    )
+                    if too_many:
+                        return "raise"
+                    if stability.nonfinite_action == "skip_batch":
+                        return "continue"
+                    if stability.nonfinite_action == "stop_epoch":
+                        return "break_epoch"
+                    return "raise"
+
                 if train_sampler is not None:
                     train_sampler.set_epoch(epoch)
                 with TimedBlock(context.logger, f"Epoch {epoch + 1}"):
                     model_call = cast(Any, model)
                     model_call.train()
                     train_loss = 0.0
+                    train_loss_batches = 0
                     optimizer.zero_grad()
                     pbar = tqdm(
                         train_loader,
@@ -412,10 +503,18 @@ class TrainPhase(Phase):
                                     if aux_logits is not None
                                     else None
                                 )
+                                logits_for_loss = (
+                                    logits.float() if stability.loss_fp32 else logits
+                                )
+                                aux_for_loss = (
+                                    aux_logits.float()
+                                    if aux_logits is not None and stability.loss_fp32
+                                    else aux_logits
+                                )
                                 loss = loss_fn(
-                                    logits,
+                                    logits_for_loss,
                                     target_main,
-                                    aux_logits=aux_logits,
+                                    aux_logits=aux_for_loss,
                                     aux_targets=target_aux,
                                 )
                                 loss = loss / grad_accum
@@ -431,6 +530,47 @@ class TrainPhase(Phase):
                                 )
                             )
                             raise
+                        batch_max_abs_logit = float(
+                            torch.nan_to_num(
+                                logits.detach().float().abs(),
+                                nan=0.0,
+                                posinf=0.0,
+                                neginf=0.0,
+                            )
+                            .max()
+                            .item()
+                        )
+                        epoch_health["max_abs_logit"] = max(
+                            epoch_health["max_abs_logit"],
+                            batch_max_abs_logit,
+                        )
+                        if (
+                            epoch_health["max_abs_logit"] > stability.max_abs_logit_warn
+                            and batch_idx % 10 == 0
+                        ):
+                            context.logger.error(
+                                f"High logit magnitude detected at epoch {epoch + 1} "
+                                f"batch {batch_idx}: "
+                                f"max_abs_logit={epoch_health['max_abs_logit']:.2f}"
+                            )
+                        if not torch.isfinite(loss):
+                            action = handle_nonfinite(
+                                "loss",
+                                batch_idx,
+                                img_tensor=img,
+                                target_tensor=target_main,
+                                logit_tensor=logits,
+                            )
+                            optimizer.zero_grad()
+                            if action == "continue":
+                                continue
+                            if action == "break_epoch":
+                                epoch_aborted = True
+                                break
+                            raise TrainingError(
+                                f"Non-finite loss at epoch {epoch + 1} batch {batch_idx}"
+                            )
+                        epoch_health["consecutive_nonfinite_batches"] = 0
                         if scaler:
                             scaler.scale(loss).backward()
                         else:
@@ -438,16 +578,91 @@ class TrainPhase(Phase):
                         if batch_idx % grad_accum == 0 or batch_idx == len(
                             train_loader
                         ):
+                            grads_ok = True
                             if scaler:
+                                scaler.unscale_(optimizer)
+                            if stability.grad_clip_norm > 0:
+                                grad_norm = torch.nn.utils.clip_grad_norm_(
+                                    base_model.parameters(),
+                                    stability.grad_clip_norm,
+                                )
+                                grad_norm_value = (
+                                    grad_norm.item()
+                                    if isinstance(grad_norm, torch.Tensor)
+                                    else float(grad_norm)
+                                )
+                                epoch_health["grad_norm"] = float(grad_norm_value)
+                                if not math.isfinite(grad_norm_value):
+                                    grads_ok = False
+                            if not grads_ok:
+                                action = handle_nonfinite(
+                                    "grad_norm",
+                                    batch_idx,
+                                    img_tensor=img,
+                                    target_tensor=target_main,
+                                    logit_tensor=logits,
+                                )
+                                optimizer.zero_grad()
+                                if action == "continue":
+                                    continue
+                                if action == "break_epoch":
+                                    epoch_aborted = True
+                                    break
+                                raise TrainingError(
+                                    f"Non-finite gradient norm at epoch {epoch + 1} "
+                                    f"batch {batch_idx}"
+                                )
+                            step_happened = False
+                            if scaler:
+                                scale_before = scaler.get_scale()
                                 scaler.step(optimizer)
                                 scaler.update()
+                                scale_after = scaler.get_scale()
+                                step_happened = scale_after >= scale_before
                             else:
                                 optimizer.step()
+                                step_happened = True
                             optimizer.zero_grad()
-                            scheduler.step()
-                            if ema:
-                                ema.update(unwrap_model(model))
+                            if step_happened:
+                                epoch_health["optimizer_steps"] += 1
+                                scheduler.step()
+                                epoch_health["scheduler_steps"] += 1
+                                if ema:
+                                    ema.update(unwrap_model(model))
+                            else:
+                                epoch_health["skipped_optimizer_steps"] += 1
+                            if (
+                                epoch_health["optimizer_steps"] > 0
+                                and epoch_health["optimizer_steps"]
+                                % stability.check_params_every_steps
+                                == 0
+                            ):
+                                param_nonfinite_count = count_nonfinite_parameters(
+                                    unwrap_model(cast(torch.nn.Module, model))
+                                )
+                                epoch_health["param_nonfinite_count"] = int(
+                                    param_nonfinite_count
+                                )
+                                if param_nonfinite_count > 0:
+                                    action = handle_nonfinite(
+                                        "parameters",
+                                        batch_idx,
+                                        img_tensor=img,
+                                        target_tensor=target_main,
+                                        logit_tensor=logits,
+                                    )
+                                    if action == "continue":
+                                        continue
+                                    if action == "break_epoch":
+                                        epoch_aborted = True
+                                        break
+                                    raise TrainingError(
+                                        f"Detected {param_nonfinite_count} non-finite "
+                                        f"parameters at epoch {epoch + 1} batch "
+                                        f"{batch_idx}"
+                                    )
                         train_loss += loss.item() * grad_accum
+                        train_loss_batches += 1
                         if log_batch_metrics and batch_idx % log_batch_interval == 0:
                             batch_metrics = {
                                 "loss": loss.item() * grad_accum,
@@ -474,7 +689,14 @@ class TrainPhase(Phase):
                                 f"{avg_batch:.2f}s"
                             )
                             last_log_time = now
-                    avg_train_loss = train_loss / len(train_loader)
+                    if epoch_aborted:
+                        context.logger.error(
+                            f"Epoch {epoch + 1} aborted due to non-finite values."
+                        )
+                        continue
+                    avg_train_loss = float("nan")
+                    if train_loss_batches > 0:
+                        avg_train_loss = train_loss / train_loss_batches
                     eval_model = (
                         ema.ema_model
                         if ema
@@ -502,6 +724,7 @@ class TrainPhase(Phase):
                         processor=processor,
                         layers=model_cfg["layers"],
                         ps=ps,
+                        stability=stability,
                     )
                     if (
                         plot_enabled
@@ -582,6 +805,9 @@ class TrainPhase(Phase):
                         f"Epoch {epoch + 1} | Train Loss: {avg_train_loss:.4f} | "
                         f"Val Loss: {val_loss:.4f} | Val mIoU: {val_metrics['miou']:.4f}"
                     )
+                    epoch_health["param_nonfinite_count"] = count_nonfinite_parameters(
+                        eval_model
+                    )
                     epoch_ckpt = os.path.join(
                         weights_dir,
                         (
@@ -589,12 +815,26 @@ class TrainPhase(Phase):
                             f"MIOU_{val_metrics['miou']:.4f}_EPOCH_{epoch + 1}.pth"
                         ),
                     )
-                    if context.dist_ctx.is_main:
+                    checkpoint_is_finite = (
+                        math.isfinite(avg_train_loss)
+                        and math.isfinite(val_loss)
+                        and epoch_health["param_nonfinite_count"] == 0
+                    )
+                    if context.dist_ctx.is_main and checkpoint_is_finite:
                         torch.save(eval_model.state_dict(), epoch_ckpt)
+                    elif context.dist_ctx.is_main:
+                        context.logger.error(
+                            "Skipping checkpoint save due to non-finite training state."
+                        )
                     stop_flag = False
-                    if context.dist_ctx.is_main:
+                    if context.dist_ctx.is_main and checkpoint_is_finite:
                         early_stopping(val_metrics["miou"], eval_model)
                         stop_flag = early_stopping.early_stop
+                    elif (
+                        not checkpoint_is_finite
+                        and stability.nonfinite_action == "stop_run"
+                    ):
+                        stop_flag = True
                     if context.dist_ctx.enabled:
                         flag_tensor = torch.tensor(1 if stop_flag else 0, device=device)
                         dist.broadcast(flag_tensor, src=0)
@@ -605,7 +845,37 @@ class TrainPhase(Phase):
                         "miou": float(val_metrics["miou"]),
                         "mdice": float(val_metrics["mdice"]),
                         "lr": scheduler.get_last_lr()[0],
+                        "nonfinite_batches": float(epoch_health["nonfinite_batches"]),
+                        "skipped_optimizer_steps": float(
+                            epoch_health["skipped_optimizer_steps"]
+                        ),
+                        "max_abs_logit": float(epoch_health["max_abs_logit"]),
+                        "grad_norm": float(epoch_health["grad_norm"]),
+                        "param_nonfinite_count": float(
+                            epoch_health["param_nonfinite_count"]
+                        ),
+                        "optimizer_steps": float(epoch_health["optimizer_steps"]),
+                        "scheduler_steps": float(epoch_health["scheduler_steps"]),
+                        "nonfinite_val_batches": float(
+                            val_metrics.get("nonfinite_val_batches", 0.0)
+                        ),
+                        "nonfinite_val_loss_batches": float(
+                            val_metrics.get("nonfinite_val_loss_batches", 0.0)
+                        ),
                     }
+                    if (
+                        epoch_metrics["optimizer_steps"]
+                        != epoch_metrics["scheduler_steps"]
+                    ):
+                        context.logger.error(
+                            "Optimizer/scheduler step mismatch at epoch %s: "
+                            "optimizer_steps=%s scheduler_steps=%s"
+                            % (
+                                epoch + 1,
+                                int(epoch_metrics["optimizer_steps"]),
+                                int(epoch_metrics["scheduler_steps"]),
+                            )
+                        )
                     context.hook_manager.on_epoch_end(
                         context, self.name, epoch + 1, epoch_metrics
                     )
@@ -615,11 +885,20 @@ class TrainPhase(Phase):
                         epoch + 1,
                         epoch_metrics,
                     )
-                    best_miou = max(best_miou, float(val_metrics["miou"]))
+                    if math.isfinite(float(val_metrics["miou"])):
+                        best_miou = max(best_miou, float(val_metrics["miou"]))
                     final_val_loss = val_loss
                     if stop_flag:
                         if context.dist_ctx.is_main:
-                            context.logger.info("Early stopping triggered.")
+                            if (
+                                not checkpoint_is_finite
+                                and stability.nonfinite_action == "stop_run"
+                            ):
+                                context.logger.info(
+                                    "Stopping training due to non-finite state."
+                                )
+                            else:
+                                context.logger.info("Early stopping triggered.")
                         break
         if context.dist_ctx.is_main:
             context.logger.info(f"Training finished. Best weights saved to {best_path}")
