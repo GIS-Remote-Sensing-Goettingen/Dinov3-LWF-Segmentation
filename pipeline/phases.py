@@ -48,6 +48,7 @@ from .inference_utils import (
     build_tta_transforms,
     compute_attention_maps,
     compute_gradcam_map,
+    compute_gradcam_with_topk_channels,
     compute_xai_maps,
     overlay_heatmap,
     upsample_map,
@@ -365,6 +366,22 @@ class TrainPhase(Phase):
         plot_pairs = max(1, int(section.get("epoch_plot_pairs", 4)))
         plot_seed_offset = int(section.get("epoch_plot_seed_offset", 1000))
         plot_metric_class_index = int(section.get("epoch_plot_metric_class_index", 1))
+        plot_xai_enable = bool(section.get("epoch_plot_xai_enable", False))
+        plot_xai_class_index = int(
+            section.get("epoch_plot_xai_class_index", plot_metric_class_index)
+        )
+        plot_xai_topk_channels = max(
+            1, int(section.get("epoch_plot_xai_topk_channels", 5))
+        )
+        plot_xai_cam_layer_mode = str(
+            section.get("epoch_plot_xai_cam_layer_mode", "last_requested_layer")
+        )
+        plot_xai_render_rollout = bool(
+            section.get("epoch_plot_xai_render_attn_rollout", True)
+        )
+        plot_xai_cam_layer = resolve_cam_layer(
+            model_cfg["layers"], plot_xai_cam_layer_mode
+        )
 
         context.logger.info(f"Training for up to {epochs} epochs on device {device}.")
         best_miou = 0.0
@@ -749,9 +766,24 @@ class TrainPhase(Phase):
                             selected_global_indices = set(
                                 rng.sample(range(val_count), k=desired_pairs)
                             )
+                            context.logger.info(
+                                f"Epoch {epoch + 1} validation plot indices: "
+                                f"{sorted(selected_global_indices)}"
+                            )
                             sample_plots: list[dict[str, Any]] = []
                             eval_call = cast(Any, eval_model)
                             running_idx = 0
+                            if plot_xai_enable and (
+                                backbone is None or processor is None
+                            ):
+                                processor = AutoImageProcessor.from_pretrained(
+                                    model_cfg["backbone"]
+                                )
+                                backbone = (
+                                    AutoModel.from_pretrained(model_cfg["backbone"])
+                                    .eval()
+                                    .to(device)
+                                )
                             for v_img, v_feats, v_y in val_loader:
                                 batch_size = int(v_img.shape[0])
                                 wanted_local = [
@@ -845,15 +877,91 @@ class TrainPhase(Phase):
                                         class_index=plot_metric_class_index,
                                         ignore_index=loss_ignore_index,
                                     )
-                                    sample_plots.append(
-                                        {
-                                            "rgb": rgb,
-                                            "gt_mask": gt_mask,
-                                            "pred_mask": pred_mask,
-                                            "iou": tile_iou,
-                                            "f1": tile_f1,
-                                        }
-                                    )
+                                    sample_payload: dict[str, Any] = {
+                                        "rgb": rgb,
+                                        "gt_mask": gt_mask,
+                                        "pred_mask": pred_mask,
+                                        "iou": tile_iou,
+                                        "f1": tile_f1,
+                                    }
+                                    if plot_xai_enable and backbone and processor:
+                                        rgb_h, rgb_w = int(rgb.shape[0]), int(
+                                            rgb.shape[1]
+                                        )
+                                        attn_cls_map, attn_rollout_map, had_attn = (
+                                            compute_attention_maps(
+                                                rgb.astype(np.float32),
+                                                backbone,
+                                                processor,
+                                                device,
+                                                ps,
+                                                logger=context.logger,
+                                            )
+                                        )
+                                        if not had_attn:
+                                            context.logger.info(
+                                                "Epoch %s sample %s attention unavailable; "
+                                                "using zero attention maps."
+                                                % (epoch + 1, len(sample_plots) + 1)
+                                            )
+                                        attn_cls_map = upsample_map(
+                                            attn_cls_map, rgb_h, rgb_w
+                                        )
+                                        attn_rollout_map = upsample_map(
+                                            attn_rollout_map, rgb_h, rgb_w
+                                        )
+                                        gradcam_result = (
+                                            compute_gradcam_with_topk_channels(
+                                                image_hw3=rgb.astype(np.float32),
+                                                backbone=backbone,
+                                                head=eval_model,
+                                                processor=processor,
+                                                device=device,
+                                                layers=model_cfg["layers"],
+                                                ps=ps,
+                                                class_index=plot_xai_class_index,
+                                                topk_channels=plot_xai_topk_channels,
+                                                cam_layer=plot_xai_cam_layer,
+                                                logger=context.logger,
+                                            )
+                                        )
+                                        gradcam_map = upsample_map(
+                                            np.asarray(
+                                                gradcam_result["cam_map"],
+                                                dtype=np.float32,
+                                            ),
+                                            rgb_h,
+                                            rgb_w,
+                                        )
+                                        top_maps = [
+                                            upsample_map(
+                                                np.asarray(top_map, dtype=np.float32),
+                                                rgb_h,
+                                                rgb_w,
+                                            )
+                                            for top_map in gradcam_result["top_maps"]
+                                        ]
+                                        sample_payload.update(
+                                            {
+                                                "attn_cls": attn_cls_map,
+                                                "attn_rollout": attn_rollout_map,
+                                                "gradcam": gradcam_map,
+                                                "top_channels": [
+                                                    int(idx)
+                                                    for idx in gradcam_result[
+                                                        "top_indices"
+                                                    ]
+                                                ],
+                                                "top_scores": [
+                                                    float(score)
+                                                    for score in gradcam_result[
+                                                        "top_scores"
+                                                    ]
+                                                ],
+                                                "top_maps": top_maps,
+                                            }
+                                        )
+                                    sample_plots.append(sample_payload)
                                     if len(sample_plots) >= desired_pairs:
                                         break
                                 if len(sample_plots) >= desired_pairs:
@@ -867,6 +975,17 @@ class TrainPhase(Phase):
                                     sample_plots,
                                     plot_cmap,
                                 )
+                                if plot_xai_enable:
+                                    xai_out_path = os.path.join(
+                                        plot_dir, f"epoch_{epoch + 1:04d}_xai.png"
+                                    )
+                                    save_epoch_xai_plot(
+                                        xai_out_path,
+                                        sample_plots,
+                                        cmap=plot_cmap,
+                                        topk_channels=plot_xai_topk_channels,
+                                        render_rollout=plot_xai_render_rollout,
+                                    )
                             else:
                                 context.logger.error(
                                     "Epoch validation plotting skipped: no samples collected."
@@ -1425,6 +1544,130 @@ def save_epoch_plot(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
+
+
+def save_epoch_xai_plot(
+    output_path: str,
+    samples: list[dict[str, Any]],
+    cmap: str,
+    topk_channels: int = 5,
+    render_rollout: bool = True,
+    gt_overlay_alpha: float = 0.35,
+) -> None:
+    """Save a per-epoch explainability grid for sampled validation tiles.
+
+    Args:
+        output_path (str): PNG output path.
+        samples (list[dict[str, Any]]): Samples with rgb/gt/pred and XAI maps.
+        cmap (str): Matplotlib colormap used for segmentation masks.
+        topk_channels (int): Number of top channel maps to render per sample.
+        render_rollout (bool): Whether to include attention rollout panel.
+        gt_overlay_alpha (float): Alpha for GT overlay on RGB.
+    """
+
+    import matplotlib.pyplot as plt
+
+    rows = len(samples)
+    if rows == 0:
+        return
+    topk = max(1, int(topk_channels))
+    base_cols = 5 if render_rollout else 4
+    cols = base_cols + topk
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.1))
+    if rows == 1:
+        axes = np.expand_dims(axes, axis=0)
+    axes_arr = np.asarray(axes, dtype=object)
+    for row_idx, sample in enumerate(samples):
+        rgb = sample["rgb"]
+        gt_mask = sample["gt_mask"]
+        pred_mask = sample["pred_mask"]
+        iou = float(sample["iou"])
+        f1 = float(sample["f1"])
+        zero_map = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
+        attn_cls = np.asarray(sample.get("attn_cls", zero_map), dtype=np.float32)
+        attn_rollout = np.asarray(
+            sample.get("attn_rollout", zero_map), dtype=np.float32
+        )
+        gradcam = np.asarray(sample.get("gradcam", zero_map), dtype=np.float32)
+        top_maps = [
+            np.asarray(map_data, dtype=np.float32)
+            for map_data in sample.get("top_maps", [])
+        ]
+        top_indices = [int(idx) for idx in sample.get("top_channels", [])]
+        top_scores = [float(score) for score in sample.get("top_scores", [])]
+
+        col_idx = 0
+        gt_ax = axes_arr[row_idx, col_idx]
+        gt_ax.imshow(rgb)
+        gt_overlay = np.ma.masked_where(gt_mask == 0, gt_mask)
+        gt_ax.imshow(gt_overlay, cmap=cmap, alpha=gt_overlay_alpha)
+        gt_ax.set_title(f"Tile {row_idx + 1} | GT overlay")
+        gt_ax.axis("off")
+        col_idx += 1
+
+        pred_ax = axes_arr[row_idx, col_idx]
+        pred_ax.imshow(pred_mask, cmap=cmap)
+        pred_ax.set_title(f"Pred IoU={iou:.3f} F1={f1:.3f}")
+        pred_ax.axis("off")
+        col_idx += 1
+
+        cls_ax = axes_arr[row_idx, col_idx]
+        cls_ax.imshow(overlay_heatmap(rgb, attn_cls, cmap="viridis", alpha=0.45))
+        cls_ax.set_title("DINO CLS focus")
+        cls_ax.axis("off")
+        col_idx += 1
+
+        if render_rollout:
+            rollout_ax = axes_arr[row_idx, col_idx]
+            rollout_ax.imshow(
+                overlay_heatmap(rgb, attn_rollout, cmap="viridis", alpha=0.45)
+            )
+            rollout_ax.set_title("DINO rollout")
+            rollout_ax.axis("off")
+            col_idx += 1
+
+        cam_ax = axes_arr[row_idx, col_idx]
+        cam_ax.imshow(overlay_heatmap(rgb, gradcam, cmap="magma", alpha=0.5))
+        cam_ax.set_title("Grad-CAM")
+        cam_ax.axis("off")
+        col_idx += 1
+
+        for top_idx in range(topk):
+            top_ax = axes_arr[row_idx, col_idx + top_idx]
+            if top_idx < len(top_maps):
+                map_data = top_maps[top_idx]
+                channel_id = (
+                    str(top_indices[top_idx]) if top_idx < len(top_indices) else "?"
+                )
+                score = top_scores[top_idx] if top_idx < len(top_scores) else 0.0
+                top_ax.imshow(overlay_heatmap(rgb, map_data, cmap="plasma", alpha=0.45))
+                top_ax.set_title(f"Top {top_idx + 1} ch={channel_id} w={score:.3g}")
+            else:
+                top_ax.imshow(rgb)
+                top_ax.set_title(f"Top {top_idx + 1} unavailable")
+            top_ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def resolve_cam_layer(layers: list[int], mode: str) -> int | None:
+    """Resolve the DINO layer index to use for CAM extraction.
+
+    Args:
+        layers (list[int]): Configured backbone layer indices.
+        mode (str): Selection mode (`last_requested_layer` or `first_requested_layer`).
+
+    Returns:
+        int | None: Selected layer index, or None when no layers are provided.
+    """
+
+    if not layers:
+        return None
+    normalized = str(mode).strip().lower()
+    if normalized == "first_requested_layer":
+        return int(layers[0])
+    return int(layers[-1])
 
 
 def compute_tile_iou_f1(

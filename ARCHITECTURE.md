@@ -34,5 +34,6 @@ MLflow-compatible artifacts for research workflows.
 ## Workflow
 1. Prepare tiles and features (optional)
 2. Verify cached tiles (readability + semantic checks) (optional)
-3. Train segmentation head with per-epoch validation visualization panels (optional)
+3. Train segmentation head with per-epoch validation visualization panels (optional),
+   including optional XAI dashboards (DINO attention, Grad-CAM, top-k feature channels)
 4. Run inference (optional)

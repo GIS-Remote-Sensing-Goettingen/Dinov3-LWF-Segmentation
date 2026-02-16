@@ -99,6 +99,11 @@ train:
   epoch_plot_pairs: 4
   epoch_plot_seed_offset: 1000
   epoch_plot_metric_class_index: 1
+  epoch_plot_xai_enable: true
+  epoch_plot_xai_class_index: 1
+  epoch_plot_xai_topk_channels: 5
+  epoch_plot_xai_cam_layer_mode: last_requested_layer
+  epoch_plot_xai_render_attn_rollout: true
   loss:
     ce_weight: 1.0
     dice_weight: 1.0
@@ -164,7 +169,7 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, and per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1.
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, and top-k influential DINO channel maps.
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
 
 ## Testing

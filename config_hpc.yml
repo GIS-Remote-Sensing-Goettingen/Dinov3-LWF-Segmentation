@@ -73,6 +73,11 @@ train:
   epoch_plot_pairs: 4
   epoch_plot_seed_offset: 1000
   epoch_plot_metric_class_index: 1
+  epoch_plot_xai_enable: true
+  epoch_plot_xai_class_index: 1
+  epoch_plot_xai_topk_channels: 5
+  epoch_plot_xai_cam_layer_mode: last_requested_layer
+  epoch_plot_xai_render_attn_rollout: true
   loss:
     ce_weight: 1.0
     dice_weight: 1.0
