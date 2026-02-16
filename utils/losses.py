@@ -99,6 +99,7 @@ class SegmentationLoss(nn.Module):
         aux_weight: float = 0.4,
         class_weights: Optional[List[float]] = None,
         ignore_index: Optional[int] = None,
+        label_smoothing: float = 0.0,
     ) -> None:
         """Initialize the combined segmentation loss.
 
@@ -109,6 +110,7 @@ class SegmentationLoss(nn.Module):
             aux_weight (float): Auxiliary loss weight.
             class_weights (Optional[List[float]]): Optional class weights.
             ignore_index (Optional[int]): Optional ignore index.
+            label_smoothing (float): Cross-entropy label smoothing value.
         """
 
         super().__init__()
@@ -116,6 +118,7 @@ class SegmentationLoss(nn.Module):
         self.dice_weight = dice_weight
         self.aux_weight = aux_weight
         self.ignore_index = ignore_index
+        self.label_smoothing = min(max(float(label_smoothing), 0.0), 0.999)
         weight_tensor = None
         if class_weights is not None:
             weight_tensor = torch.tensor(class_weights, dtype=torch.float32)
@@ -141,6 +144,7 @@ class SegmentationLoss(nn.Module):
             targets,
             weight=self.class_weights,
             ignore_index=self.ignore_index if self.ignore_index is not None else -100,
+            label_smoothing=self.label_smoothing,
         )
 
     def forward(

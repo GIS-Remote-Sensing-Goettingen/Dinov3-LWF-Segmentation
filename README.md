@@ -51,6 +51,29 @@ dataset:
     hflip: true
     vflip: true
     rotate90: true
+    allow_feature_mismatch: false
+    cutout:
+      enable: true
+      prob: 0.25
+      min_frac: 0.08
+      max_frac: 0.22
+      num_holes: 1
+      fill: 0.0
+    gridmask:
+      enable: true
+      prob: 0.20
+      d_min: 48
+      d_max: 128
+      ratio: 0.5
+      rotate: true
+      fill: 0.0
+    color_jitter:
+      enable: true
+      prob: 0.35
+      brightness: 0.25
+      contrast: 0.25
+      saturation: 0.12
+      hue: 0.04
   splits:
     train_list: splits/train.txt
     val_list: splits/val.txt
@@ -86,6 +109,7 @@ train:
   epochs: 30
   muon_lr: 0.02
   adamw_lr: 0.001
+  adamw_wd: 0.01
   momentum: 0.95
   patience: 10
   val_fraction: 0.2
@@ -104,10 +128,13 @@ train:
   epoch_plot_xai_topk_channels: 5
   epoch_plot_xai_cam_layer_mode: last_requested_layer
   epoch_plot_xai_render_attn_rollout: true
+  epoch_plot_xai_pca_enable: true
+  epoch_plot_xai_pca_layer_mode: same_as_cam
   loss:
     ce_weight: 1.0
     dice_weight: 1.0
     aux_weight: 0.4
+    label_smoothing: 0.1
   stability:
     amp:
       enabled: auto      # auto | on | off
@@ -132,6 +159,13 @@ inference:
   tta:
     horizontal_flip: true
     vertical_flip: false
+  explain:
+    enable: true
+    output_dir: plots
+    class_index: 1
+    dashboard_layout: "4x3"
+    pca_enable: true
+    pca_layer_mode: last_requested_layer
 ```
 
 Set `enable: true` for any section you want to run. The `paths` block provides base directories shared across phases, while individual sections can override them (e.g., use a different `processed_dir` for training vs. verification).
@@ -164,14 +198,14 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 
 ## Utilities
 
-- `utils/data.py` handles tiling, label alignment, feature extraction, cache verification, and the `PrecomputedDataset`. It also applies optional train-time augmentations (flips/rotations), validates finiteness/label ranges, and supports region-based splits.
+- `utils/data.py` handles tiling, label alignment, feature extraction, cache verification, and the `PrecomputedDataset`. It applies optional train-time augmentations (flips/rotations + color jitter/cutout/gridmask), validates finiteness/label ranges, and supports region-based splits. Image-only augmentations are skipped by default when cached features are enabled unless `dataset.augmentations.allow_feature_mismatch` is set to `true`.
 - `utils/losses.py` implements the combined CE + Dice loss used for the main head and auxiliary deep supervision.
 - `utils/metrics.py` accumulates per-class IoU/Dice; we early-stop on validation mIoU instead of loss.
 - `utils/optim.py` contains the Muon optimizer (matrix-aware momentum with orthogonalization), AdamW handling, and a configurable EarlyStopping helper that works for min/max metrics.
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, and top-k influential DINO channel maps.
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), and top-k influential DINO channel maps.
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
 - **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags.
 

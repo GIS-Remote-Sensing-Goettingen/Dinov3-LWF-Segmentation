@@ -142,6 +142,207 @@ def _sanitize_label_tensor(
     return sanitized
 
 
+def _rgb_to_hsv(image: torch.Tensor) -> torch.Tensor:
+    """Convert an RGB tensor in [0, 1] to HSV.
+
+    Args:
+        image (torch.Tensor): RGB image tensor shaped (3, H, W).
+
+    Returns:
+        torch.Tensor: HSV image tensor shaped (3, H, W).
+    """
+
+    eps = 1e-8
+    r, g, b = image[0], image[1], image[2]
+    maxc, argmax = torch.max(image, dim=0)
+    minc = torch.min(image, dim=0).values
+    delta = maxc - minc
+    saturation = torch.where(maxc > eps, delta / (maxc + eps), torch.zeros_like(maxc))
+    hue = torch.zeros_like(maxc)
+    valid = delta > eps
+    delta_safe = delta + eps
+    r_max = (argmax == 0) & valid
+    g_max = (argmax == 1) & valid
+    b_max = (argmax == 2) & valid
+    hue = torch.where(r_max, ((g - b) / delta_safe) % 6.0, hue)
+    hue = torch.where(g_max, ((b - r) / delta_safe) + 2.0, hue)
+    hue = torch.where(b_max, ((r - g) / delta_safe) + 4.0, hue)
+    hue = (hue / 6.0) % 1.0
+    value = maxc
+    return torch.stack((hue, saturation, value), dim=0)
+
+
+def _hsv_to_rgb(image: torch.Tensor) -> torch.Tensor:
+    """Convert an HSV tensor in [0, 1] to RGB.
+
+    Args:
+        image (torch.Tensor): HSV image tensor shaped (3, H, W).
+
+    Returns:
+        torch.Tensor: RGB image tensor shaped (3, H, W).
+    """
+
+    h, s, v = image[0], image[1], image[2]
+    h6 = (h % 1.0) * 6.0
+    i = torch.floor(h6).to(torch.int64) % 6
+    f = h6 - torch.floor(h6)
+    p = v * (1.0 - s)
+    q = v * (1.0 - f * s)
+    t = v * (1.0 - (1.0 - f) * s)
+    r = torch.zeros_like(v)
+    g = torch.zeros_like(v)
+    b = torch.zeros_like(v)
+    m0 = i == 0
+    m1 = i == 1
+    m2 = i == 2
+    m3 = i == 3
+    m4 = i == 4
+    m5 = i == 5
+    r = torch.where(m0, v, r)
+    g = torch.where(m0, t, g)
+    b = torch.where(m0, p, b)
+    r = torch.where(m1, q, r)
+    g = torch.where(m1, v, g)
+    b = torch.where(m1, p, b)
+    r = torch.where(m2, p, r)
+    g = torch.where(m2, v, g)
+    b = torch.where(m2, t, b)
+    r = torch.where(m3, p, r)
+    g = torch.where(m3, q, g)
+    b = torch.where(m3, v, b)
+    r = torch.where(m4, t, r)
+    g = torch.where(m4, p, g)
+    b = torch.where(m4, v, b)
+    r = torch.where(m5, v, r)
+    g = torch.where(m5, p, g)
+    b = torch.where(m5, q, b)
+    return torch.stack((r, g, b), dim=0)
+
+
+def _apply_color_jitter(img: torch.Tensor, cfg: dict[str, Any]) -> torch.Tensor:
+    """Apply color jitter augmentation to an image tensor.
+
+    Args:
+        img (torch.Tensor): Image tensor shaped (C, H, W) in [0, 1].
+        cfg (dict[str, Any]): Color jitter config.
+
+    Returns:
+        torch.Tensor: Augmented image tensor.
+    """
+
+    if not cfg.get("enable", False):
+        return img
+    prob = float(cfg.get("prob", 0.0))
+    if prob <= 0 or random.random() >= prob:
+        return img
+    out = img.clone()
+    brightness = max(0.0, float(cfg.get("brightness", 0.0)))
+    contrast = max(0.0, float(cfg.get("contrast", 0.0)))
+    saturation = max(0.0, float(cfg.get("saturation", 0.0)))
+    hue = max(0.0, min(0.5, float(cfg.get("hue", 0.0))))
+    if brightness > 0:
+        b_factor = 1.0 + random.uniform(-brightness, brightness)
+        out = out * b_factor
+    if contrast > 0:
+        c_factor = 1.0 + random.uniform(-contrast, contrast)
+        mean = out.mean(dim=(1, 2), keepdim=True)
+        out = (out - mean) * c_factor + mean
+    if saturation > 0 and out.shape[0] >= 3:
+        s_factor = 1.0 + random.uniform(-saturation, saturation)
+        gray = out[:3].mean(dim=0, keepdim=True)
+        out[:3] = (out[:3] - gray) * s_factor + gray
+    if hue > 0 and out.shape[0] >= 3:
+        h_shift = random.uniform(-hue, hue)
+        hsv = _rgb_to_hsv(out[:3])
+        hsv[0] = (hsv[0] + h_shift) % 1.0
+        out[:3] = _hsv_to_rgb(hsv)
+    return torch.clamp(out, 0.0, 1.0)
+
+
+def _apply_cutout(img: torch.Tensor, cfg: dict[str, Any]) -> torch.Tensor:
+    """Apply CutOut augmentation to an image tensor.
+
+    Args:
+        img (torch.Tensor): Image tensor shaped (C, H, W) in [0, 1].
+        cfg (dict[str, Any]): CutOut config.
+
+    Returns:
+        torch.Tensor: Augmented image tensor.
+    """
+
+    if not cfg.get("enable", False):
+        return img
+    prob = float(cfg.get("prob", 0.0))
+    if prob <= 0 or random.random() >= prob:
+        return img
+    out = img.clone()
+    _, height, width = out.shape
+    min_frac = max(0.0, float(cfg.get("min_frac", 0.08)))
+    max_frac = max(min_frac, float(cfg.get("max_frac", 0.22)))
+    num_holes = max(1, int(cfg.get("num_holes", 1)))
+    fill = float(cfg.get("fill", 0.0))
+    base = max(1, min(height, width))
+    for _ in range(num_holes):
+        frac = random.uniform(min_frac, max_frac)
+        side = max(1, int(round(frac * base)))
+        half = side // 2
+        center_y = random.randint(0, max(0, height - 1))
+        center_x = random.randint(0, max(0, width - 1))
+        y0 = max(0, center_y - half)
+        y1 = min(height, y0 + side)
+        x0 = max(0, center_x - half)
+        x1 = min(width, x0 + side)
+        out[:, y0:y1, x0:x1] = fill
+    return torch.clamp(out, 0.0, 1.0)
+
+
+def _apply_gridmask(img: torch.Tensor, cfg: dict[str, Any]) -> torch.Tensor:
+    """Apply GridMask augmentation to an image tensor.
+
+    Args:
+        img (torch.Tensor): Image tensor shaped (C, H, W) in [0, 1].
+        cfg (dict[str, Any]): GridMask config.
+
+    Returns:
+        torch.Tensor: Augmented image tensor.
+    """
+
+    if not cfg.get("enable", False):
+        return img
+    prob = float(cfg.get("prob", 0.0))
+    if prob <= 0 or random.random() >= prob:
+        return img
+    out = img.clone()
+    _, height, width = out.shape
+    d_min = max(2, int(cfg.get("d_min", 48)))
+    d_max = max(d_min, int(cfg.get("d_max", 128)))
+    ratio = max(0.0, min(1.0, float(cfg.get("ratio", 0.5))))
+    fill = float(cfg.get("fill", 0.0))
+    period = random.randint(d_min, d_max)
+    hole = max(1, int(round(period * ratio)))
+    mask = torch.ones((height, width), dtype=out.dtype, device=out.device)
+    offset_y = random.randint(0, max(0, period - 1))
+    offset_x = random.randint(0, max(0, period - 1))
+    for y0 in range(-period + offset_y, height, period):
+        y1 = min(height, y0 + hole)
+        ys = max(0, y0)
+        if ys >= y1:
+            continue
+        for x0 in range(-period + offset_x, width, period):
+            x1 = min(width, x0 + hole)
+            xs = max(0, x0)
+            if xs >= x1:
+                continue
+            mask[ys:y1, xs:x1] = 0.0
+    if cfg.get("rotate", False):
+        k = random.randint(0, 3)
+        if k:
+            mask = torch.rot90(mask, k, dims=(0, 1))
+    mask = mask.unsqueeze(0)
+    out = out * mask + fill * (1.0 - mask)
+    return torch.clamp(out, 0.0, 1.0)
+
+
 def _cache_subdir_name(tile_size: int, cache_features: bool) -> str:
     """Build a cache subdirectory name for tile size and feature mode.
 
@@ -1264,4 +1465,10 @@ class PrecomputedDataset(Dataset):
             img = torch.flip(img, dims=(1,))
             label = torch.flip(label, dims=(0,))
             feats = [torch.flip(f, dims=(1,)) for f in feats]
+        allow_feature_mismatch = bool(cfg.get("allow_feature_mismatch", False))
+        has_cached_features = len(feats) > 0
+        if allow_feature_mismatch or not has_cached_features:
+            img = _apply_color_jitter(img, cfg.get("color_jitter", {}))
+            img = _apply_cutout(img, cfg.get("cutout", {}))
+            img = _apply_gridmask(img, cfg.get("gridmask", {}))
         return img, feats, label

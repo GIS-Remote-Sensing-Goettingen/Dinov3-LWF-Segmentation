@@ -40,5 +40,8 @@ MLflow-compatible artifacts for research workflows.
 1. Prepare tiles and features (optional)
 2. Verify cached tiles (readability + semantic checks) (optional)
 3. Train segmentation head with per-epoch validation visualization panels (optional),
-   including optional XAI dashboards (DINO attention, Grad-CAM, top-k feature channels)
+   including optional XAI dashboards (DINO attention, Grad-CAM, PCA feature maps,
+   top-k feature channels). Training augmentation includes geometric transforms and
+   optional image-only regularizers (color jitter/cutout/gridmask), which are
+   cache-safe by default when precomputed features are used.
 4. Run inference (optional)
