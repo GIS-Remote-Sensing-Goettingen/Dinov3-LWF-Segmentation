@@ -1,5 +1,12 @@
 """
 MaskFormer-style transformer head sitting on top of DINOv3 features.
+
+Architecture overview:
+- RGB branch builds a compact spatial prior at H/4.
+- DINO multiscale features are projected and fused into a pixel decoder.
+- Learned query embeddings decode class-aware masks via transformer blocks.
+- Final segmentation logits are produced by combining mask embeddings with
+  pixel-level features.
 """
 
 from __future__ import annotations

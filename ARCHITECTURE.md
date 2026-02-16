@@ -27,6 +27,9 @@ MLflow-compatible artifacts for research workflows.
 - `artifacts/run_summary.json` for run metadata and phase outputs.
 - Epoch logging emits explicit validation aliases (mIoU/IoU/F1) plus decomposed
   train/validation loss components for richer MLflow dashboards.
+- Decoder family includes opt-in lightweight variants (`unet_lite`,
+  `unet_lite_plus`) so users can trade compute for quality without changing
+  pipeline wiring.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.

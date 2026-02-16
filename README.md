@@ -65,7 +65,7 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_v2          # unet | unet_v2 | unet_lite | maskformer
+  head: unet_v2          # unet | unet_v2 | unet_lite | unet_lite_plus | maskformer
   num_classes: 2
   dino_channels: 1024
 
@@ -156,6 +156,8 @@ The `model.head` key selects one of the decoders registered under `models/`:
 |-------------|------------------|-------------------------------------------------------------------|
 | `unet`      | `models/unet.py` | Baseline DinoUNet with stacked UpBlocks and raw-image skip.       |
 | `unet_v2`   | `models/unet_v2.py` | Adds Spatial Prior Module + Fidelity-Aware projections + deep supervision. |
+| `unet_lite` | `models/UnetLite.py` | Lightweight DinoUNet variant with reduced channels for faster training/inference. |
+| `unet_lite_plus` | `models/unet_lite_plus.py` | Opt-in Lite+ variant using interpolate+conv upsampling, GN+GELU residual blocks, and lightweight gated H/4 fusion. |
 | `maskformer`| `models/maskformer.py` | Pixel decoder fused with transformer mask head (MaskFormer style).       |
 
 Adding a new decoder only requires implementing `SegmentationHead`, registering it in `models/__init__.py`, and referencing it via `model.head`.
