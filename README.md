@@ -65,7 +65,7 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_v2          # unet | unet_v2 | unet_lite | maskformer
+  head: unet_v2          # unet | unet_v2 | unet_lite | unet_lite_plus | maskformer
   num_classes: 2
   dino_channels: 1024
 
@@ -99,6 +99,11 @@ train:
   epoch_plot_pairs: 4
   epoch_plot_seed_offset: 1000
   epoch_plot_metric_class_index: 1
+  epoch_plot_xai_enable: true
+  epoch_plot_xai_class_index: 1
+  epoch_plot_xai_topk_channels: 5
+  epoch_plot_xai_cam_layer_mode: last_requested_layer
+  epoch_plot_xai_render_attn_rollout: true
   loss:
     ce_weight: 1.0
     dice_weight: 1.0
@@ -151,6 +156,8 @@ The `model.head` key selects one of the decoders registered under `models/`:
 |-------------|------------------|-------------------------------------------------------------------|
 | `unet`      | `models/unet.py` | Baseline DinoUNet with stacked UpBlocks and raw-image skip.       |
 | `unet_v2`   | `models/unet_v2.py` | Adds Spatial Prior Module + Fidelity-Aware projections + deep supervision. |
+| `unet_lite` | `models/UnetLite.py` | Lightweight DinoUNet variant with reduced channels for faster training/inference. |
+| `unet_lite_plus` | `models/unet_lite_plus.py` | Opt-in Lite+ variant using interpolate+conv upsampling, GN+GELU residual blocks, and lightweight gated H/4 fusion. |
 | `maskformer`| `models/maskformer.py` | Pixel decoder fused with transformer mask head (MaskFormer style).       |
 
 Adding a new decoder only requires implementing `SegmentationHead`, registering it in `models/__init__.py`, and referencing it via `model.head`.
@@ -164,8 +171,9 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, and per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1.
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, and top-k influential DINO channel maps.
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
+- **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags.
 
 ## Testing
 

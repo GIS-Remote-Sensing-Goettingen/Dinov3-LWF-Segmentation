@@ -25,6 +25,11 @@ MLflow-compatible artifacts for research workflows.
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.
 - `artifacts/metrics.jsonl` for lightweight visualization.
 - `artifacts/run_summary.json` for run metadata and phase outputs.
+- Epoch logging emits explicit validation aliases (mIoU/IoU/F1) plus decomposed
+  train/validation loss components for richer MLflow dashboards.
+- Decoder family includes opt-in lightweight variants (`unet_lite`,
+  `unet_lite_plus`) so users can trade compute for quality without changing
+  pipeline wiring.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.
@@ -34,5 +39,6 @@ MLflow-compatible artifacts for research workflows.
 ## Workflow
 1. Prepare tiles and features (optional)
 2. Verify cached tiles (readability + semantic checks) (optional)
-3. Train segmentation head with per-epoch validation visualization panels (optional)
+3. Train segmentation head with per-epoch validation visualization panels (optional),
+   including optional XAI dashboards (DINO attention, Grad-CAM, top-k feature channels)
 4. Run inference (optional)

@@ -1,5 +1,13 @@
 """
 DinoUNet variant with Spatial Prior Module and Fidelity-Aware projections.
+
+Architecture overview:
+- RGB prior branch (SPM) provides edge-aware context at H/2 and H/4.
+- DINO backbone features from multiple transformer blocks are channel-compressed
+  with fidelity-aware attention projections.
+- Decoder fuses deep-to-shallow DINO scales with U-Net-style skip concatenation.
+- Deep supervision head is produced at H/8.
+- Late-stage fusion merges SPM priors before the final full-resolution logits.
 """
 
 from __future__ import annotations
@@ -268,6 +276,7 @@ class DinoUNetV2Head(SegmentationHead):
         self.conv3 = DoubleConv(64 + 64, 64)
         self.ds_head1 = nn.Conv2d(64, num_classes, 1)
         self.up4 = nn.ConvTranspose2d(64, 64, 2, stride=2)
+        # Kept for backward checkpoint compatibility; not used in forward.
         self.up4_extra = nn.ConvTranspose2d(64, 64, 2, stride=2)
         self.conv4 = DoubleConv(64 + 64, 64)
         self.up5 = nn.ConvTranspose2d(64, 32, 2, stride=2)
@@ -312,8 +321,10 @@ class DinoUNetV2Head(SegmentationHead):
         x = self.conv3(self._concat(self.up3(x), d_shallow))
         ds_out = self.ds_head1(x)
         x = self.up4(x)
-        if x.shape[-1] < spm_h4.shape[-1]:
-            x = self.up4_extra(x)
+        if x.shape[-2:] != spm_h4.shape[-2:]:
+            x = F.interpolate(
+                x, size=spm_h4.shape[-2:], mode="bilinear", align_corners=False
+            )
         x = self.conv4(self._concat(x, spm_h4))
         x = self.conv5(self._concat(self.up5(x), spm_h2))
         logits = self.final_conv(self.final_up(x))

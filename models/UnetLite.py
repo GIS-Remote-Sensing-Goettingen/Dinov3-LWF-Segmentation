@@ -5,6 +5,13 @@ Design goals:
 - Keep the same interface and spatial structure as DinoUNetV2Head
 - Reduce channel widths in SPM, FAP, and decoder to save memory/FLOPs
 - Preserve high-resolution decoding for thin linear woody features
+
+Architecture overview:
+- SPM extracts RGB priors at H/2 and H/4.
+- DINO multiscale features are projected with Fidelity-Aware Projection blocks.
+- U-Net-style decoder progressively fuses deep-to-shallow DINO features.
+- Deep supervision is emitted at H/8.
+- Late fusion injects SPM priors at H/4 and H/2 before final upsampling.
 """
 
 from __future__ import annotations
@@ -99,6 +106,7 @@ class DinoUNetLiteHead(SegmentationHead):
         # After up3, feature map is 32x32; up4 -> 64x64 (H/4).
         # SPM H/4 has 32 channels (base_channels * 2).
         self.up4 = nn.ConvTranspose2d(16, 16, 2, stride=2)
+        # Kept for backward checkpoint compatibility; not used in forward.
         self.up4_extra = nn.ConvTranspose2d(16, 16, 2, stride=2)
         # Input to conv4: decoder(16) + spm_h4(32) -> 48
         self.conv4 = DoubleConv(16 + 32, 16)
@@ -115,25 +123,20 @@ class DinoUNetLiteHead(SegmentationHead):
 
     # ---------------------------------------------------------------------    # Forward variants
     # ---------------------------------------------------------------------
-    def forward_with_aux(
+    def _forward_impl(
         self, image: torch.Tensor, features: List[torch.Tensor]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass returning main logits and deep supervision head.
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        """Shared forward implementation for standard and explainability outputs.
 
         Args:
-            image:    (B, 3, H, W)
-            features: list of 4 DINO feature maps, ordered from shallowest
-                      to deepest, as in DinoUNetV2Head:
-                        features[0]: (B, C, H/8,  W/8)
-                        features[1]: (B, C, H/16, W/16)
-                        features[2]: (B, C, H/32, W/32)
-                        features[3]: (B, C, H/64, W/64)
+            image (torch.Tensor): Input image tensor.
+            features (List[torch.Tensor]): Multiscale backbone feature tensors.
 
         Returns:
-            logits: (B, num_classes, H, W)
-            ds1:    (B, num_classes, H/8, W/8) deep supervision prediction
+            tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]: Main
+            logits, deep supervision logits, and intermediate tensors.
         """
+
         # --- SPM priors (RGB-based spatial context) -------------------------
         spm_h2, spm_h4 = self.spm(image)  # H/2, H/4
 
@@ -145,6 +148,7 @@ class DinoUNetLiteHead(SegmentationHead):
 
         # --- Bottleneck at the deepest scale --------------------------------
         x = self.bottleneck(d_deep)  # (B, 128, H/64, W/64)
+        bottleneck_feat = x
 
         # --- Decoder: merge deep DINO semantics -----------------------------
         # up1: H/64 -> H/32, then fuse with mid2 (H/32).
@@ -158,6 +162,7 @@ class DinoUNetLiteHead(SegmentationHead):
         # up3: H/16 -> H/8, fuse with shallow DINO features (H/8).
         x = self.up3(x)
         x = self.conv3(self._concat(x, d_shallow))
+        decoder_h8 = x
 
         # Deep supervision prediction at H/8 (e.g. 32x32 for H=256).
         ds_out = self.ds_head1(x)
@@ -165,22 +170,68 @@ class DinoUNetLiteHead(SegmentationHead):
         # --- Fuse with SPM priors at higher resolutions ---------------------
         # up4: H/8 -> H/4; account for possible rounding mismatches.
         x = self.up4(x)
-        if x.shape[-1] < spm_h4.shape[-1]:
-            # In case of odd input sizes, we might be one pixel short.
-            x = self.up4_extra(x)
+        if x.shape[-2:] != spm_h4.shape[-2:]:
+            # Use interpolation for deterministic shape alignment.
+            x = F.interpolate(
+                x, size=spm_h4.shape[-2:], mode="bilinear", align_corners=False
+            )
 
         # Fuse decoder with SPM H/4 (boundary-aware prior).
         x = self.conv4(self._concat(x, spm_h4))
+        decoder_h4 = x
 
         # up5: H/4 -> H/2, fuse with SPM H/2 (high-res spatial prior).
         x = self.up5(x)
         x = self.conv5(self._concat(x, spm_h2))
+        decoder_h2 = x
 
         # Final upsample: H/2 -> H, then 1x1 conv to logits.
         x = self.final_up(x)
         logits = self.final_conv(x)
+        extras = {
+            "bottleneck_features": bottleneck_feat,
+            "decoder_h8": decoder_h8,
+            "decoder_h4": decoder_h4,
+            "decoder_h2": decoder_h2,
+        }
+        return logits, ds_out, extras
 
-        return logits, ds_out
+    def forward_with_aux(
+        self, image: torch.Tensor, features: List[torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning main logits and deep supervision head.
+
+        Args:
+            image: (B, 3, H, W) input image tensor.
+            features: list of 4 DINO feature maps ordered from shallowest to
+                deepest.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Main logits and deep supervision
+            logits at H/8 resolution.
+        """
+
+        logits, aux_logits, _ = self._forward_impl(image, features)
+        return logits, aux_logits
+
+    def forward_with_extras(
+        self, image: torch.Tensor, features: List[torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        """Forward pass returning logits plus explainability intermediates.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (List[torch.Tensor]): Multiscale backbone feature tensors.
+
+        Returns:
+            dict[str, torch.Tensor]: Dictionary containing `logits`,
+            `aux_logits`, and intermediate decoder features.
+        """
+
+        logits, aux_logits, extras = self._forward_impl(image, features)
+        payload = {"logits": logits, "aux_logits": aux_logits}
+        payload.update(extras)
+        return payload
 
     def forward(
         self, image: torch.Tensor, features: List[torch.Tensor]

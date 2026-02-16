@@ -16,7 +16,7 @@ paths:
 
 dataset:
   cache_features: false
-  max_tiles: 1000
+  max_tiles: 5000
   augmentations:
     enable: true
     hflip: true
@@ -36,7 +36,7 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_lite
+  head: unet_lite_plus
   num_classes: 2
   dino_channels: 1024
 
@@ -57,7 +57,7 @@ train:
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
   weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/
   batch_size: 3
-  epochs: 300
+  epochs: 100
   muon_lr: 0.02
   adamw_lr: 0.001
   momentum: 0.95
@@ -73,6 +73,11 @@ train:
   epoch_plot_pairs: 4
   epoch_plot_seed_offset: 1000
   epoch_plot_metric_class_index: 1
+  epoch_plot_xai_enable: true
+  epoch_plot_xai_class_index: 1
+  epoch_plot_xai_topk_channels: 5
+  epoch_plot_xai_cam_layer_mode: last_requested_layer
+  epoch_plot_xai_render_attn_rollout: true
   loss:
     ce_weight: 1.0
     dice_weight: 1.0
@@ -100,7 +105,7 @@ inference:
   output_dir: test/
   output_suffix: _pred.tif
   glob: "*.tif"
-  checkpoint: weights/unet_lite_best.pth
+  checkpoint: weights/unet_lite_plus_best.pth
   tile_size: 1024
   overlap: 0.25
   tta:

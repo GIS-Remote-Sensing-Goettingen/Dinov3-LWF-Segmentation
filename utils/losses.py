@@ -10,6 +10,16 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+LOSS_COMPONENT_KEYS: tuple[str, ...] = (
+    "loss_total",
+    "loss_main_ce",
+    "loss_main_dice",
+    "loss_aux_ce",
+    "loss_aux_dice",
+    "loss_weighted_main",
+    "loss_weighted_aux",
+)
+
 
 class DiceLoss(nn.Module):
     """
@@ -152,18 +162,60 @@ class SegmentationLoss(nn.Module):
             torch.Tensor: Scalar loss tensor.
         """
 
-        loss = torch.tensor(0.0, device=logits.device)
+        return self.compute_components(
+            logits=logits,
+            targets=targets,
+            aux_logits=aux_logits,
+            aux_targets=aux_targets,
+        )["loss_total"]
+
+    def compute_components(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        aux_logits: Optional[torch.Tensor] = None,
+        aux_targets: Optional[torch.Tensor] = None,
+    ) -> dict[str, torch.Tensor]:
+        """Compute weighted and unweighted loss components.
+
+        Args:
+            logits (torch.Tensor): Main logits tensor.
+            targets (torch.Tensor): Target labels.
+            aux_logits (Optional[torch.Tensor]): Auxiliary logits tensor.
+            aux_targets (Optional[torch.Tensor]): Auxiliary targets tensor.
+
+        Returns:
+            dict[str, torch.Tensor]: Loss components keyed by
+            `LOSS_COMPONENT_KEYS`.
+        """
+
+        zero = torch.zeros((), device=logits.device, dtype=logits.dtype)
+        main_ce = zero
+        main_dice = zero
+        aux_ce = zero
+        aux_dice = zero
+
         if self.ce_weight:
-            loss = loss + self.ce_weight * self._ce_loss(logits, targets)
+            main_ce = self._ce_loss(logits, targets)
         if self.dice_weight:
-            loss = loss + self.dice_weight * self.dice(logits, targets)
+            main_dice = self.dice(logits, targets)
         if aux_logits is not None and aux_targets is not None and self.aux_weight > 0:
             if self.ce_weight:
-                loss = loss + self.aux_weight * self.ce_weight * self._ce_loss(
-                    aux_logits, aux_targets
-                )
+                aux_ce = self._ce_loss(aux_logits, aux_targets)
             if self.dice_weight:
-                loss = loss + self.aux_weight * self.dice_weight * self.dice(
-                    aux_logits, aux_targets
-                )
-        return loss
+                aux_dice = self.dice(aux_logits, aux_targets)
+
+        weighted_main = self.ce_weight * main_ce + self.dice_weight * main_dice
+        weighted_aux = self.aux_weight * (
+            self.ce_weight * aux_ce + self.dice_weight * aux_dice
+        )
+        total = weighted_main + weighted_aux
+        return {
+            "loss_total": total,
+            "loss_main_ce": main_ce,
+            "loss_main_dice": main_dice,
+            "loss_aux_ce": aux_ce,
+            "loss_aux_dice": aux_dice,
+            "loss_weighted_main": weighted_main,
+            "loss_weighted_aux": weighted_aux,
+        }

@@ -3,6 +3,12 @@ Classic U-Net style decoder that consumes frozen DINO features.
 
 The forward path mirrors the baseline experiment provided in the original
 scripts.
+
+Architecture overview:
+- Inputs are frozen DINO multiscale features plus the raw RGB image.
+- Decoder uses stacked upsample-and-concatenate blocks over DINO skips.
+- A shallow RGB projection is fused late to recover boundary detail.
+- Output is full-resolution class logits from a final 1x1 classifier.
 """
 
 from __future__ import annotations

@@ -12,6 +12,59 @@ import yaml
 
 from .context import PhaseError, PhaseResult, RunContext
 
+MLFLOW_RUN_STATUS_CODES: dict[str, int] = {
+    "RUNNING": 1,
+    "SCHEDULED": 2,
+    "FINISHED": 3,
+    "FAILED": 4,
+    "KILLED": 5,
+}
+
+MLFLOW_RUN_STATUS_ALIASES: dict[str, str] = {
+    "SUCCESS": "FINISHED",
+    "FAILURE": "FAILED",
+    "DONE": "FINISHED",
+    "ERROR": "FAILED",
+}
+
+
+def normalize_mlflow_run_status(status: str | int) -> int:
+    """Normalize a run status to MLflow's persisted integer enum.
+
+    Args:
+        status (str | int): Run status passed by the caller.
+
+    Returns:
+        int: MLflow status code in [1, 2, 3, 4, 5].
+
+    Raises:
+        ValueError: If the status cannot be mapped to a valid MLflow code.
+
+    Examples:
+        >>> normalize_mlflow_run_status("FAILED")
+        4
+        >>> normalize_mlflow_run_status(3)
+        3
+        >>> normalize_mlflow_run_status("success")
+        3
+    """
+
+    if isinstance(status, int):
+        if status in MLFLOW_RUN_STATUS_CODES.values():
+            return status
+        raise ValueError(
+            f"Invalid MLflow run status code: {status}. "
+            f"Expected one of {sorted(MLFLOW_RUN_STATUS_CODES.values())}."
+        )
+    normalized = status.strip().upper()
+    normalized = MLFLOW_RUN_STATUS_ALIASES.get(normalized, normalized)
+    if normalized in MLFLOW_RUN_STATUS_CODES:
+        return MLFLOW_RUN_STATUS_CODES[normalized]
+    raise ValueError(
+        f"Invalid MLflow run status string: {status!r}. "
+        f"Expected one of {sorted(MLFLOW_RUN_STATUS_CODES)}."
+    )
+
 
 class MetricsWriter:
     """Append metrics to a JSONL file for lightweight visualization.
@@ -145,11 +198,11 @@ class MlflowFileLogger:
         self.experiment_dir.mkdir(parents=True, exist_ok=True)
         meta_path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
-    def _write_run_meta(self, status: str, end_time: int | None) -> None:
+    def _write_run_meta(self, status: str | int, end_time: int | None) -> None:
         """Write the run metadata file.
 
         Args:
-            status (str): Run status string.
+            status (str | int): Run status string/code.
             end_time (int | None): End time in milliseconds.
         """
 
@@ -164,7 +217,7 @@ class MlflowFileLogger:
             "run_name": self.run_name or self.run_id,
             "source_type": "LOCAL",
             "start_time": start_time,
-            "status": status,
+            "status": normalize_mlflow_run_status(status),
             "end_time": end_time,
             "user_id": os.environ.get("USER", "unknown"),
         }
@@ -260,11 +313,11 @@ class MlflowFileLogger:
             return
         shutil.copy2(src, dst)
 
-    def close(self, status: str) -> None:
+    def close(self, status: str | int) -> None:
         """Finalize the MLflow run metadata.
 
         Args:
-            status (str): Final run status string.
+            status (str | int): Final run status string/code.
         """
 
         end_time = int(time.time() * 1000)

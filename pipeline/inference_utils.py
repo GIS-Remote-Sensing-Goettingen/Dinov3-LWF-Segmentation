@@ -216,53 +216,169 @@ def compute_gradcam_map(
         np.ndarray: Grad-CAM map in [0, 1].
     """
 
+    result = compute_gradcam_with_topk_channels(
+        image_hw3=image_hw3,
+        backbone=backbone,
+        head=head,
+        processor=processor,
+        device=device,
+        layers=layers,
+        ps=ps,
+        class_index=class_index,
+        topk_channels=1,
+        cam_layer=None,
+        logger=logger,
+    )
+    return result["cam_map"]
+
+
+def compute_gradcam_with_topk_channels(
+    image_hw3: np.ndarray,
+    backbone: torch.nn.Module,
+    head: torch.nn.Module,
+    processor: Any,
+    device: torch.device,
+    layers: list[int],
+    ps: int,
+    class_index: int,
+    topk_channels: int = 5,
+    cam_layer: int | None = None,
+    logger: Any | None = None,
+) -> dict[str, Any]:
+    """Compute Grad-CAM and top-k influential channel maps.
+
+    Args:
+        image_hw3 (np.ndarray): Input image in HWC format.
+        backbone (torch.nn.Module): DINO backbone.
+        head (torch.nn.Module): Segmentation head.
+        processor (Any): Image processor.
+        device (torch.device): Device for inference.
+        layers (list[int]): Backbone layers used by the head.
+        ps (int): Patch size for the backbone.
+        class_index (int): Target class index for Grad-CAM.
+        topk_channels (int): Number of channel maps to return.
+        cam_layer (int | None): Explicit layer index for CAM, defaults to last layer.
+        logger (Any | None): Optional logger for errors.
+
+    Returns:
+        dict[str, Any]: Dict with keys `cam_map`, `top_indices`, `top_scores`,
+        and `top_maps`.
+
+    Examples:
+        >>> result = compute_gradcam_with_topk_channels(  # doctest: +SKIP
+        ...     image_hw3=np.zeros((32, 32, 3), dtype=np.float32),
+        ...     backbone=backbone,
+        ...     head=head,
+        ...     processor=processor,
+        ...     device=torch.device("cpu"),
+        ...     layers=[1],
+        ...     ps=16,
+        ...     class_index=0,
+        ... )
+        >>> "cam_map" in result  # doctest: +SKIP
+        True
+    """
+
     inputs = processor(
         images=image_hw3,
         return_tensors="pt",
         do_resize=False,
         do_center_crop=False,
     ).to(device)
-    R = getattr(backbone.config, "num_register_tokens", 0)
+    r_tokens = getattr(backbone.config, "num_register_tokens", 0)
     img_norm = (image_hw3.astype(np.float32) / 255.0).astype(np.float32)
     img_t = torch.from_numpy(img_norm).permute(2, 0, 1).unsqueeze(0).to(device)
-    with torch.enable_grad():
-        backbone.zero_grad(set_to_none=True)
-        head.zero_grad(set_to_none=True)
-        out = backbone(**inputs, output_hidden_states=True)
-        hidden_states = out.hidden_states
-        _, _, h_proc, w_proc = inputs["pixel_values"].shape
-        hp, wp = h_proc // ps, w_proc // ps
-        feat_maps = []
-        cam_layer = layers[-1]
-        cam_feature = None
-        for layer_idx in layers:
-            layer_output = hidden_states[layer_idx]
-            patch_tokens = layer_output[:, 1 + R :, :]
-            feats = patch_tokens.reshape(1, hp, wp, -1).permute(0, 3, 1, 2)
-            if layer_idx == cam_layer:
-                cam_feature = feats
-                cam_feature.retain_grad()
-            feat_maps.append(feats)
-        if cam_feature is None:
-            if logger:
-                logger.info("Grad-CAM layer not found; using zeros.")
-            return np.zeros((hp, wp), dtype=np.float32)
-        logits = head(img_t, feat_maps)
-        if logits.dim() == 4:
-            target = logits[:, class_index].mean()
-        else:
-            target = logits.mean()
-        target.backward()
-        grads = cam_feature.grad
-        if grads is None:
-            if logger:
-                logger.info("Grad-CAM gradients missing; using zeros.")
-            return np.zeros((hp, wp), dtype=np.float32)
-        weights = grads.mean(dim=(2, 3), keepdim=True)
-        cam = (weights * cam_feature).sum(dim=1)
-        cam = torch.relu(cam)
-        cam_map = cam.squeeze(0).detach().cpu().numpy()
-        return normalize_map(cam_map)
+    _, _, h_proc, w_proc = inputs["pixel_values"].shape
+    hp, wp = h_proc // ps, w_proc // ps
+    zero_map = np.zeros((hp, wp), dtype=np.float32)
+    topk = max(1, int(topk_channels))
+    if not layers:
+        if logger:
+            logger.info("No backbone layers configured for Grad-CAM; using zeros.")
+        return {
+            "cam_map": zero_map,
+            "top_indices": [],
+            "top_scores": [],
+            "top_maps": [],
+        }
+    selected_layer = cam_layer if cam_layer is not None else layers[-1]
+    try:
+        with torch.enable_grad():
+            backbone.zero_grad(set_to_none=True)
+            head.zero_grad(set_to_none=True)
+            out = backbone(**inputs, output_hidden_states=True)
+            hidden_states = out.hidden_states
+            feat_maps = []
+            cam_feature = None
+            for layer_idx in layers:
+                layer_output = hidden_states[layer_idx]
+                patch_tokens = layer_output[:, 1 + r_tokens :, :]
+                feats = patch_tokens.reshape(1, hp, wp, -1).permute(0, 3, 1, 2)
+                if layer_idx == selected_layer:
+                    cam_feature = feats
+                    cam_feature.retain_grad()
+                feat_maps.append(feats)
+            if cam_feature is None:
+                if logger:
+                    logger.info("Grad-CAM layer not found; using zeros.")
+                return {
+                    "cam_map": zero_map,
+                    "top_indices": [],
+                    "top_scores": [],
+                    "top_maps": [],
+                }
+            logits = head(img_t, feat_maps)
+            if logits.dim() == 4 and 0 <= class_index < int(logits.shape[1]):
+                target = logits[:, class_index].mean()
+            else:
+                target = logits.mean()
+            target.backward()
+            grads = cam_feature.grad
+            if grads is None:
+                if logger:
+                    logger.info("Grad-CAM gradients missing; using zeros.")
+                return {
+                    "cam_map": zero_map,
+                    "top_indices": [],
+                    "top_scores": [],
+                    "top_maps": [],
+                }
+            weights = grads.mean(dim=(2, 3), keepdim=True)
+            weighted_feature = weights * cam_feature
+            cam = torch.relu(weighted_feature.sum(dim=1))
+            cam_map = normalize_map(cam.squeeze(0).detach().cpu().numpy())
+            channel_scores = weighted_feature.detach().abs().mean(dim=(0, 2, 3)).cpu()
+            channel_count = int(channel_scores.shape[0])
+            keep = min(topk, channel_count)
+            if keep <= 0:
+                return {
+                    "cam_map": cam_map,
+                    "top_indices": [],
+                    "top_scores": [],
+                    "top_maps": [],
+                }
+            top_scores_t, top_indices_t = torch.topk(channel_scores, k=keep)
+            top_indices = [int(idx) for idx in top_indices_t.tolist()]
+            top_scores = [float(score) for score in top_scores_t.tolist()]
+            top_maps: list[np.ndarray] = []
+            for idx in top_indices:
+                fmap = cam_feature[0, idx].detach().cpu().numpy()
+                top_maps.append(normalize_map(fmap))
+            return {
+                "cam_map": cam_map,
+                "top_indices": top_indices,
+                "top_scores": top_scores,
+                "top_maps": top_maps,
+            }
+    except Exception:
+        if logger:
+            logger.info("Grad-CAM extraction failed.")
+        return {
+            "cam_map": zero_map,
+            "top_indices": [],
+            "top_scores": [],
+            "top_maps": [],
+        }
 
 
 def build_dashboard(
