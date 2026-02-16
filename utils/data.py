@@ -456,6 +456,7 @@ def process_image_tiles_no_features(
     max_tiles: int | None = None,
     counter: Any | None = None,
     lock: Any | None = None,
+    stop_event: Any | None = None,
 ) -> dict:
     """Process one image into tiles without DINO features.
 
@@ -467,11 +468,14 @@ def process_image_tiles_no_features(
         max_tiles (int | None): Optional tile limit.
         counter (multiprocessing.Value | None): Shared tile counter.
         lock (multiprocessing.Lock | None): Shared lock for counter.
+        stop_event (multiprocessing.Event | None): Shared stop flag.
 
     Returns:
         dict: Status and tile counts for the processed image.
     """
 
+    if stop_event is not None and stop_event.is_set():
+        return {"status": "stopped", "tiles_written": 0}
     try:
         full_img = imread(img_path)
         full_label = subset_label_to_image_bounds(img_path, label_path)
@@ -481,8 +485,12 @@ def process_image_tiles_no_features(
     tiles_written = 0
     for y in range(0, h, tile_size):
         for x in range(0, w, tile_size):
+            if stop_event is not None and stop_event.is_set():
+                return {"status": "stopped", "tiles_written": tiles_written}
             if max_tiles is not None and counter is not None:
                 if counter.value >= max_tiles:
+                    if stop_event is not None:
+                        stop_event.set()
                     return {"status": "limit", "tiles_written": tiles_written}
             y_min, x_min = y, x
             y_max, x_max = y + tile_size, x + tile_size
@@ -503,6 +511,8 @@ def process_image_tiles_no_features(
             if max_tiles is not None and counter is not None and lock is not None:
                 with lock:
                     if counter.value >= max_tiles:
+                        if stop_event is not None:
+                            stop_event.set()
                         return {"status": "limit", "tiles_written": tiles_written}
                     counter.value += 1
             payload = {
@@ -853,52 +863,138 @@ def prepare_data_tiles(
     if workers > 1 and not cache_features:
         counter = None
         lock = None
+        stop_event = None
+        manager = None
         if max_tiles is not None:
             manager = multiprocessing.Manager()
             counter = manager.Value("i", tiles_written)
             lock = manager.Lock()
-        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(
-                    process_image_tiles_no_features,
-                    img_path,
-                    label_path,
-                    output_dir,
-                    tile_size,
-                    max_tiles,
-                    counter,
-                    lock,
-                ): img_path
-                for img_path in image_paths
-            }
-            for idx, future in enumerate(
-                tqdm(
-                    concurrent.futures.as_completed(futures),
-                    total=total_images,
-                    desc="Processing Large Images",
-                ),
-                start=1,
-            ):
-                img_path = futures[future]
-                basename = os.path.splitext(os.path.basename(img_path))[0]
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    _log_debug(f"Skipping corrupted image {basename}: {exc}")
-                    continue
-                if result.get("status") == "limit":
-                    _log_info("Reached max tiles during multiprocessing. Stopping.")
-                    return
-                if result.get("status") != "ok":
-                    _log_debug(
-                        f"Skipping corrupted image {basename}: {result.get('error')}."
-                    )
-                    continue
-                elapsed = time.time() - start_time
-                eta = _format_eta((elapsed / max(1, idx)) * (total_images - idx))
-                _log_info(
-                    f"Processing image {idx}/{total_images} (ETA {eta}): {basename}"
+            stop_event = manager.Event()
+
+        executor = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
+        submit_idx = 0
+        completed = 0
+        cancelled = 0
+        errors = 0
+        limit_hits = 0
+        image_durations: list[float] = []
+        shutdown_wait = 0.0
+        limit_detected_at: float | None = None
+        max_pending = max(workers * 2, workers)
+        iterator = iter(image_paths)
+        pending: dict[concurrent.futures.Future, tuple[str, float]] = {}
+
+        def _submit_next() -> bool:
+            """Submit one image tiling job.
+
+            Returns:
+                bool: ``True`` when a task was submitted, ``False`` if exhausted.
+            """
+            nonlocal submit_idx
+            try:
+                next_img = next(iterator)
+            except StopIteration:
+                return False
+            submit_idx += 1
+            future = executor.submit(
+                process_image_tiles_no_features,
+                next_img,
+                label_path,
+                output_dir,
+                tile_size,
+                max_tiles,
+                counter,
+                lock,
+                stop_event,
+            )
+            pending[future] = (next_img, time.time())
+            return True
+
+        try:
+            while len(pending) < max_pending and _submit_next():
+                pass
+
+            while pending:
+                done, _ = concurrent.futures.wait(
+                    pending,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
                 )
+                for future in done:
+                    img_path, submitted_at = pending.pop(future)
+                    completed += 1
+                    image_durations.append(time.time() - submitted_at)
+                    basename = os.path.splitext(os.path.basename(img_path))[0]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        errors += 1
+                        _log_debug(f"Skipping corrupted image {basename}: {exc}")
+                        continue
+                    status = result.get("status")
+                    if status == "limit":
+                        limit_hits += 1
+                        if limit_detected_at is None:
+                            limit_detected_at = time.time()
+                            _log_info(
+                                "Reached max tiles during multiprocessing. "
+                                "Stopping new submissions."
+                            )
+                        if stop_event is not None:
+                            stop_event.set()
+                        continue
+                    if status == "stopped":
+                        continue
+                    if status in {"error"}:
+                        errors += 1
+                        _log_debug(
+                            f"Skipping corrupted image {basename}: {result.get('error')}."
+                        )
+                        continue
+                    elapsed = time.time() - start_time
+                    eta = _format_eta(
+                        (elapsed / max(1, completed)) * (total_images - completed)
+                    )
+                    _log_info(
+                        f"Processing image {completed}/{total_images} (ETA {eta}): {basename}"
+                    )
+
+                if limit_detected_at is not None:
+                    for queued_future in list(pending):
+                        if queued_future.cancel():
+                            cancelled += 1
+                            pending.pop(queued_future, None)
+                    continue
+
+                while len(pending) < max_pending and _submit_next():
+                    pass
+        finally:
+            shutdown_start = time.time()
+            executor.shutdown(wait=True, cancel_futures=True)
+            shutdown_wait = time.time() - shutdown_start
+            if manager is not None:
+                manager.shutdown()
+
+        avg_image_time = (
+            (sum(image_durations) / len(image_durations)) if image_durations else 0.0
+        )
+        drain_wait = (
+            (time.time() - limit_detected_at) if limit_detected_at is not None else 0.0
+        )
+        _log_info(
+            "Multiprocessing tiling summary :: submitted=%d completed=%d "
+            "cancelled=%d errors=%d limit_hits=%d avg_image_time=%.2fs "
+            "drain_wait=%.2fs executor_shutdown_wait=%.2fs"
+            % (
+                submit_idx,
+                completed,
+                cancelled,
+                errors,
+                limit_hits,
+                avg_image_time,
+                drain_wait,
+                shutdown_wait,
+            )
+        )
         return
 
     for idx, img_path in enumerate(
