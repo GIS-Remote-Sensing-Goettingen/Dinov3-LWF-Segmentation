@@ -25,6 +25,8 @@ MLflow-compatible artifacts for research workflows.
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.
 - `artifacts/metrics.jsonl` for lightweight visualization.
 - `artifacts/run_summary.json` for run metadata and phase outputs.
+- Epoch logging emits explicit validation aliases (mIoU/IoU/F1) plus decomposed
+  train/validation loss components for richer MLflow dashboards.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.

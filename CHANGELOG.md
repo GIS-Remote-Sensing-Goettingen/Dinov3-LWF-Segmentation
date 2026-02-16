@@ -8,6 +8,7 @@
 - Replace single validation epoch tile plot with deterministic multi-tile grids (4 tile pairs / 8 subplots by default), showing GT overlays and prediction tiles with per-tile IoU/F1 titles (pipeline/phases.py, config_*.yml, README.md).
 - Persist MLflow run status as numeric enum codes in run `meta.yaml` to match MLflow file-store expectations and prevent UI/API 500 errors on run search (pipeline/tracking.py).
 - Add epoch-level validation XAI plots with DINO CLS/rollout focus maps, decoder Grad-CAM overlays, and top-k influential DINO feature channel visualizations (pipeline/phases.py, pipeline/inference_utils.py, config_*.yml, README.md, ARCHITECTURE.md).
+- Expand MLflow epoch traces with explicit validation aliases (`val_miou`, `val_iou`, `val_f1`), full train/validation loss decomposition (`loss_*`, `val_loss_*`), and model parameter counts logged to run settings as params/tags (pipeline/phases.py, pipeline/train_utils.py, utils/losses.py, README.md, ARCHITECTURE.md).
 
 ## [0.1.4] - 2026-02-09
 ### Changed

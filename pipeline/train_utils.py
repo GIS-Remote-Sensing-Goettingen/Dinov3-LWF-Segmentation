@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from utils import SegmentationLoss, SegmentationMetrics, VerbosityLogger
+from utils.losses import LOSS_COMPONENT_KEYS
 
 from .context import StabilityConfig
 
@@ -278,6 +279,7 @@ def evaluate(
     """
 
     stability_cfg = stability or StabilityConfig()
+    loss_component_sums = {key: 0.0 for key in LOSS_COMPONENT_KEYS}
     if loader is None:
         zeros = torch.zeros(num_classes)
         return 0.0, {
@@ -288,6 +290,7 @@ def evaluate(
             "nonfinite_val_batches": 0.0,
             "nonfinite_val_loss_batches": 0.0,
             "max_abs_logit": 0.0,
+            **loss_component_sums,
         }
     model.eval()
     total = 0.0
@@ -335,12 +338,13 @@ def evaluate(
                     if aux_logits is not None and stability_cfg.loss_fp32
                     else aux_logits
                 )
-                loss = loss_fn(
+                components = loss_fn.compute_components(
                     logits_for_loss,
                     target_main,
                     aux_logits=aux_for_loss,
                     aux_targets=target_aux,
                 )
+                loss = components["loss_total"]
             batch_max_abs_logit = float(
                 torch.nan_to_num(
                     logits.detach().float().abs(),
@@ -372,6 +376,8 @@ def evaluate(
                 continue
             total += loss.item()
             counted_loss_batches += 1
+            for key in LOSS_COMPONENT_KEYS:
+                loss_component_sums[key] += float(components[key].detach().item())
             preds = logits.argmax(dim=1)
             metrics.update(preds.cpu(), target_main.cpu())
             if logger and batch_idx % 10 == 0:
@@ -384,6 +390,12 @@ def evaluate(
     if counted_loss_batches:
         avg_loss = total / counted_loss_batches
     metric_summary = metrics.compute()
+    if counted_loss_batches:
+        for key in LOSS_COMPONENT_KEYS:
+            metric_summary[key] = loss_component_sums[key] / counted_loss_batches
+    else:
+        for key in LOSS_COMPONENT_KEYS:
+            metric_summary[key] = float("nan")
     metric_summary["nonfinite_val_batches"] = float(nonfinite_val_batches)
     metric_summary["nonfinite_val_loss_batches"] = float(nonfinite_val_loss_batches)
     metric_summary["max_abs_logit"] = float(max_abs_logit)

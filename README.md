@@ -171,6 +171,7 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 
 - **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, and top-k influential DINO channel maps.
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
+- **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags.
 
 ## Testing
 

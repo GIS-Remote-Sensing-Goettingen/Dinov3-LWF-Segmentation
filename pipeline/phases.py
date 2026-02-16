@@ -34,6 +34,7 @@ from utils import (
     resolve_cache_dir_for_train,
     verify_and_clean_dataset_fast,
 )
+from utils.losses import LOSS_COMPONENT_KEYS
 
 from .constants import (
     DEFAULT_DEVICE,
@@ -298,9 +299,24 @@ class TrainPhase(Phase):
             )
         base_model = unwrap_model(cast(torch.nn.Module, model))
         total_params = sum(p.numel() for p in base_model.parameters())
+        trainable_params = sum(
+            p.numel() for p in base_model.parameters() if p.requires_grad
+        )
+        non_trainable_params = total_params - trainable_params
         context.logger.info(
             f"Initialized head '{model_cfg['head']}' with {total_params:,} parameters."
         )
+        if context.mlflow_logger and context.dist_ctx.is_main:
+            model_size_payload = {
+                "model_total_params": total_params,
+                "model_trainable_params": trainable_params,
+                "model_non_trainable_params": non_trainable_params,
+            }
+            context.mlflow_logger.log_params(
+                {key: str(value) for key, value in model_size_payload.items()}
+            )
+            for key, value in model_size_payload.items():
+                context.mlflow_logger.set_tag(key, str(value))
         muon_params, adamw_params = split_params_for_muon(base_model)
         optimizer = Muon(
             muon_params,
@@ -470,6 +486,9 @@ class TrainPhase(Phase):
                     model_call.train()
                     train_loss = 0.0
                     train_loss_batches = 0
+                    train_loss_component_sums = {
+                        key: 0.0 for key in LOSS_COMPONENT_KEYS
+                    }
                     optimizer.zero_grad()
                     pbar = tqdm(
                         train_loader,
@@ -531,13 +550,13 @@ class TrainPhase(Phase):
                                     if aux_logits is not None and stability.loss_fp32
                                     else aux_logits
                                 )
-                                loss = loss_fn(
+                                loss_components = loss_fn.compute_components(
                                     logits_for_loss,
                                     target_main,
                                     aux_logits=aux_for_loss,
                                     aux_targets=target_aux,
                                 )
-                                loss = loss / grad_accum
+                                loss = loss_components["loss_total"] / grad_accum
                         except Exception as exc:
                             context.logger.info(
                                 "Batch %s failed with %s; img=%s, features=%s, layers=%s"
@@ -683,6 +702,10 @@ class TrainPhase(Phase):
                                     )
                         train_loss += loss.item() * grad_accum
                         train_loss_batches += 1
+                        for key in LOSS_COMPONENT_KEYS:
+                            train_loss_component_sums[key] += float(
+                                loss_components[key].detach().item()
+                            )
                         if log_batch_metrics and batch_idx % log_batch_interval == 0:
                             batch_metrics = {
                                 "loss": loss.item() * grad_accum,
@@ -715,8 +738,15 @@ class TrainPhase(Phase):
                         )
                         continue
                     avg_train_loss = float("nan")
+                    avg_train_loss_components = {
+                        key: float("nan") for key in LOSS_COMPONENT_KEYS
+                    }
                     if train_loss_batches > 0:
                         avg_train_loss = train_loss / train_loss_batches
+                        for key in LOSS_COMPONENT_KEYS:
+                            avg_train_loss_components[key] = (
+                                train_loss_component_sums[key] / train_loss_batches
+                            )
                     eval_model = (
                         ema.ema_model
                         if ema
@@ -1040,6 +1070,10 @@ class TrainPhase(Phase):
                         "val_loss": val_loss,
                         "miou": float(val_metrics["miou"]),
                         "mdice": float(val_metrics["mdice"]),
+                        "val_miou": float(val_metrics["miou"]),
+                        "val_mdice": float(val_metrics["mdice"]),
+                        "val_iou": float(val_metrics["miou"]),
+                        "val_f1": float(val_metrics["mdice"]),
                         "lr": scheduler.get_last_lr()[0],
                         "nonfinite_batches": float(epoch_health["nonfinite_batches"]),
                         "skipped_optimizer_steps": float(
@@ -1058,6 +1092,14 @@ class TrainPhase(Phase):
                         "nonfinite_val_loss_batches": float(
                             val_metrics.get("nonfinite_val_loss_batches", 0.0)
                         ),
+                        **{
+                            key: float(avg_train_loss_components[key])
+                            for key in LOSS_COMPONENT_KEYS
+                        },
+                        **{
+                            f"val_{key}": float(val_metrics.get(key, float("nan")))
+                            for key in LOSS_COMPONENT_KEYS
+                        },
                     }
                     if (
                         epoch_metrics["optimizer_steps"]
