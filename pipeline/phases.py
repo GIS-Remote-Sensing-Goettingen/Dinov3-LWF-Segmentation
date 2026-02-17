@@ -48,11 +48,13 @@ from .inference_utils import (
     build_dashboard,
     build_tta_transforms,
     compute_attention_maps,
+    compute_feature_pca_rgb,
     compute_gradcam_map,
     compute_gradcam_with_topk_channels,
     compute_xai_maps,
     overlay_heatmap,
     upsample_map,
+    upsample_rgb_map,
 )
 from .phase_runner import Phase
 from .train_utils import (
@@ -324,6 +326,7 @@ class TrainPhase(Phase):
             momentum=section.get("momentum", 0.95),
             adamw_params=adamw_params,
             adamw_lr=section.get("adamw_lr", 1e-3),
+            adamw_wd=section.get("adamw_wd", 0.01),
             update_max_norm=section.get("optimizer_update_max_norm"),
         )
         steps_per_epoch = math.ceil(
@@ -346,6 +349,7 @@ class TrainPhase(Phase):
             aux_weight=loss_cfg.get("aux_weight", 0.4),
             class_weights=loss_cfg.get("class_weights"),
             ignore_index=loss_ignore_index,
+            label_smoothing=loss_cfg.get("label_smoothing", 0.0),
         ).to(device)
         backbone = None
         processor = None
@@ -395,9 +399,19 @@ class TrainPhase(Phase):
         plot_xai_render_rollout = bool(
             section.get("epoch_plot_xai_render_attn_rollout", True)
         )
+        plot_xai_pca_enable = bool(section.get("epoch_plot_xai_pca_enable", True))
         plot_xai_cam_layer = resolve_cam_layer(
             model_cfg["layers"], plot_xai_cam_layer_mode
         )
+        plot_xai_pca_layer_mode = str(
+            section.get("epoch_plot_xai_pca_layer_mode", "same_as_cam")
+        )
+        if plot_xai_pca_layer_mode.strip().lower() == "same_as_cam":
+            plot_xai_pca_layer = plot_xai_cam_layer
+        else:
+            plot_xai_pca_layer = resolve_cam_layer(
+                model_cfg["layers"], plot_xai_pca_layer_mode
+            )
 
         context.logger.info(f"Training for up to {epochs} epochs on device {device}.")
         best_miou = 0.0
@@ -918,6 +932,24 @@ class TrainPhase(Phase):
                                         rgb_h, rgb_w = int(rgb.shape[0]), int(
                                             rgb.shape[1]
                                         )
+                                        pca_rgb_map = None
+                                        if plot_xai_pca_enable and sample_feats:
+                                            pca_feature = sample_feats[-1]
+                                            if (
+                                                plot_xai_pca_layer is not None
+                                                and plot_xai_pca_layer
+                                                in model_cfg["layers"]
+                                            ):
+                                                pca_idx = model_cfg["layers"].index(
+                                                    int(plot_xai_pca_layer)
+                                                )
+                                                pca_feature = sample_feats[pca_idx]
+                                            pca_small = compute_feature_pca_rgb(
+                                                pca_feature
+                                            )
+                                            pca_rgb_map = upsample_rgb_map(
+                                                pca_small, rgb_h, rgb_w
+                                            )
                                         attn_cls_map, attn_rollout_map, had_attn = (
                                             compute_attention_maps(
                                                 rgb.astype(np.float32),
@@ -991,6 +1023,8 @@ class TrainPhase(Phase):
                                                 "top_maps": top_maps,
                                             }
                                         )
+                                        if pca_rgb_map is not None:
+                                            sample_payload["pca_rgb"] = pca_rgb_map
                                     sample_plots.append(sample_payload)
                                     if len(sample_plots) >= desired_pairs:
                                         break
@@ -1015,6 +1049,7 @@ class TrainPhase(Phase):
                                         cmap=plot_cmap,
                                         topk_channels=plot_xai_topk_channels,
                                         render_rollout=plot_xai_render_rollout,
+                                        render_pca=plot_xai_pca_enable,
                                     )
                             else:
                                 context.logger.error(
@@ -1232,6 +1267,14 @@ class InferencePhase(Phase):
         plots_dir = explain_cfg.get("output_dir")
         class_index = int(explain_cfg.get("class_index", 1))
         layout = explain_cfg.get("dashboard_layout", "4x3")
+        explain_pca_enable = bool(explain_cfg.get("pca_enable", True))
+        explain_pca_layer_mode = str(
+            explain_cfg.get("pca_layer_mode", "last_requested_layer")
+        )
+        explain_pca_layer = resolve_cam_layer(
+            model_cfg["layers"],
+            explain_pca_layer_mode,
+        )
         plot_every_n = explain_cfg.get("plot_every_n")
         output_suffix = infer_cfg.get("output_suffix", "_pred.tif")
         glob_pattern = infer_cfg.get("glob", "*.tif")
@@ -1266,6 +1309,7 @@ class InferencePhase(Phase):
                 probs_accum = np.zeros(
                     (model_cfg["num_classes"], orig_h, orig_w), dtype=np.float32
                 )
+                pca_feat = None
                 for transform in tta_transforms:
                     aug_img = transform.apply(img)
                     img_norm = (aug_img.astype(np.float32) / 255.0).astype(np.float32)
@@ -1284,6 +1328,20 @@ class InferencePhase(Phase):
                         ps=ps,
                     )
                     feats_batched = [f.to(device).unsqueeze(0) for f in feats]
+                    if (
+                        explain_enabled
+                        and explain_pca_enable
+                        and transform.name == "none"
+                    ):
+                        selected_idx = len(feats_batched) - 1
+                        if (
+                            explain_pca_layer is not None
+                            and explain_pca_layer in model_cfg["layers"]
+                        ):
+                            selected_idx = model_cfg["layers"].index(
+                                int(explain_pca_layer)
+                            )
+                        pca_feat = feats_batched[selected_idx]
                     with torch.no_grad(), autocast:
                         logits = head(img_t, feats_batched)
                         logits = transform.invert_logits(logits)
@@ -1340,6 +1398,13 @@ class InferencePhase(Phase):
                             / max(1, model_cfg["num_classes"] - 1),
                         )
                         overlay_attn = overlay_heatmap(rgb, attn_cls)
+                        pca_rgb = None
+                        if explain_pca_enable and pca_feat is not None:
+                            pca_rgb = upsample_rgb_map(
+                                compute_feature_pca_rgb(pca_feat),
+                                orig_h,
+                                orig_w,
+                            )
                         plot_path = os.path.join(plots_dir, f"{base}_dashboard.png")
                         build_dashboard(
                             plot_path,
@@ -1352,6 +1417,7 @@ class InferencePhase(Phase):
                             attn_rollout,
                             overlay_pred,
                             overlay_attn,
+                            pca_rgb=pca_rgb,
                             layout=layout,
                         )
                     except Exception:
@@ -1417,6 +1483,7 @@ class InferencePhase(Phase):
                     tile_probs = np.zeros(
                         (model_cfg["num_classes"], orig_h, orig_w), dtype=np.float32
                     )
+                    pca_feat = None
                     for transform in tta_transforms:
                         aug_img = transform.apply(img_tile)
                         img_tile_norm = (aug_img.astype(np.float32) / 255.0).astype(
@@ -1437,6 +1504,20 @@ class InferencePhase(Phase):
                             ps=ps,
                         )
                         feats_batched = [f.to(device).unsqueeze(0) for f in feats]
+                        if (
+                            explain_enabled
+                            and explain_pca_enable
+                            and transform.name == "none"
+                        ):
+                            selected_idx = len(feats_batched) - 1
+                            if (
+                                explain_pca_layer is not None
+                                and explain_pca_layer in model_cfg["layers"]
+                            ):
+                                selected_idx = model_cfg["layers"].index(
+                                    int(explain_pca_layer)
+                                )
+                            pca_feat = feats_batched[selected_idx]
                         with torch.no_grad(), autocast:
                             logits = head(img_t, feats_batched)
                             logits = transform.invert_logits(logits)
@@ -1497,6 +1578,13 @@ class InferencePhase(Phase):
                                 / max(1, model_cfg["num_classes"] - 1),
                             )
                             overlay_attn = overlay_heatmap(rgb, attn_cls)
+                            pca_rgb = None
+                            if explain_pca_enable and pca_feat is not None:
+                                pca_rgb = upsample_rgb_map(
+                                    compute_feature_pca_rgb(pca_feat),
+                                    orig_h,
+                                    orig_w,
+                                )
                             plot_path = os.path.join(
                                 plots_dir, f"tile_y{y}_x{x}_dashboard.png"
                             )
@@ -1511,6 +1599,7 @@ class InferencePhase(Phase):
                                 attn_rollout,
                                 overlay_pred,
                                 overlay_attn,
+                                pca_rgb=pca_rgb,
                                 layout=layout,
                             )
                         except Exception:
@@ -1594,6 +1683,7 @@ def save_epoch_xai_plot(
     cmap: str,
     topk_channels: int = 5,
     render_rollout: bool = True,
+    render_pca: bool = True,
     gt_overlay_alpha: float = 0.35,
 ) -> None:
     """Save a per-epoch explainability grid for sampled validation tiles.
@@ -1604,6 +1694,7 @@ def save_epoch_xai_plot(
         cmap (str): Matplotlib colormap used for segmentation masks.
         topk_channels (int): Number of top channel maps to render per sample.
         render_rollout (bool): Whether to include attention rollout panel.
+        render_pca (bool): Whether to include a PCA feature panel.
         gt_overlay_alpha (float): Alpha for GT overlay on RGB.
     """
 
@@ -1614,6 +1705,8 @@ def save_epoch_xai_plot(
         return
     topk = max(1, int(topk_channels))
     base_cols = 5 if render_rollout else 4
+    if render_pca:
+        base_cols += 1
     cols = base_cols + topk
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.1))
     if rows == 1:
@@ -1631,6 +1724,10 @@ def save_epoch_xai_plot(
             sample.get("attn_rollout", zero_map), dtype=np.float32
         )
         gradcam = np.asarray(sample.get("gradcam", zero_map), dtype=np.float32)
+        zero_rgb = np.zeros((rgb.shape[0], rgb.shape[1], 3), dtype=np.float32)
+        pca_rgb = np.asarray(sample.get("pca_rgb", zero_rgb), dtype=np.float32)
+        if pca_rgb.ndim != 3 or pca_rgb.shape[2] != 3:
+            pca_rgb = zero_rgb
         top_maps = [
             np.asarray(map_data, dtype=np.float32)
             for map_data in sample.get("top_maps", [])
@@ -1673,6 +1770,13 @@ def save_epoch_xai_plot(
         cam_ax.set_title("Grad-CAM")
         cam_ax.axis("off")
         col_idx += 1
+
+        if render_pca:
+            pca_ax = axes_arr[row_idx, col_idx]
+            pca_ax.imshow(np.clip(pca_rgb, 0.0, 1.0))
+            pca_ax.set_title("DINO PCA (PC1-3)")
+            pca_ax.axis("off")
+            col_idx += 1
 
         for top_idx in range(topk):
             top_ax = axes_arr[row_idx, col_idx + top_idx]

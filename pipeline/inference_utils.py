@@ -125,6 +125,172 @@ def upsample_map(values: np.ndarray, target_h: int, target_w: int) -> np.ndarray
     return up.squeeze(0).squeeze(0).cpu().numpy()
 
 
+def upsample_rgb_map(values: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+    """Upsample an RGB map to the target spatial size.
+
+    Args:
+        values (np.ndarray): RGB map as (H, W, 3).
+        target_h (int): Target height.
+        target_w (int): Target width.
+
+    Returns:
+        np.ndarray: Upsampled RGB map in [0, 1].
+    """
+
+    values = np.asarray(values, dtype=np.float32)
+    if values.ndim != 3 or values.shape[2] != 3:
+        return np.zeros((target_h, target_w, 3), dtype=np.float32)
+    channels = [upsample_map(values[..., idx], target_h, target_w) for idx in range(3)]
+    upsampled = np.stack(channels, axis=-1).astype(np.float32)
+    return np.clip(upsampled, 0.0, 1.0)
+
+
+def compute_feature_pca_rgb(
+    feature_map: torch.Tensor | np.ndarray,
+    n_components: int = 3,
+) -> np.ndarray:
+    """Project a feature map to PCA RGB channels.
+
+    Args:
+        feature_map (torch.Tensor | np.ndarray): Feature map as (B, C, H, W) or
+            (C, H, W).
+        n_components (int): Number of PCA components to compute, up to 3.
+
+    Returns:
+        np.ndarray: PCA RGB map as (H, W, 3) in [0, 1].
+    """
+
+    if isinstance(feature_map, torch.Tensor):
+        fmap_t = feature_map.detach().float()
+    else:
+        fmap_t = torch.as_tensor(feature_map).detach().float()
+    if fmap_t.dim() == 4:
+        fmap_t = fmap_t[0]
+    if fmap_t.dim() != 3:
+        return np.zeros((1, 1, 3), dtype=np.float32)
+    channels, height, width = fmap_t.shape
+    if channels <= 0 or height <= 0 or width <= 0:
+        return np.zeros((max(1, height), max(1, width), 3), dtype=np.float32)
+    patches = fmap_t.permute(1, 2, 0).reshape(-1, channels)
+    patches = patches - patches.mean(dim=0, keepdim=True)
+    if int(patches.shape[0]) <= 1:
+        return np.zeros((height, width, 3), dtype=np.float32)
+    q = min(max(1, int(n_components)), 3, int(channels), int(patches.shape[0]))
+    try:
+        _, _, v = torch.pca_lowrank(patches, q=q, center=False)
+        projected = patches @ v[:, :q]
+    except Exception:
+        return np.zeros((height, width, 3), dtype=np.float32)
+    projected_np = projected.detach().cpu().numpy().reshape(height, width, q)
+    rgb = np.zeros((height, width, 3), dtype=np.float32)
+    for idx in range(q):
+        component = projected_np[..., idx]
+        if abs(float(component.min())) > abs(float(component.max())):
+            component = -component
+        rgb[..., idx] = normalize_map(component)
+    return rgb
+
+
+def _get_attention_backend(backbone: torch.nn.Module) -> str | None:
+    """Return the configured attention backend when available.
+
+    Args:
+        backbone (torch.nn.Module): Backbone model instance.
+
+    Returns:
+        str | None: Attention backend (for example ``"sdpa"``/``"eager"``), or
+        ``None`` when unavailable.
+    """
+
+    cfg = getattr(backbone, "config", None)
+    if cfg is None:
+        return None
+    for attr in ("_attn_implementation", "attn_implementation"):
+        value = getattr(cfg, attr, None)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _set_attention_backend(backbone: torch.nn.Module, backend: str) -> bool:
+    """Set the backbone attention backend if supported.
+
+    Args:
+        backbone (torch.nn.Module): Backbone model instance.
+        backend (str): Target backend name.
+
+    Returns:
+        bool: ``True`` when the requested backend was applied.
+    """
+
+    setter = getattr(backbone, "set_attn_implementation", None)
+    if callable(setter):
+        try:
+            setter(backend)
+            return True
+        except Exception:
+            pass
+    cfg = getattr(backbone, "config", None)
+    if cfg is None:
+        return False
+    changed = False
+    for attr in ("_attn_implementation", "attn_implementation"):
+        if hasattr(cfg, attr):
+            try:
+                setattr(cfg, attr, backend)
+                changed = True
+            except Exception:
+                continue
+    return changed
+
+
+def _compute_hidden_state_proxy_maps(
+    hidden_states: Any,
+    hp: int,
+    wp: int,
+    register_tokens: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Compute proxy focus maps from hidden states.
+
+    This fallback is used when attention tensors are unavailable.
+
+    Args:
+        hidden_states (Any): Hidden state tuple from the backbone forward pass.
+        hp (int): Patch-grid height.
+        wp (int): Patch-grid width.
+        register_tokens (int): Number of register tokens before patch tokens.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray] | None: Proxy CLS and rollout-style maps,
+        normalized to ``[0, 1]``. Returns ``None`` when unavailable.
+    """
+
+    if hidden_states is None:
+        return None
+    patch_tokens_expected = int(hp * wp)
+    layer_maps: list[np.ndarray] = []
+    for layer_output in hidden_states:
+        if layer_output is None or layer_output.dim() != 3:
+            continue
+        if layer_output.shape[0] < 1 or layer_output.shape[1] <= 1 + register_tokens:
+            continue
+        cls_token = layer_output[:, 0:1, :]
+        patch_tokens = layer_output[:, 1 + register_tokens :, :]
+        if int(patch_tokens.shape[1]) < patch_tokens_expected:
+            continue
+        patch_tokens = patch_tokens[:, :patch_tokens_expected, :]
+        cls_norm = F.normalize(cls_token, dim=-1)
+        patch_norm = F.normalize(patch_tokens, dim=-1)
+        sim = torch.matmul(cls_norm, patch_norm.transpose(1, 2)).squeeze(1)
+        sim_map = sim.reshape(hp, wp).detach().cpu().numpy()
+        layer_maps.append(normalize_map(sim_map))
+    if not layer_maps:
+        return None
+    cls_proxy = layer_maps[-1]
+    rollout_proxy = normalize_map(np.mean(np.stack(layer_maps, axis=0), axis=0))
+    return cls_proxy, rollout_proxy
+
+
 def compute_attention_maps(
     image_hw3: np.ndarray,
     backbone: torch.nn.Module,
@@ -158,34 +324,143 @@ def compute_attention_maps(
     r_tokens = getattr(backbone.config, "num_register_tokens", 0)
     _, _, h_proc, w_proc = inputs["pixel_values"].shape
     hp, wp = h_proc // ps, w_proc // ps
-    try:
-        with torch.no_grad():
-            out = backbone(**inputs, output_attentions=True)
-        attentions = out.attentions
+    zero_map = np.zeros((hp, wp), dtype=np.float32)
+
+    def _maps_from_attentions(attentions: Any) -> tuple[np.ndarray, np.ndarray] | None:
+        """Compute CLS and rollout maps from model attentions.
+
+        Args:
+            attentions (Any): Backbone attention tensors.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray] | None: Normalized maps, or ``None`` if
+            attentions are missing/invalid.
+        """
+
         if attentions is None:
+            return None
+        if isinstance(attentions, torch.Tensor):
+            raw_layers = [attentions]
+        elif isinstance(attentions, (list, tuple)):
+            raw_layers = list(attentions)
+        else:
+            return None
+
+        try:
+            reduced_attentions: list[torch.Tensor] = []
+            for layer in raw_layers:
+                if layer is None or not isinstance(layer, torch.Tensor):
+                    continue
+                if layer.dim() == 4:
+                    reduced = layer.mean(dim=1)
+                elif layer.dim() == 3:
+                    reduced = layer
+                else:
+                    continue
+                if reduced.shape[0] < 1:
+                    continue
+                reduced_attentions.append(reduced)
+            if not reduced_attentions:
+                return None
+
+            last = reduced_attentions[-1]
+            tokens = int(last.shape[-1])
+            if int(last.shape[-2]) != tokens:
+                return None
+
+            valid_attentions = [
+                attn
+                for attn in reduced_attentions
+                if int(attn.shape[-2]) == tokens and int(attn.shape[-1]) == tokens
+            ]
+            if not valid_attentions:
+                return None
+
+            last = valid_attentions[-1]
+            cls_attn = last[:, 0, 1 + r_tokens :]
+            if int(cls_attn.shape[-1]) < int(hp * wp):
+                return None
+            cls_map = cls_attn[:, : hp * wp].reshape(hp, wp).detach().cpu().numpy()
+
+            identity = torch.eye(tokens, device=last.device, dtype=last.dtype)
+            rollout = identity.unsqueeze(0).repeat(last.shape[0], 1, 1)
+            for attn in valid_attentions:
+                if attn.device != rollout.device or attn.dtype != rollout.dtype:
+                    attn = attn.to(device=rollout.device, dtype=rollout.dtype)
+                attn = attn + identity
+                attn = attn / attn.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+                rollout = attn @ rollout
+
+            rollout_cls = rollout[:, 0, 1 + r_tokens :]
+            if int(rollout_cls.shape[-1]) < int(hp * wp):
+                return None
+            rollout_map = (
+                rollout_cls[:, : hp * wp].reshape(hp, wp).detach().cpu().numpy()
+            )
+            return normalize_map(cls_map), normalize_map(rollout_map)
+        except Exception:
+            return None
+
+    try:
+        out = None
+        with torch.no_grad():
+            out = backbone(
+                **inputs,
+                output_attentions=True,
+            )
+        attn_maps = _maps_from_attentions(getattr(out, "attentions", None))
+        if attn_maps is not None:
+            cls_map, rollout_map = attn_maps
+            return cls_map, rollout_map, True
+
+        original_backend = _get_attention_backend(backbone)
+        eager_switched = False
+        if original_backend and original_backend != "eager":
+            eager_switched = _set_attention_backend(backbone, "eager")
+        try:
+            if eager_switched:
+                with torch.no_grad():
+                    out = backbone(
+                        **inputs,
+                        output_attentions=True,
+                    )
+                attn_maps = _maps_from_attentions(getattr(out, "attentions", None))
+                if attn_maps is not None:
+                    cls_map, rollout_map = attn_maps
+                    if logger:
+                        logger.info(
+                            "Attention maps extracted after switching backend to eager."
+                        )
+                    return cls_map, rollout_map, True
+        finally:
+            if eager_switched and original_backend:
+                _set_attention_backend(backbone, original_backend)
+
+        hidden_states = getattr(out, "hidden_states", None)
+        if hidden_states is None:
+            with torch.no_grad():
+                out_hidden = backbone(**inputs, output_hidden_states=True)
+            hidden_states = getattr(out_hidden, "hidden_states", None)
+        proxy_maps = _compute_hidden_state_proxy_maps(
+            hidden_states,
+            hp=hp,
+            wp=wp,
+            register_tokens=r_tokens,
+        )
+        if proxy_maps is not None:
             if logger:
-                logger.info("Backbone returned no attentions.")
-            zeros = np.zeros((hp, wp), dtype=np.float32)
-            return zeros, zeros, False
-        last = attentions[-1].mean(dim=1)
-        cls_attn = last[:, 0, 1 + r_tokens :]
-        cls_map = cls_attn.reshape(hp, wp).detach().cpu().numpy()
-        tokens = last.shape[-1]
-        rollout = torch.eye(tokens, device=last.device).unsqueeze(0)
-        rollout = rollout.repeat(last.shape[0], 1, 1)
-        for layer in attentions:
-            attn = layer.mean(dim=1)
-            attn = attn + torch.eye(tokens, device=attn.device)
-            attn = attn / attn.sum(dim=-1, keepdim=True)
-            rollout = attn @ rollout
-        rollout_cls = rollout[:, 0, 1 + r_tokens :].reshape(hp, wp)
-        rollout_map = rollout_cls.detach().cpu().numpy()
-        return normalize_map(cls_map), normalize_map(rollout_map), True
+                logger.info(
+                    "Backbone attentions unavailable; using hidden-state proxy maps."
+                )
+            cls_map, rollout_map = proxy_maps
+            return cls_map, rollout_map, True
+        if logger:
+            logger.info("Backbone returned no attentions.")
+        return zero_map, zero_map, False
     except Exception:
         if logger:
             logger.info("Attention extraction failed.")
-        zeros = np.zeros((hp, wp), dtype=np.float32)
-        return zeros, zeros, False
+        return zero_map, zero_map, False
 
 
 def compute_gradcam_map(
@@ -392,6 +667,7 @@ def build_dashboard(
     attn_rollout: np.ndarray,
     overlay_pred: np.ndarray,
     overlay_attn: np.ndarray,
+    pca_rgb: np.ndarray | None = None,
     layout: str = "4x3",
 ) -> None:
     """Create a dashboard plot with multiple subplots.
@@ -407,6 +683,7 @@ def build_dashboard(
         attn_rollout (np.ndarray): Rollout attention map.
         overlay_pred (np.ndarray): RGB + prediction overlay.
         overlay_attn (np.ndarray): RGB + attention overlay.
+        pca_rgb (np.ndarray | None): Optional PCA RGB map.
         layout (str): Layout string, defaults to 4x3.
     """
 
@@ -415,8 +692,6 @@ def build_dashboard(
     rows, cols = 4, 3
     if layout == "3x3":
         rows, cols = 3, 3
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
-    axes = np.array(axes).reshape(-1)
     panels = [
         ("RGB", rgb, None),
         ("Prediction", pred, "tab20"),
@@ -425,9 +700,20 @@ def build_dashboard(
         ("Class Prob", class_prob, "magma"),
         ("Attn CLS", attn_cls, "viridis"),
         ("Attn Rollout", attn_rollout, "viridis"),
-        ("Overlay Pred", overlay_pred, None),
-        ("Overlay Attn", overlay_attn, None),
     ]
+    if pca_rgb is not None:
+        panels.append(("DINO PCA (PC1-3)", np.clip(pca_rgb, 0.0, 1.0), None))
+    panels.extend(
+        [
+            ("Overlay Pred", overlay_pred, None),
+            ("Overlay Attn", overlay_attn, None),
+        ]
+    )
+    required_slots = len(panels)
+    if required_slots > rows * cols:
+        cols = int(np.ceil(required_slots / max(1, rows)))
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
+    axes = np.array(axes).reshape(-1)
     for idx, ax in enumerate(axes):
         if idx >= len(panels):
             ax.axis("off")

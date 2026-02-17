@@ -161,6 +161,23 @@ def create_dataloaders(
     augment_cfg = dataset_cfg.get("augmentations", {})
     validation_cfg = dataset_cfg.get("validation", {})
     split_cfg = dataset_cfg.get("splits", {})
+    cache_features = bool(dataset_cfg.get("cache_features", False))
+    allow_feature_mismatch = bool(augment_cfg.get("allow_feature_mismatch", False))
+    has_image_only_aug = any(
+        bool(augment_cfg.get(block, {}).get("enable", False))
+        for block in ("color_jitter", "cutout", "gridmask")
+    )
+    if (
+        cache_features
+        and augment_cfg.get("enable", False)
+        and has_image_only_aug
+        and not allow_feature_mismatch
+    ):
+        logger.info(
+            "Image-only augmentations (color_jitter/cutout/gridmask) are "
+            "disabled because dataset.cache_features=true and "
+            "dataset.augmentations.allow_feature_mismatch=false."
+        )
     val_fraction = train_cfg.get("val_fraction", 0.2)
     max_tiles = dataset_cfg.get("max_tiles")
     train_files, val_files = resolve_dataset_splits(

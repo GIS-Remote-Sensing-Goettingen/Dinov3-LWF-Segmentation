@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 ### Changed
+- None yet.
+
+## [0.1.5] - 2026-02-16
+### Changed
 - Replace single validation epoch tile plot with deterministic multi-tile grids (4 tile pairs / 8 subplots by default), showing GT overlays and prediction tiles with per-tile IoU/F1 titles (pipeline/phases.py, config_*.yml, README.md).
 - Persist MLflow run status as numeric enum codes in run `meta.yaml` to match MLflow file-store expectations and prevent UI/API 500 errors on run search (pipeline/tracking.py).
 - Add epoch-level validation XAI plots with DINO CLS/rollout focus maps, decoder Grad-CAM overlays, and top-k influential DINO feature channel visualizations (pipeline/phases.py, pipeline/inference_utils.py, config_*.yml, README.md, ARCHITECTURE.md).
@@ -13,6 +17,10 @@
 - Add non-breaking decoder upgrades: fix `DinoUNetV2Head` odd-size H/4 alignment with interpolation, add `forward_with_extras` intermediates for Lite explainability hooks, and introduce opt-in `unet_lite_plus` (interpolate+conv upsampling, GN+GELU residual blocks, gated H/4 fusion) while preserving existing head defaults (models/unet_v2.py, models/UnetLite.py, models/unet_lite_plus.py, models/__init__.py, README.md, ARCHITECTURE.md).
 - Improve module-level architecture descriptions across decoder files to make head internals and fusion strategy easier to understand (`models/unet.py`, `models/unet_v2.py`, `models/UnetLite.py`, `models/unet_lite_plus.py`, `models/maskformer.py`).
 - Make prepare-phase multiprocessing stop-on-`max_tiles` responsive by switching to bounded in-flight scheduling, adding shared stop signaling, canceling queued futures, and emitting compact drain/shutdown timing summaries to explain post-stop wait time (`utils/data.py`).
+- Make DINO CLS/rollout explainability maps robust when transformer attentions are unavailable by retrying with eager attention backend, ignoring `None`/invalid attention placeholders, and falling back to hidden-state proxy focus maps (requested only on fallback) instead of returning zeros (`pipeline/inference_utils.py`).
+- Add per-sample DINO PCA visualization (PC1-3) to epoch XAI plots and inference dashboards, with configurable layer selection and opt-in flags in train/inference config (`pipeline/inference_utils.py`, `pipeline/phases.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Expose configurable AdamW weight decay for the Muon optimizer path via `train.adamw_wd`, replacing a hardcoded default with config-driven control (`pipeline/phases.py`, `config_*.yml`, `README.md`).
+- Add cache-safe image-only regularization augmentations (color jitter, cutout, gridmask) and expose CE label smoothing (`train.loss.label_smoothing`) for main+aux branches while preserving geometric feature/label alignment (`utils/data.py`, `pipeline/data_splits.py`, `utils/losses.py`, `pipeline/phases.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
 
 ## [0.1.4] - 2026-02-09
 ### Changed
