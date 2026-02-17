@@ -13,6 +13,7 @@ from .base import SegmentationHead
 from .maskformer import DinoMaskFormerHead
 from .unet import DinoUNetHead
 from .unet_lite_plus import DinoUNetLitePlusHead
+from .unet_nano import DinoUNetNanoHead
 from .unet_v2 import DinoUNetV2Head
 from .UnetLite import DinoUNetLiteHead
 
@@ -27,7 +28,7 @@ def available_heads() -> Dict[str, HeadBuilder]:
         Dict[str, HeadBuilder]: Mapping of head names to builders.
 
     >>> sorted(available_heads().keys())
-    ['maskformer', 'unet', 'unet_lite', 'unet_lite_plus', 'unet_v2']
+    ['maskformer', 'unet', 'unet_lite', 'unet_lite_plus', 'unet_nano', 'unet_v2']
     """
 
     return {
@@ -36,6 +37,7 @@ def available_heads() -> Dict[str, HeadBuilder]:
         "maskformer": DinoMaskFormerHead,
         "unet_lite": DinoUNetLiteHead,
         "unet_lite_plus": DinoUNetLitePlusHead,
+        "unet_nano": DinoUNetNanoHead,
     }
 
 

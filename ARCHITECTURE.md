@@ -33,8 +33,8 @@ MLflow-compatible artifacts for research workflows.
   sensitivity), Lite+ gate importance summaries, and epoch-wise DINO channel
   importance evolution artifacts (bar/trend/heatmap + JSON summaries).
 - Decoder family includes opt-in lightweight variants (`unet_lite`,
-  `unet_lite_plus`) so users can trade compute for quality without changing
-  pipeline wiring.
+  `unet_lite_plus`, `unet_nano`) so users can trade compute for quality
+  without changing pipeline wiring.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.

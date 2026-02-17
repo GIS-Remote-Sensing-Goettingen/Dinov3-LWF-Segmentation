@@ -18,6 +18,9 @@
 - Unify inference execution so `input_dir` now reuses the same sliding-window tiled engine as
   `input_tif` (with merged outputs per file), removing duplicate full-image folder logic and
   reducing OOM risk on large rasters (`pipeline/phases.py`, `README.md`, `ARCHITECTURE.md`).
+- Add new `unet_nano` decoder head: an aggressively compact DINO-only U-Net variant with
+  GroupNorm + GELU + Dropout2d blocks, deep supervision compatibility, and registry/docs
+  integration (`models/unet_nano.py`, `models/__init__.py`, `README.md`, `ARCHITECTURE.md`).
 
 ## [0.1.5] - 2026-02-16
 ### Changed

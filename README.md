@@ -212,6 +212,7 @@ The `model.head` key selects one of the decoders registered under `models/`:
 | `unet_v2`   | `models/unet_v2.py` | Adds Spatial Prior Module + Fidelity-Aware projections + deep supervision. |
 | `unet_lite` | `models/UnetLite.py` | Lightweight DinoUNet variant with reduced channels for faster training/inference. |
 | `unet_lite_plus` | `models/unet_lite_plus.py` | Opt-in Lite+ variant using interpolate+conv upsampling, GN+GELU residual blocks, and lightweight gated H/4 fusion. |
+| `unet_nano` | `models/unet_nano.py` | Aggressively compact DINO-only decoder with GroupNorm, GELU, and Dropout2d for shape-biased learning. |
 | `maskformer`| `models/maskformer.py` | Pixel decoder fused with transformer mask head (MaskFormer style).       |
 
 Adding a new decoder only requires implementing `SegmentationHead`, registering it in `models/__init__.py`, and referencing it via `model.head`.
