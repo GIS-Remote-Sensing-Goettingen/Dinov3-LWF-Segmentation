@@ -226,13 +226,15 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), Lite+ gate importance, and per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries).
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), per-layer DINO connection importance trends, Lite+ gate importance, per-epoch branch-importance trendlines (`branch_importance_trends.png`), per-epoch DINO-layer trendlines (`dino_layer_importance_trends.png`), and per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries).
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
-- **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags.
+- **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), branch + DINO-layer importance means, and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags. Artifacts are grouped under `artifacts/plots/{metrics,xai,inference}` per run.
 
 Branch-importance interpretation:
 - Higher `image` importance means predictions are more sensitive to RGB content.
 - Higher `dino` importance means predictions rely more on DINO feature tensors.
+- Higher per-layer DINO importance means that specific configured DINO skip
+  connection contributes more strongly to the final segmentation output.
 - For `unet_lite_plus`, higher gate importance means stronger pass-through of the H/4 RGB prior skip.
 - Channel-importance plots show which DINO channels dominate on average each epoch; rising concentration in a few channels can indicate specialization, while diffuse usage suggests broader feature reliance.
 

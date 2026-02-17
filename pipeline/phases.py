@@ -49,6 +49,7 @@ from .inference_utils import (
     build_tta_transforms,
     compute_attention_maps,
     compute_branch_importance,
+    compute_dino_layer_importance,
     compute_feature_pca_rgb,
     compute_gradcam_map,
     compute_gradcam_with_topk_channels,
@@ -60,15 +61,19 @@ from .inference_utils import (
 from .phase_runner import Phase
 from .plotting import (
     _aggregate_channel_importance_samples,
+    _save_branch_importance_trend_plot,
     _save_channel_importance_bar_plot,
     _save_channel_importance_heatmap,
     _save_channel_importance_trend_plot,
+    _save_dino_layer_importance_trend_plot,
     _select_stable_channel_ids,
     _write_channel_importance_json,
     compute_tile_iou_f1,
     resolve_cam_layer,
     save_epoch_plot,
     save_epoch_xai_plot,
+    summarize_branch_importance_epoch,
+    summarize_dino_layer_importance_epoch,
 )
 from .train_utils import (
     ModelEMA,
@@ -478,6 +483,8 @@ class TrainPhase(Phase):
         best_miou = 0.0
         final_val_loss = 0.0
         channel_importance_history: list[dict[str, Any]] = []
+        branch_importance_history: list[dict[str, float]] = []
+        dino_layer_importance_history: list[dict[str, Any]] = []
 
         with TimedBlock(context.logger, "Training phase"):
             for epoch in range(epochs):
@@ -896,6 +903,7 @@ class TrainPhase(Phase):
                             sample_plots: list[dict[str, Any]] = []
                             branch_img_importances: list[float] = []
                             branch_dino_importances: list[float] = []
+                            dino_layer_importance_samples: list[dict[int, float]] = []
                             gate_importances: list[float] = []
                             channel_importance_samples: list[dict[str, Any]] = []
                             eval_call = cast(Any, eval_model)
@@ -1083,6 +1091,24 @@ class TrainPhase(Phase):
                                             branch_dino_importances.append(
                                                 float(branch_info["dino_importance"])
                                             )
+                                        if (
+                                            plot_xai_enable
+                                            and plot_xai_branch_importance_enable
+                                            and len(dino_layer_importance_samples)
+                                            < plot_xai_branch_importance_max_samples
+                                        ):
+                                            layer_info = compute_dino_layer_importance(
+                                                head=eval_model,
+                                                image=sample_img,
+                                                features=sample_feats,
+                                                layer_ids=model_cfg["layers"],
+                                                class_index=plot_xai_branch_importance_class_index,
+                                                logger=context.logger,
+                                            )
+                                            if layer_info:
+                                                dino_layer_importance_samples.append(
+                                                    layer_info
+                                                )
                                     else:
                                         rgb = (
                                             sample_img.detach()
@@ -1246,6 +1272,11 @@ class TrainPhase(Phase):
                                     sample_plots,
                                     plot_cmap,
                                 )
+                                if context.mlflow_logger is not None:
+                                    context.mlflow_logger.log_artifact(
+                                        out_path,
+                                        artifact_path="plots/metrics",
+                                    )
                                 if plot_xai_enable:
                                     xai_out_path = os.path.join(
                                         plot_dir, f"epoch_{epoch + 1:04d}_xai.png"
@@ -1258,34 +1289,76 @@ class TrainPhase(Phase):
                                         render_rollout=plot_xai_render_rollout,
                                         render_pca=plot_xai_pca_enable,
                                     )
-                                    if branch_img_importances:
+                                    if context.mlflow_logger is not None:
+                                        context.mlflow_logger.log_artifact(
+                                            xai_out_path,
+                                            artifact_path="plots/xai",
+                                        )
+                                    branch_summary = summarize_branch_importance_epoch(
+                                        branch_img_importances,
+                                        branch_dino_importances,
+                                    )
+                                    if branch_summary:
                                         img_mean = float(
-                                            np.mean(branch_img_importances)
+                                            branch_summary["xai_img_importance_mean"]
                                         )
                                         dino_mean = float(
-                                            np.mean(branch_dino_importances)
+                                            branch_summary["xai_dino_importance_mean"]
                                         )
-                                        xai_epoch_metrics.update(
+                                        branch_importance_history.append(
                                             {
-                                                "xai_img_importance_mean": img_mean,
-                                                "xai_dino_importance_mean": dino_mean,
-                                                "xai_img_dino_balance_absdiff_mean": float(
-                                                    np.mean(
-                                                        np.abs(
-                                                            np.asarray(
-                                                                branch_img_importances
-                                                            )
-                                                            - np.asarray(
-                                                                branch_dino_importances
-                                                            )
-                                                        )
-                                                    )
-                                                ),
-                                                "xai_branch_samples": float(
-                                                    len(branch_img_importances)
-                                                ),
+                                                "epoch": float(epoch + 1),
+                                                "img_importance_mean": img_mean,
+                                                "dino_importance_mean": dino_mean,
                                             }
                                         )
+                                        branch_trend_path = os.path.join(
+                                            plot_dir, "branch_importance_trends.png"
+                                        )
+                                        _save_branch_importance_trend_plot(
+                                            branch_trend_path,
+                                            branch_importance_history,
+                                        )
+                                        if context.mlflow_logger is not None:
+                                            context.mlflow_logger.log_artifact(
+                                                branch_trend_path,
+                                                artifact_path="plots/xai",
+                                            )
+                                        xai_epoch_metrics.update(branch_summary)
+                                    layer_means, layer_metrics = (
+                                        summarize_dino_layer_importance_epoch(
+                                            dino_layer_importance_samples,
+                                            [
+                                                int(layer_id)
+                                                for layer_id in model_cfg["layers"]
+                                            ],
+                                        )
+                                    )
+                                    if layer_means:
+                                        dino_layer_importance_history.append(
+                                            {
+                                                "epoch": epoch + 1,
+                                                "mean_importance": layer_means,
+                                            }
+                                        )
+                                        layer_trend_path = os.path.join(
+                                            plot_dir,
+                                            "dino_layer_importance_trends.png",
+                                        )
+                                        _save_dino_layer_importance_trend_plot(
+                                            layer_trend_path,
+                                            dino_layer_importance_history,
+                                            [
+                                                int(layer_id)
+                                                for layer_id in model_cfg["layers"]
+                                            ],
+                                        )
+                                        if context.mlflow_logger is not None:
+                                            context.mlflow_logger.log_artifact(
+                                                layer_trend_path,
+                                                artifact_path="plots/xai",
+                                            )
+                                        xai_epoch_metrics.update(layer_metrics)
                                     if gate_importances:
                                         xai_epoch_metrics.update(
                                             {
@@ -1370,7 +1443,7 @@ class TrainPhase(Phase):
                                                 for artifact_path in artifact_paths:
                                                     context.mlflow_logger.log_artifact(
                                                         artifact_path,
-                                                        artifact_path="xai",
+                                                        artifact_path="plots/xai",
                                                     )
                                             top_channels = epoch_channel_summary[
                                                 "top_channels"
@@ -1892,6 +1965,11 @@ class InferencePhase(Phase):
                 out_path = os.path.join(output_dir, f"{base}{output_suffix}")
                 file_metrics = _infer_one_tif(tile_path, out_path, plot_prefix=base)
                 total_tiles += float(file_metrics.get("tiles_total", 0.0))
+            if explain_enabled and plots_dir and context.mlflow_logger is not None:
+                context.mlflow_logger.log_artifact(
+                    plots_dir,
+                    artifact_path="plots/inference",
+                )
             metrics = {
                 "files_total": float(len(tile_files)),
                 "tiles_total": total_tiles,
@@ -1909,5 +1987,10 @@ class InferencePhase(Phase):
             os.makedirs(plots_dir, exist_ok=True)
         single_prefix = os.path.splitext(os.path.basename(input_tif))[0]
         metrics = _infer_one_tif(input_tif, output_tif, plot_prefix=single_prefix)
+        if explain_enabled and plots_dir and context.mlflow_logger is not None:
+            context.mlflow_logger.log_artifact(
+                plots_dir,
+                artifact_path="plots/inference",
+            )
         artifacts = {"output_tif": output_tif, "checkpoint": checkpoint}
         return PhaseOutcome(metrics=metrics, artifacts=artifacts)

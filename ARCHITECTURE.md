@@ -30,8 +30,11 @@ MLflow-compatible artifacts for research workflows.
 - Epoch logging emits explicit validation aliases (mIoU/IoU/F1) plus decomposed
   train/validation loss components for richer MLflow dashboards.
 - Epoch XAI logging can emit branch-importance metrics (image-vs-DINO gradient
-  sensitivity), Lite+ gate importance summaries, and epoch-wise DINO channel
-  importance evolution artifacts (bar/trend/heatmap + JSON summaries).
+  sensitivity), per-layer DINO connection importance trends, Lite+ gate
+  importance summaries, and epoch-wise DINO channel importance evolution
+  artifacts (bar/trend/heatmap + JSON summaries).
+- Plot artifacts are grouped per run under `artifacts/plots/metrics`,
+  `artifacts/plots/xai`, and `artifacts/plots/inference` to reduce clutter.
 - Decoder family includes opt-in lightweight variants (`unet_lite`,
   `unet_lite_plus`, `unet_nano`) so users can trade compute for quality
   without changing pipeline wiring. `unet_nano` keeps the deep path tiny and

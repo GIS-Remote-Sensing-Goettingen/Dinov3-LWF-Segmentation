@@ -12,6 +12,14 @@
   features) plus Lite+ H/4 gate-importance summaries in XAI plots and MLflow metrics
   (`pipeline/inference_utils.py`, `pipeline/phases.py`, `models/unet_lite_plus.py`,
   `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Add validation epoch trend plotting for mean branch importance (`image` vs `dino`) as
+  `branch_importance_trends.png`, logged to XAI artifacts and updated each epoch
+  (`pipeline/phases.py`, `pipeline/plotting.py`, `README.md`).
+- Add per-layer DINO connection-importance tracking (using configured backbone
+  layers) with epoch trend plotting and MLflow metrics, and reorganize plot
+  artifacts under per-run subfolders `plots/{metrics,xai,inference}` to keep
+  MLflow runs uncluttered (`pipeline/inference_utils.py`, `pipeline/phases.py`,
+  `pipeline/plotting.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
 - Add epoch-wise validation DINO channel-importance tracking with grouped stable-channel bars,
   evolution trends, heatmaps, JSON artifacts, and MLflow summary metrics for interpretability
   over training (`pipeline/phases.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).

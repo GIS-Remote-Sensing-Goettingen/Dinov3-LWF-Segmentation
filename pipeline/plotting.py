@@ -526,6 +526,179 @@ def _save_channel_importance_heatmap(
     plt.close(fig)
 
 
+def _save_branch_importance_trend_plot(
+    output_path: str,
+    history: list[dict[str, float]],
+) -> None:
+    """Save per-epoch trend lines for image-vs-DINO branch importance.
+
+    Args:
+        output_path (str): Destination PNG path.
+        history (list[dict[str, float]]): Ordered per-epoch branch summaries with
+            `epoch`, `img_importance_mean`, and `dino_importance_mean`.
+    """
+
+    import matplotlib.pyplot as plt
+
+    if not history:
+        return
+    epochs = [int(row.get("epoch", idx + 1)) for idx, row in enumerate(history)]
+    img_values = [float(row.get("img_importance_mean", 0.0)) for row in history]
+    dino_values = [float(row.get("dino_importance_mean", 0.0)) for row in history]
+    balance_values = [
+        float(abs(img_val - dino_val))
+        for img_val, dino_val in zip(img_values, dino_values)
+    ]
+
+    fig, ax = plt.subplots(figsize=(9.5, 4.8))
+    ax.plot(
+        epochs,
+        img_values,
+        marker="o",
+        linewidth=1.9,
+        color="tab:orange",
+        label="Image importance (I)",
+    )
+    ax.plot(
+        epochs,
+        dino_values,
+        marker="o",
+        linewidth=1.9,
+        color="tab:blue",
+        label="DINO importance (D)",
+    )
+    ax.plot(
+        epochs,
+        balance_values,
+        marker="o",
+        linewidth=1.4,
+        linestyle="--",
+        color="black",
+        label="|I-D|",
+    )
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Mean normalized importance")
+    ax.set_title("Validation branch-importance evolution")
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def summarize_branch_importance_epoch(
+    img_importances: list[float],
+    dino_importances: list[float],
+) -> dict[str, float]:
+    """Aggregate branch-importance values for one validation epoch.
+
+    Args:
+        img_importances (list[float]): Per-sample image branch importances.
+        dino_importances (list[float]): Per-sample DINO branch importances.
+
+    Returns:
+        dict[str, float]: Aggregated epoch metrics. Empty if no samples.
+
+    Examples:
+        >>> out = summarize_branch_importance_epoch([0.6, 0.4], [0.4, 0.6])
+        >>> round(out["xai_img_importance_mean"], 2)
+        0.5
+    """
+
+    if not img_importances or not dino_importances:
+        return {}
+    img_arr = np.asarray(img_importances, dtype=np.float32)
+    dino_arr = np.asarray(dino_importances, dtype=np.float32)
+    return {
+        "xai_img_importance_mean": float(np.mean(img_arr)),
+        "xai_dino_importance_mean": float(np.mean(dino_arr)),
+        "xai_img_dino_balance_absdiff_mean": float(np.mean(np.abs(img_arr - dino_arr))),
+        "xai_branch_samples": float(len(img_importances)),
+    }
+
+
+def summarize_dino_layer_importance_epoch(
+    samples: list[dict[int, float]],
+    layer_ids: list[int],
+) -> tuple[dict[int, float], dict[str, float]]:
+    """Aggregate per-layer DINO connection importance for one validation epoch.
+
+    Args:
+        samples (list[dict[int, float]]): Per-sample layer-importance mappings.
+        layer_ids (list[int]): Configured DINO layer ids used by the head.
+
+    Returns:
+        tuple[dict[int, float], dict[str, float]]: Layer mean mapping and
+        MLflow-friendly metric mapping.
+
+    Examples:
+        >>> means, metrics = summarize_dino_layer_importance_epoch(
+        ...     samples=[{7: 0.6, 14: 0.4}, {7: 0.4, 14: 0.6}],
+        ...     layer_ids=[7, 14],
+        ... )
+        >>> round(means[7], 2), int(metrics["xai_dino_layer_samples"])
+        (0.5, 2)
+    """
+
+    if not samples or not layer_ids:
+        return {}, {}
+    layer_means = {
+        int(layer_id): float(
+            np.mean([float(sample.get(int(layer_id), 0.0)) for sample in samples])
+        )
+        for layer_id in layer_ids
+    }
+    metrics: dict[str, float] = {
+        "xai_dino_layer_samples": float(len(samples)),
+    }
+    for layer_id, mean_value in layer_means.items():
+        metrics[f"xai_dino_layer_{int(layer_id)}_importance_mean"] = float(mean_value)
+    return layer_means, metrics
+
+
+def _save_dino_layer_importance_trend_plot(
+    output_path: str,
+    history: list[dict[str, Any]],
+    layer_ids: list[int],
+) -> None:
+    """Save per-epoch trend lines for DINO connection-layer importance.
+
+    Args:
+        output_path (str): Destination PNG path.
+        history (list[dict[str, Any]]): Ordered per-epoch layer summaries.
+        layer_ids (list[int]): DINO layer ids corresponding to decoder connections.
+    """
+
+    import matplotlib.pyplot as plt
+
+    if not history or not layer_ids:
+        return
+    epochs = [int(row.get("epoch", idx + 1)) for idx, row in enumerate(history)]
+    fig, ax = plt.subplots(figsize=(10.0, 5.0))
+    for layer_id in layer_ids:
+        values = [
+            float(row.get("mean_importance", {}).get(int(layer_id), 0.0))
+            for row in history
+        ]
+        ax.plot(
+            epochs,
+            values,
+            marker="o",
+            linewidth=1.8,
+            label=f"layer {int(layer_id)}",
+        )
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Mean normalized importance")
+    ax.set_title("DINO connection-layer importance evolution")
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
 def _write_channel_importance_json(
     output_path: str,
     epoch_summary: dict[str, Any],
