@@ -19,6 +19,10 @@ paths:
 dataset:
   cache_features: false
   max_tiles: 0
+  tile_filter:
+    enabled: true
+    mode: foreground_any
+    foreground_labels: [1]
   augmentations:
     enable: true
     hflip: true
@@ -106,6 +110,15 @@ train:
   epoch_plot_xai_render_attn_rollout: true
   epoch_plot_xai_pca_enable: true
   epoch_plot_xai_pca_layer_mode: same_as_cam
+  epoch_plot_xai_branch_importance_enable: true
+  epoch_plot_xai_branch_importance_class_index: 1
+  epoch_plot_xai_branch_importance_max_samples: 4
+  epoch_plot_xai_channel_tracking_enable: true
+  epoch_plot_xai_channel_tracking_max_samples: 64
+  epoch_plot_xai_channel_top_k_per_sample: 5
+  epoch_plot_xai_channel_top_n_stable: 10
+  epoch_plot_xai_channel_min_presence: 0.05
+  epoch_plot_xai_channel_save_json: true
   loss:
     ce_weight: 1.0
     dice_weight: 1.0

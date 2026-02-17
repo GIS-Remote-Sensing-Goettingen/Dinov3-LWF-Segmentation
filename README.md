@@ -46,6 +46,10 @@ paths:
 
 dataset:
   cache_features: false
+  tile_filter:
+    enabled: true
+    mode: foreground_any
+    foreground_labels: [1]
   augmentations:
     enable: true
     hflip: true
@@ -84,6 +88,9 @@ dataset:
     out_of_range_policy: map_to_ignore
     require_finite_features: true
     require_finite_images: true
+
+# `dataset.tile_filter` is applied while preparing new cached tiles.
+# If a cache already exists, point to a fresh processed_dir (or clean old tiles) to re-filter it.
 
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
@@ -130,6 +137,15 @@ train:
   epoch_plot_xai_render_attn_rollout: true
   epoch_plot_xai_pca_enable: true
   epoch_plot_xai_pca_layer_mode: same_as_cam
+  epoch_plot_xai_branch_importance_enable: true
+  epoch_plot_xai_branch_importance_class_index: 1
+  epoch_plot_xai_branch_importance_max_samples: 4
+  epoch_plot_xai_channel_tracking_enable: true
+  epoch_plot_xai_channel_tracking_max_samples: 64
+  epoch_plot_xai_channel_top_k_per_sample: 5
+  epoch_plot_xai_channel_top_n_stable: 10
+  epoch_plot_xai_channel_min_presence: 0.05
+  epoch_plot_xai_channel_save_json: true
   loss:
     ce_weight: 1.0
     dice_weight: 1.0
@@ -170,6 +186,10 @@ inference:
 
 Set `enable: true` for any section you want to run. The `paths` block provides base directories shared across phases, while individual sections can override them (e.g., use a different `processed_dir` for training vs. verification).
 
+Inference input selection:
+- Set exactly one source: `inference.input_tif` or `inference.input_dir`.
+- `input_dir` now runs each file through the same sliding-window tiled inference + merge path used by `input_tif`, then writes outputs to `output_dir`.
+
 ## Logging & Timing
 
 - The custom `VerbosityLogger` prints `[LEVEL] message` lines with optional timestamps and can also tee logs to disk (`logging.file`).
@@ -198,16 +218,22 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 
 ## Utilities
 
-- `utils/data.py` handles tiling, label alignment, feature extraction, cache verification, and the `PrecomputedDataset`. It applies optional train-time augmentations (flips/rotations + color jitter/cutout/gridmask), validates finiteness/label ranges, and supports region-based splits. Image-only augmentations are skipped by default when cached features are enabled unless `dataset.augmentations.allow_feature_mismatch` is set to `true`.
+- `utils/data.py` handles tiling, label alignment, feature extraction, cache verification, and the `PrecomputedDataset`. It supports an optional foreground-label tile filter during preparation (`dataset.tile_filter`), applies optional train-time augmentations (flips/rotations + color jitter/cutout/gridmask), validates finiteness/label ranges, and supports region-based splits. Image-only augmentations are skipped by default when cached features are enabled unless `dataset.augmentations.allow_feature_mismatch` is set to `true`.
 - `utils/losses.py` implements the combined CE + Dice loss used for the main head and auxiliary deep supervision.
 - `utils/metrics.py` accumulates per-class IoU/Dice; we early-stop on validation mIoU instead of loss.
 - `utils/optim.py` contains the Muon optimizer (matrix-aware momentum with orthogonalization), AdamW handling, and a configurable EarlyStopping helper that works for min/max metrics.
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), and top-k influential DINO channel maps.
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, CE+Dice loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), Lite+ gate importance, and per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries).
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
 - **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags.
+
+Branch-importance interpretation:
+- Higher `image` importance means predictions are more sensitive to RGB content.
+- Higher `dino` importance means predictions rely more on DINO feature tensors.
+- For `unet_lite_plus`, higher gate importance means stronger pass-through of the H/4 RGB prior skip.
+- Channel-importance plots show which DINO channels dominate on average each epoch; rising concentration in a few channels can indicate specialization, while diffuse usage suggests broader feature reliance.
 
 ## Testing
 

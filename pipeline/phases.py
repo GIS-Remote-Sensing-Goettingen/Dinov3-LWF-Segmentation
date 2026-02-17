@@ -48,6 +48,7 @@ from .inference_utils import (
     build_dashboard,
     build_tta_transforms,
     compute_attention_maps,
+    compute_branch_importance,
     compute_feature_pca_rgb,
     compute_gradcam_map,
     compute_gradcam_with_topk_channels,
@@ -57,6 +58,18 @@ from .inference_utils import (
     upsample_rgb_map,
 )
 from .phase_runner import Phase
+from .plotting import (
+    _aggregate_channel_importance_samples,
+    _save_channel_importance_bar_plot,
+    _save_channel_importance_heatmap,
+    _save_channel_importance_trend_plot,
+    _select_stable_channel_ids,
+    _write_channel_importance_json,
+    compute_tile_iou_f1,
+    resolve_cam_layer,
+    save_epoch_plot,
+    save_epoch_xai_plot,
+)
 from .train_utils import (
     ModelEMA,
     align_labels_to_logits,
@@ -128,6 +141,7 @@ class PreparePhase(Phase):
                 device=device,
                 tile_size=tile_size,
                 cache_features=cache_features,
+                tile_filter_cfg=dataset_cfg.get("tile_filter"),
                 workers=section.get("workers"),
                 max_tiles=max_tiles,
                 logger=context.logger,
@@ -393,6 +407,15 @@ class TrainPhase(Phase):
         plot_xai_topk_channels = max(
             1, int(section.get("epoch_plot_xai_topk_channels", 5))
         )
+        plot_xai_channel_top_k_per_sample = max(
+            1,
+            int(
+                section.get(
+                    "epoch_plot_xai_channel_top_k_per_sample",
+                    plot_xai_topk_channels,
+                )
+            ),
+        )
         plot_xai_cam_layer_mode = str(
             section.get("epoch_plot_xai_cam_layer_mode", "last_requested_layer")
         )
@@ -400,6 +423,44 @@ class TrainPhase(Phase):
             section.get("epoch_plot_xai_render_attn_rollout", True)
         )
         plot_xai_pca_enable = bool(section.get("epoch_plot_xai_pca_enable", True))
+        plot_xai_branch_importance_enable = bool(
+            section.get("epoch_plot_xai_branch_importance_enable", True)
+        )
+        plot_xai_branch_importance_class_index = int(
+            section.get(
+                "epoch_plot_xai_branch_importance_class_index",
+                plot_xai_class_index,
+            )
+        )
+        plot_xai_branch_importance_max_samples = max(
+            1,
+            int(
+                section.get(
+                    "epoch_plot_xai_branch_importance_max_samples",
+                    plot_pairs,
+                )
+            ),
+        )
+        plot_xai_channel_tracking_enable = bool(
+            section.get("epoch_plot_xai_channel_tracking_enable", True)
+        )
+        plot_xai_channel_tracking_max_samples = max(
+            1,
+            int(section.get("epoch_plot_xai_channel_tracking_max_samples", 64)),
+        )
+        plot_xai_channel_top_n_stable = max(
+            1,
+            int(section.get("epoch_plot_xai_channel_top_n_stable", 10)),
+        )
+        plot_xai_channel_min_presence = float(
+            section.get("epoch_plot_xai_channel_min_presence", 0.05)
+        )
+        plot_xai_channel_min_presence = min(
+            1.0, max(0.0, plot_xai_channel_min_presence)
+        )
+        plot_xai_channel_save_json = bool(
+            section.get("epoch_plot_xai_channel_save_json", True)
+        )
         plot_xai_cam_layer = resolve_cam_layer(
             model_cfg["layers"], plot_xai_cam_layer_mode
         )
@@ -416,6 +477,7 @@ class TrainPhase(Phase):
         context.logger.info(f"Training for up to {epochs} epochs on device {device}.")
         best_miou = 0.0
         final_val_loss = 0.0
+        channel_importance_history: list[dict[str, Any]] = []
 
         with TimedBlock(context.logger, "Training phase"):
             for epoch in range(epochs):
@@ -790,6 +852,7 @@ class TrainPhase(Phase):
                         ps=ps,
                         stability=stability,
                     )
+                    xai_epoch_metrics: dict[str, float] = {}
                     if (
                         plot_enabled
                         and val_loader is not None
@@ -807,16 +870,40 @@ class TrainPhase(Phase):
                                 context.config.get("resources", {}).get("seed", 1337)
                             )
                             rng = random.Random(seed_value + plot_seed_offset + epoch)
-                            selected_global_indices = set(
+                            selected_plot_indices = set(
                                 rng.sample(range(val_count), k=desired_pairs)
                             )
                             context.logger.info(
                                 f"Epoch {epoch + 1} validation plot indices: "
-                                f"{sorted(selected_global_indices)}"
+                                f"{sorted(selected_plot_indices)}"
                             )
+                            channel_tracking_target = 0
+                            selected_channel_indices: set[int] = set()
+                            if plot_xai_enable and plot_xai_channel_tracking_enable:
+                                channel_tracking_target = min(
+                                    plot_xai_channel_tracking_max_samples,
+                                    val_count,
+                                )
+                                selected_channel_indices = set(
+                                    rng.sample(
+                                        range(val_count), k=channel_tracking_target
+                                    )
+                                )
+                                context.logger.info(
+                                    "Epoch %s channel-importance sample count: %s"
+                                    % (epoch + 1, channel_tracking_target)
+                                )
                             sample_plots: list[dict[str, Any]] = []
+                            branch_img_importances: list[float] = []
+                            branch_dino_importances: list[float] = []
+                            gate_importances: list[float] = []
+                            channel_importance_samples: list[dict[str, Any]] = []
                             eval_call = cast(Any, eval_model)
                             running_idx = 0
+                            gradcam_topk = max(
+                                plot_xai_topk_channels,
+                                plot_xai_channel_top_k_per_sample,
+                            )
                             if plot_xai_enable and (
                                 backbone is None or processor is None
                             ):
@@ -830,15 +917,29 @@ class TrainPhase(Phase):
                                 )
                             for v_img, v_feats, v_y in val_loader:
                                 batch_size = int(v_img.shape[0])
-                                wanted_local = [
-                                    local_idx
-                                    for local_idx in range(batch_size)
-                                    if (running_idx + local_idx)
-                                    in selected_global_indices
-                                ]
+                                wanted_local: list[tuple[int, bool, bool]] = []
+                                for local_idx in range(batch_size):
+                                    global_idx = running_idx + local_idx
+                                    wants_plot = global_idx in selected_plot_indices
+                                    wants_channel = (
+                                        plot_xai_enable
+                                        and plot_xai_channel_tracking_enable
+                                        and channel_tracking_target > 0
+                                        and len(channel_importance_samples)
+                                        < channel_tracking_target
+                                        and global_idx in selected_channel_indices
+                                    )
+                                    if wants_plot or wants_channel:
+                                        wanted_local.append(
+                                            (local_idx, wants_plot, wants_channel)
+                                        )
                                 running_idx += batch_size
                                 if not wanted_local:
-                                    if len(sample_plots) >= desired_pairs:
+                                    if (
+                                        len(sample_plots) >= desired_pairs
+                                        and len(channel_importance_samples)
+                                        >= channel_tracking_target
+                                    ):
                                         break
                                     continue
                                 v_img = v_img.to(device)
@@ -848,7 +949,11 @@ class TrainPhase(Phase):
                                     feats_device = move_features_to_device(
                                         v_feats, device
                                     )
-                                for local_idx in wanted_local:
+                                for (
+                                    local_idx,
+                                    wants_plot,
+                                    wants_channel,
+                                ) in wanted_local:
                                     sample_img = v_img[local_idx : local_idx + 1]
                                     sample_gt = v_y[local_idx : local_idx + 1]
                                     if cache_features and feats_device:
@@ -880,97 +985,122 @@ class TrainPhase(Phase):
                                                 ps,
                                             )
                                         )
-                                    with torch.no_grad(), autocast:
-                                        if hasattr(eval_call, "forward_with_aux"):
-                                            sample_logits, _ = (
-                                                eval_call.forward_with_aux(
+                                    gate_importance: float | None = None
+                                    sample_payload: dict[str, Any] | None = None
+                                    if wants_plot:
+                                        with torch.no_grad(), autocast:
+                                            sample_extras: dict[str, Any] = {}
+                                            if plot_xai_enable and hasattr(
+                                                eval_call, "forward_with_extras"
+                                            ):
+                                                extra_out = (
+                                                    eval_call.forward_with_extras(
+                                                        sample_img, sample_feats
+                                                    )
+                                                )
+                                                sample_logits = extra_out["logits"]
+                                                sample_extras = extra_out
+                                            elif hasattr(eval_call, "forward_with_aux"):
+                                                sample_logits, _ = (
+                                                    eval_call.forward_with_aux(
+                                                        sample_img, sample_feats
+                                                    )
+                                                )
+                                            else:
+                                                sample_logits = eval_call(
                                                     sample_img, sample_feats
                                                 )
-                                            )
-                                        else:
-                                            sample_logits = eval_call(
-                                                sample_img, sample_feats
-                                            )
-                                        if (
-                                            sample_logits.shape[-2:]
-                                            != sample_img.shape[-2:]
-                                        ):
-                                            sample_logits = F.interpolate(
-                                                sample_logits,
-                                                size=sample_img.shape[-2:],
-                                                mode="bilinear",
-                                                align_corners=False,
-                                            )
-                                    pred_mask = (
-                                        sample_logits.argmax(dim=1)
-                                        .detach()
-                                        .cpu()
-                                        .numpy()[0]
-                                    )
-                                    gt_mask = sample_gt.detach().cpu().numpy()[0]
-                                    rgb = (
-                                        sample_img.detach()
-                                        .cpu()
-                                        .numpy()
-                                        .transpose(0, 2, 3, 1)[0]
-                                    )
-                                    rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-                                    tile_iou, tile_f1 = compute_tile_iou_f1(
-                                        pred_mask,
-                                        gt_mask,
-                                        class_index=plot_metric_class_index,
-                                        ignore_index=loss_ignore_index,
-                                    )
-                                    sample_payload: dict[str, Any] = {
-                                        "rgb": rgb,
-                                        "gt_mask": gt_mask,
-                                        "pred_mask": pred_mask,
-                                        "iou": tile_iou,
-                                        "f1": tile_f1,
-                                    }
-                                    if plot_xai_enable and backbone and processor:
-                                        rgb_h, rgb_w = int(rgb.shape[0]), int(
-                                            rgb.shape[1]
-                                        )
-                                        pca_rgb_map = None
-                                        if plot_xai_pca_enable and sample_feats:
-                                            pca_feature = sample_feats[-1]
                                             if (
-                                                plot_xai_pca_layer is not None
-                                                and plot_xai_pca_layer
-                                                in model_cfg["layers"]
+                                                sample_logits.shape[-2:]
+                                                != sample_img.shape[-2:]
                                             ):
-                                                pca_idx = model_cfg["layers"].index(
-                                                    int(plot_xai_pca_layer)
+                                                sample_logits = F.interpolate(
+                                                    sample_logits,
+                                                    size=sample_img.shape[-2:],
+                                                    mode="bilinear",
+                                                    align_corners=False,
                                                 )
-                                                pca_feature = sample_feats[pca_idx]
-                                            pca_small = compute_feature_pca_rgb(
-                                                pca_feature
+                                            gate_raw = sample_extras.get("gate_h4_mean")
+                                            if isinstance(gate_raw, torch.Tensor):
+                                                gate_value = float(
+                                                    gate_raw.detach().item()
+                                                )
+                                                if math.isfinite(gate_value):
+                                                    gate_importance = gate_value
+                                        pred_mask = (
+                                            sample_logits.argmax(dim=1)
+                                            .detach()
+                                            .cpu()
+                                            .numpy()[0]
+                                        )
+                                        gt_mask = sample_gt.detach().cpu().numpy()[0]
+                                        rgb = (
+                                            sample_img.detach()
+                                            .cpu()
+                                            .numpy()
+                                            .transpose(0, 2, 3, 1)[0]
+                                        )
+                                        rgb = np.clip(rgb * 255.0, 0, 255).astype(
+                                            np.uint8
+                                        )
+                                        tile_iou, tile_f1 = compute_tile_iou_f1(
+                                            pred_mask,
+                                            gt_mask,
+                                            class_index=plot_metric_class_index,
+                                            ignore_index=loss_ignore_index,
+                                        )
+                                        sample_payload = {
+                                            "rgb": rgb,
+                                            "gt_mask": gt_mask,
+                                            "pred_mask": pred_mask,
+                                            "iou": tile_iou,
+                                            "f1": tile_f1,
+                                        }
+                                        if gate_importance is not None:
+                                            sample_payload["gate_importance"] = (
+                                                gate_importance
                                             )
-                                            pca_rgb_map = upsample_rgb_map(
-                                                pca_small, rgb_h, rgb_w
-                                            )
-                                        attn_cls_map, attn_rollout_map, had_attn = (
-                                            compute_attention_maps(
-                                                rgb.astype(np.float32),
-                                                backbone,
-                                                processor,
-                                                device,
-                                                ps,
+                                            gate_importances.append(gate_importance)
+                                        if (
+                                            plot_xai_enable
+                                            and plot_xai_branch_importance_enable
+                                            and len(branch_img_importances)
+                                            < plot_xai_branch_importance_max_samples
+                                        ):
+                                            branch_info = compute_branch_importance(
+                                                head=eval_model,
+                                                image=sample_img,
+                                                features=sample_feats,
+                                                class_index=(
+                                                    plot_xai_branch_importance_class_index
+                                                ),
                                                 logger=context.logger,
                                             )
-                                        )
-                                        if not had_attn:
-                                            context.logger.info(
-                                                "Epoch %s sample %s attention unavailable; "
-                                                "using zero attention maps."
-                                                % (epoch + 1, len(sample_plots) + 1)
+                                            sample_payload.update(branch_info)
+                                            branch_img_importances.append(
+                                                float(branch_info["img_importance"])
                                             )
-                                        attn_cls_map = upsample_map(
-                                            attn_cls_map, rgb_h, rgb_w
+                                            branch_dino_importances.append(
+                                                float(branch_info["dino_importance"])
+                                            )
+                                    else:
+                                        rgb = (
+                                            sample_img.detach()
+                                            .cpu()
+                                            .numpy()
+                                            .transpose(0, 2, 3, 1)[0]
                                         )
-                                        attn_rollout_map = upsample_map(
-                                            attn_rollout_map, rgb_h, rgb_w
+                                        rgb = np.clip(rgb * 255.0, 0, 255).astype(
+                                            np.uint8
+                                        )
+                                    if (
+                                        plot_xai_enable
+                                        and backbone is not None
+                                        and processor is not None
+                                        and (wants_plot or wants_channel)
+                                    ):
+                                        rgb_h, rgb_w = int(rgb.shape[0]), int(
+                                            rgb.shape[1]
                                         )
                                         gradcam_result = (
                                             compute_gradcam_with_topk_channels(
@@ -982,53 +1112,130 @@ class TrainPhase(Phase):
                                                 layers=model_cfg["layers"],
                                                 ps=ps,
                                                 class_index=plot_xai_class_index,
-                                                topk_channels=plot_xai_topk_channels,
+                                                topk_channels=gradcam_topk,
                                                 cam_layer=plot_xai_cam_layer,
                                                 logger=context.logger,
                                             )
                                         )
-                                        gradcam_map = upsample_map(
-                                            np.asarray(
-                                                gradcam_result["cam_map"],
-                                                dtype=np.float32,
-                                            ),
-                                            rgb_h,
-                                            rgb_w,
-                                        )
-                                        top_maps = [
-                                            upsample_map(
-                                                np.asarray(top_map, dtype=np.float32),
+                                        if wants_channel:
+                                            channel_importance_samples.append(
+                                                {
+                                                    "top_channels": [
+                                                        int(idx)
+                                                        for idx in gradcam_result[
+                                                            "top_indices"
+                                                        ][
+                                                            :plot_xai_channel_top_k_per_sample
+                                                        ]
+                                                    ],
+                                                    "top_scores": [
+                                                        float(score)
+                                                        for score in gradcam_result[
+                                                            "top_scores"
+                                                        ][
+                                                            :plot_xai_channel_top_k_per_sample
+                                                        ]
+                                                    ],
+                                                }
+                                            )
+                                        if wants_plot and sample_payload is not None:
+                                            pca_rgb_map = None
+                                            if plot_xai_pca_enable and sample_feats:
+                                                pca_feature = sample_feats[-1]
+                                                if (
+                                                    plot_xai_pca_layer is not None
+                                                    and plot_xai_pca_layer
+                                                    in model_cfg["layers"]
+                                                ):
+                                                    pca_idx = model_cfg["layers"].index(
+                                                        int(plot_xai_pca_layer)
+                                                    )
+                                                    pca_feature = sample_feats[pca_idx]
+                                                pca_small = compute_feature_pca_rgb(
+                                                    pca_feature
+                                                )
+                                                pca_rgb_map = upsample_rgb_map(
+                                                    pca_small, rgb_h, rgb_w
+                                                )
+                                            (
+                                                attn_cls_map,
+                                                attn_rollout_map,
+                                                had_attn,
+                                            ) = compute_attention_maps(
+                                                rgb.astype(np.float32),
+                                                backbone,
+                                                processor,
+                                                device,
+                                                ps,
+                                                logger=context.logger,
+                                            )
+                                            if not had_attn:
+                                                context.logger.info(
+                                                    "Epoch %s sample %s attention unavailable; "
+                                                    "using zero attention maps."
+                                                    % (epoch + 1, len(sample_plots) + 1)
+                                                )
+                                            attn_cls_map = upsample_map(
+                                                attn_cls_map, rgb_h, rgb_w
+                                            )
+                                            attn_rollout_map = upsample_map(
+                                                attn_rollout_map, rgb_h, rgb_w
+                                            )
+                                            gradcam_map = upsample_map(
+                                                np.asarray(
+                                                    gradcam_result["cam_map"],
+                                                    dtype=np.float32,
+                                                ),
                                                 rgb_h,
                                                 rgb_w,
                                             )
-                                            for top_map in gradcam_result["top_maps"]
-                                        ]
-                                        sample_payload.update(
-                                            {
-                                                "attn_cls": attn_cls_map,
-                                                "attn_rollout": attn_rollout_map,
-                                                "gradcam": gradcam_map,
-                                                "top_channels": [
-                                                    int(idx)
-                                                    for idx in gradcam_result[
-                                                        "top_indices"
-                                                    ]
-                                                ],
-                                                "top_scores": [
-                                                    float(score)
-                                                    for score in gradcam_result[
-                                                        "top_scores"
-                                                    ]
-                                                ],
-                                                "top_maps": top_maps,
-                                            }
-                                        )
-                                        if pca_rgb_map is not None:
-                                            sample_payload["pca_rgb"] = pca_rgb_map
-                                    sample_plots.append(sample_payload)
-                                    if len(sample_plots) >= desired_pairs:
+                                            top_maps = [
+                                                upsample_map(
+                                                    np.asarray(
+                                                        top_map, dtype=np.float32
+                                                    ),
+                                                    rgb_h,
+                                                    rgb_w,
+                                                )
+                                                for top_map in gradcam_result[
+                                                    "top_maps"
+                                                ][:plot_xai_topk_channels]
+                                            ]
+                                            sample_payload.update(
+                                                {
+                                                    "attn_cls": attn_cls_map,
+                                                    "attn_rollout": attn_rollout_map,
+                                                    "gradcam": gradcam_map,
+                                                    "top_channels": [
+                                                        int(idx)
+                                                        for idx in gradcam_result[
+                                                            "top_indices"
+                                                        ][:plot_xai_topk_channels]
+                                                    ],
+                                                    "top_scores": [
+                                                        float(score)
+                                                        for score in gradcam_result[
+                                                            "top_scores"
+                                                        ][:plot_xai_topk_channels]
+                                                    ],
+                                                    "top_maps": top_maps,
+                                                }
+                                            )
+                                            if pca_rgb_map is not None:
+                                                sample_payload["pca_rgb"] = pca_rgb_map
+                                    if wants_plot and sample_payload is not None:
+                                        sample_plots.append(sample_payload)
+                                    if (
+                                        len(sample_plots) >= desired_pairs
+                                        and len(channel_importance_samples)
+                                        >= channel_tracking_target
+                                    ):
                                         break
-                                if len(sample_plots) >= desired_pairs:
+                                if (
+                                    len(sample_plots) >= desired_pairs
+                                    and len(channel_importance_samples)
+                                    >= channel_tracking_target
+                                ):
                                     break
                             if sample_plots:
                                 out_path = os.path.join(
@@ -1051,6 +1258,163 @@ class TrainPhase(Phase):
                                         render_rollout=plot_xai_render_rollout,
                                         render_pca=plot_xai_pca_enable,
                                     )
+                                    if branch_img_importances:
+                                        img_mean = float(
+                                            np.mean(branch_img_importances)
+                                        )
+                                        dino_mean = float(
+                                            np.mean(branch_dino_importances)
+                                        )
+                                        xai_epoch_metrics.update(
+                                            {
+                                                "xai_img_importance_mean": img_mean,
+                                                "xai_dino_importance_mean": dino_mean,
+                                                "xai_img_dino_balance_absdiff_mean": float(
+                                                    np.mean(
+                                                        np.abs(
+                                                            np.asarray(
+                                                                branch_img_importances
+                                                            )
+                                                            - np.asarray(
+                                                                branch_dino_importances
+                                                            )
+                                                        )
+                                                    )
+                                                ),
+                                                "xai_branch_samples": float(
+                                                    len(branch_img_importances)
+                                                ),
+                                            }
+                                        )
+                                    if gate_importances:
+                                        xai_epoch_metrics.update(
+                                            {
+                                                "xai_gate_importance_mean": float(
+                                                    np.mean(gate_importances)
+                                                ),
+                                                "xai_gate_samples": float(
+                                                    len(gate_importances)
+                                                ),
+                                            }
+                                        )
+                                    if (
+                                        plot_xai_channel_tracking_enable
+                                        and channel_importance_samples
+                                    ):
+                                        epoch_channel_summary = (
+                                            _aggregate_channel_importance_samples(
+                                                channel_importance_samples
+                                            )
+                                        )
+                                        if epoch_channel_summary["sample_count"] > 0:
+                                            epoch_channel_summary["epoch"] = epoch + 1
+                                            channel_importance_history.append(
+                                                epoch_channel_summary
+                                            )
+                                            stable_channels = _select_stable_channel_ids(
+                                                channel_importance_history,
+                                                top_n=plot_xai_channel_top_n_stable,
+                                                min_presence=plot_xai_channel_min_presence,
+                                            )
+                                            bar_path = os.path.join(
+                                                plot_dir,
+                                                (
+                                                    f"epoch_{epoch + 1:04d}_"
+                                                    "channel_importance_bar.png"
+                                                ),
+                                            )
+                                            _save_channel_importance_bar_plot(
+                                                bar_path,
+                                                epoch=epoch + 1,
+                                                epoch_summary=epoch_channel_summary,
+                                                stable_channels=stable_channels,
+                                            )
+                                            trend_path = os.path.join(
+                                                plot_dir,
+                                                "channel_importance_trends.png",
+                                            )
+                                            _save_channel_importance_trend_plot(
+                                                trend_path,
+                                                channel_importance_history,
+                                                stable_channels,
+                                            )
+                                            heatmap_path = os.path.join(
+                                                plot_dir,
+                                                "channel_importance_heatmap.png",
+                                            )
+                                            _save_channel_importance_heatmap(
+                                                heatmap_path,
+                                                channel_importance_history,
+                                                stable_channels,
+                                            )
+                                            artifact_paths = [
+                                                bar_path,
+                                                trend_path,
+                                                heatmap_path,
+                                            ]
+                                            if plot_xai_channel_save_json:
+                                                channel_json_path = os.path.join(
+                                                    plot_dir,
+                                                    (
+                                                        f"epoch_{epoch + 1:04d}_"
+                                                        "channel_importance.json"
+                                                    ),
+                                                )
+                                                _write_channel_importance_json(
+                                                    channel_json_path,
+                                                    epoch_summary=epoch_channel_summary,
+                                                    stable_channels=stable_channels,
+                                                )
+                                                artifact_paths.append(channel_json_path)
+                                            if context.mlflow_logger is not None:
+                                                for artifact_path in artifact_paths:
+                                                    context.mlflow_logger.log_artifact(
+                                                        artifact_path,
+                                                        artifact_path="xai",
+                                                    )
+                                            top_channels = epoch_channel_summary[
+                                                "top_channels"
+                                            ]
+                                            top1_id = (
+                                                float(top_channels[0][0])
+                                                if top_channels
+                                                else -1.0
+                                            )
+                                            top1_weight = (
+                                                float(top_channels[0][1])
+                                                if top_channels
+                                                else 0.0
+                                            )
+                                            top5_mass = float(
+                                                sum(
+                                                    float(weight)
+                                                    for _, weight in top_channels[:5]
+                                                )
+                                            )
+                                            xai_epoch_metrics.update(
+                                                {
+                                                    "xai_channel_entropy": float(
+                                                        epoch_channel_summary["entropy"]
+                                                    ),
+                                                    "xai_top1_channel_id": top1_id,
+                                                    "xai_top1_channel_importance": (
+                                                        top1_weight
+                                                    ),
+                                                    "xai_top5_mass": top5_mass,
+                                                    "xai_channel_samples": float(
+                                                        epoch_channel_summary[
+                                                            "sample_count"
+                                                        ]
+                                                    ),
+                                                    "xai_channel_unique_count": float(
+                                                        len(
+                                                            epoch_channel_summary[
+                                                                "mean_importance"
+                                                            ]
+                                                        )
+                                                    ),
+                                                }
+                                            )
                             else:
                                 context.logger.error(
                                     "Epoch validation plotting skipped: no samples collected."
@@ -1135,6 +1499,7 @@ class TrainPhase(Phase):
                             f"val_{key}": float(val_metrics.get(key, float("nan")))
                             for key in LOSS_COMPONENT_KEYS
                         },
+                        **xai_epoch_metrics,
                     }
                     if (
                         epoch_metrics["optimizer_steps"]
@@ -1278,6 +1643,236 @@ class InferencePhase(Phase):
         plot_every_n = explain_cfg.get("plot_every_n")
         output_suffix = infer_cfg.get("output_suffix", "_pred.tif")
         glob_pattern = infer_cfg.get("glob", "*.tif")
+
+        def _infer_one_tif(
+            input_tif_path: str,
+            output_tif_path: str,
+            plot_prefix: str,
+        ) -> dict[str, float]:
+            """Run tiled inference for a single input raster.
+
+            Args:
+                input_tif_path (str): Source raster path.
+                output_tif_path (str): Destination prediction path.
+                plot_prefix (str): Prefix for explainability dashboard filenames.
+
+            Returns:
+                dict[str, float]: Per-file metrics with `tiles_total`.
+            """
+
+            with rasterio.open(input_tif_path) as src:
+                profile = src.profile.copy()
+                height, width = src.height, src.width
+                channels = src.count
+            if channels != 3:
+                raise InferenceError(
+                    f"Expected 3-band imagery: {os.path.basename(input_tif_path)}"
+                )
+            prob_accum = np.zeros(
+                (model_cfg["num_classes"], height, width), dtype=np.float32
+            )
+            count_accum = np.zeros((height, width), dtype=np.float32)
+            total_tiles = math.ceil(height / stride) * math.ceil(width / stride)
+            context.logger.info(
+                f"Running inference on {total_tiles} tiles with stride {stride}."
+            )
+            local_plot_every_n = plot_every_n
+            if explain_enabled:
+                assert plots_dir is not None
+                os.makedirs(plots_dir, exist_ok=True)
+                if local_plot_every_n is None:
+                    local_plot_every_n = 10 if total_tiles > 50 else 1
+            tile_counter = 0
+            phase_label = f"Inference phase ({os.path.basename(input_tif_path)})"
+            with (
+                rasterio.open(input_tif_path) as src,
+                TimedBlock(context.logger, phase_label),
+            ):
+                for y in range(0, height, stride):
+                    for x in range(0, width, stride):
+                        tile_counter += 1
+                        y_max = min(y + tile_size, height)
+                        x_max = min(x + tile_size, width)
+                        window = Window.from_slices((y, y_max), (x, x_max))
+                        img_tile = src.read(window=window, boundless=True)
+                        img_tile = np.transpose(img_tile, (1, 2, 0))
+                        if np.max(img_tile) == 0:
+                            continue
+                        img_tile_raw = img_tile
+                        orig_h, orig_w = img_tile.shape[:2]
+                        pad_h = max(0, tile_size - orig_h)
+                        pad_w = max(0, tile_size - orig_w)
+                        if pad_h or pad_w:
+                            img_tile = np.pad(
+                                img_tile,
+                                ((0, pad_h), (0, pad_w), (0, 0)),
+                                mode="reflect",
+                            )
+                        tile_probs = np.zeros(
+                            (model_cfg["num_classes"], orig_h, orig_w),
+                            dtype=np.float32,
+                        )
+                        pca_feat = None
+                        for transform in tta_transforms:
+                            aug_img = transform.apply(img_tile)
+                            img_tile_norm = (aug_img.astype(np.float32) / 255.0).astype(
+                                np.float32
+                            )
+                            img_t = (
+                                torch.from_numpy(img_tile_norm)
+                                .permute(2, 0, 1)
+                                .unsqueeze(0)
+                                .to(device)
+                            )
+                            feats = extract_multiscale_features(
+                                aug_img.astype(np.float32),
+                                backbone,
+                                processor,
+                                device,
+                                model_cfg["layers"],
+                                ps=ps,
+                            )
+                            feats_batched = [f.to(device).unsqueeze(0) for f in feats]
+                            if (
+                                explain_enabled
+                                and explain_pca_enable
+                                and transform.name == "none"
+                            ):
+                                selected_idx = len(feats_batched) - 1
+                                if (
+                                    explain_pca_layer is not None
+                                    and explain_pca_layer in model_cfg["layers"]
+                                ):
+                                    selected_idx = model_cfg["layers"].index(
+                                        int(explain_pca_layer)
+                                    )
+                                pca_feat = feats_batched[selected_idx]
+                            with torch.no_grad(), autocast:
+                                logits = head(img_t, feats_batched)
+                                logits = transform.invert_logits(logits)
+                                if logits.shape[-2:] != img_t.shape[-2:]:
+                                    logits = F.interpolate(
+                                        logits,
+                                        size=img_t.shape[-2:],
+                                        mode="bilinear",
+                                        align_corners=False,
+                                    )
+                                probs = (
+                                    torch.softmax(logits, dim=1)
+                                    .squeeze(0)
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                )
+                            probs = probs[:, :orig_h, :orig_w]
+                            tile_probs += probs
+                        tile_probs /= len(tta_transforms)
+                        if (
+                            explain_enabled
+                            and local_plot_every_n
+                            and tile_counter % local_plot_every_n == 0
+                        ):
+                            try:
+                                rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
+                                attn_cls, attn_rollout, had_attn = (
+                                    compute_attention_maps(
+                                        img_tile_raw.astype(np.float32),
+                                        backbone,
+                                        processor,
+                                        device,
+                                        ps,
+                                        logger=context.logger,
+                                    )
+                                )
+                                if not had_attn:
+                                    context.logger.info(
+                                        "Using Grad-CAM fallback for tile y=%s x=%s."
+                                        % (y, x)
+                                    )
+                                    gradcam = compute_gradcam_map(
+                                        img_tile_raw.astype(np.float32),
+                                        backbone,
+                                        head,
+                                        processor,
+                                        device,
+                                        model_cfg["layers"],
+                                        ps,
+                                        class_index,
+                                        logger=context.logger,
+                                    )
+                                    attn_cls = gradcam
+                                    attn_rollout = gradcam
+                                attn_cls = upsample_map(attn_cls, orig_h, orig_w)
+                                attn_rollout = upsample_map(
+                                    attn_rollout, orig_h, orig_w
+                                )
+                                conf, ent, class_prob = compute_xai_maps(
+                                    tile_probs, class_index
+                                )
+                                pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
+                                overlay_pred = overlay_heatmap(
+                                    rgb,
+                                    pred_tile.astype(np.float32)
+                                    / max(1, model_cfg["num_classes"] - 1),
+                                )
+                                overlay_attn = overlay_heatmap(rgb, attn_cls)
+                                pca_rgb = None
+                                if explain_pca_enable and pca_feat is not None:
+                                    pca_rgb = upsample_rgb_map(
+                                        compute_feature_pca_rgb(pca_feat),
+                                        orig_h,
+                                        orig_w,
+                                    )
+                                plot_path = os.path.join(
+                                    plots_dir,
+                                    f"{plot_prefix}_tile_y{y}_x{x}_dashboard.png",
+                                )
+                                build_dashboard(
+                                    plot_path,
+                                    rgb,
+                                    pred_tile,
+                                    conf,
+                                    ent,
+                                    class_prob,
+                                    attn_cls,
+                                    attn_rollout,
+                                    overlay_pred,
+                                    overlay_attn,
+                                    pca_rgb=pca_rgb,
+                                    layout=layout,
+                                )
+                            except Exception:
+                                context.logger.error(
+                                    "XAI plotting failed for tile y=%s x=%s\n%s"
+                                    % (y, x, traceback.format_exc())
+                                )
+                        prob_accum[:, y:y_max, x:x_max] += tile_probs
+                        count_accum[y:y_max, x:x_max] += 1
+                        if tile_counter % 50 == 0 or tile_counter == total_tiles:
+                            context.logger.info(
+                                f"Inference progress: {tile_counter}/{total_tiles} tiles."
+                            )
+                            context.hook_manager.on_inference_tile(
+                                context,
+                                self.name,
+                                tile_counter,
+                                total_tiles,
+                            )
+            count_accum[count_accum == 0] = 1
+            prob_accum /= count_accum
+            pred_full = prob_accum.argmax(axis=0).astype(np.uint8)
+            profile.update(dtype=rasterio.uint8, count=1, nodata=0)
+            os.makedirs(os.path.dirname(output_tif_path) or ".", exist_ok=True)
+            with rasterio.open(output_tif_path, "w", **profile) as dst:
+                dst.write(pred_full, 1)
+            context.logger.info(f"Saved prediction to {output_tif_path}")
+            return {"tiles_total": float(total_tiles)}
+
+        if input_dir and input_tif:
+            raise InferenceError(
+                "Set only one input source: either inference.input_tif or "
+                "inference.input_dir."
+            )
         if input_dir:
             if not output_dir:
                 raise InferenceError("output_dir is required when input_dir is set")
@@ -1287,567 +1882,32 @@ class InferencePhase(Phase):
                 os.makedirs(plots_dir, exist_ok=True)
             tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
             if not tile_files:
-                raise InferenceError(f"No input tiles found in {input_dir}")
-            if plot_every_n is None:
-                plot_every_n = 10 if len(tile_files) > 50 else 1
-
-            def _infer_tile_file(path: str, index: int) -> None:
-                """Run inference for a single tile file and write outputs.
-
-                Args:
-                    path (str): Input tile path.
-                    index (int): 1-based tile index for plotting frequency.
-                """
-
-                with rasterio.open(path) as src:
-                    profile = src.profile.copy()
-                    img = src.read()
-                img = np.transpose(img, (1, 2, 0))
-                if img.shape[2] != 3:
-                    raise InferenceError("Expected 3-band imagery.")
-                orig_h, orig_w = img.shape[:2]
-                probs_accum = np.zeros(
-                    (model_cfg["num_classes"], orig_h, orig_w), dtype=np.float32
-                )
-                pca_feat = None
-                for transform in tta_transforms:
-                    aug_img = transform.apply(img)
-                    img_norm = (aug_img.astype(np.float32) / 255.0).astype(np.float32)
-                    img_t = (
-                        torch.from_numpy(img_norm)
-                        .permute(2, 0, 1)
-                        .unsqueeze(0)
-                        .to(device)
-                    )
-                    feats = extract_multiscale_features(
-                        aug_img.astype(np.float32),
-                        backbone,
-                        processor,
-                        device,
-                        model_cfg["layers"],
-                        ps=ps,
-                    )
-                    feats_batched = [f.to(device).unsqueeze(0) for f in feats]
-                    if (
-                        explain_enabled
-                        and explain_pca_enable
-                        and transform.name == "none"
-                    ):
-                        selected_idx = len(feats_batched) - 1
-                        if (
-                            explain_pca_layer is not None
-                            and explain_pca_layer in model_cfg["layers"]
-                        ):
-                            selected_idx = model_cfg["layers"].index(
-                                int(explain_pca_layer)
-                            )
-                        pca_feat = feats_batched[selected_idx]
-                    with torch.no_grad(), autocast:
-                        logits = head(img_t, feats_batched)
-                        logits = transform.invert_logits(logits)
-                        if logits.shape[-2:] != img_t.shape[-2:]:
-                            logits = F.interpolate(
-                                logits,
-                                size=img_t.shape[-2:],
-                                mode="bilinear",
-                                align_corners=False,
-                            )
-                        probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
-                    probs_accum += probs
-                probs_accum /= len(tta_transforms)
-                pred = probs_accum.argmax(axis=0).astype(np.uint8)
-                profile.update(dtype=rasterio.uint8, count=1, nodata=0)
-                base = os.path.splitext(os.path.basename(path))[0]
-                out_path = os.path.join(output_dir, f"{base}{output_suffix}")
-                with rasterio.open(out_path, "w", **profile) as dst:
-                    dst.write(pred, 1)
-                if explain_enabled and plot_every_n and index % plot_every_n == 0:
-                    try:
-                        rgb = np.clip(img, 0, 255).astype(np.uint8)
-                        attn_cls, attn_rollout, had_attn = compute_attention_maps(
-                            img.astype(np.float32),
-                            backbone,
-                            processor,
-                            device,
-                            ps,
-                            logger=context.logger,
-                        )
-                        if not had_attn:
-                            context.logger.info(f"Using Grad-CAM fallback for {base}.")
-                            gradcam = compute_gradcam_map(
-                                img.astype(np.float32),
-                                backbone,
-                                head,
-                                processor,
-                                device,
-                                model_cfg["layers"],
-                                ps,
-                                class_index,
-                                logger=context.logger,
-                            )
-                            attn_cls = gradcam
-                            attn_rollout = gradcam
-                        attn_cls = upsample_map(attn_cls, orig_h, orig_w)
-                        attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
-                        conf, ent, class_prob = compute_xai_maps(
-                            probs_accum, class_index
-                        )
-                        overlay_pred = overlay_heatmap(
-                            rgb,
-                            pred.astype(np.float32)
-                            / max(1, model_cfg["num_classes"] - 1),
-                        )
-                        overlay_attn = overlay_heatmap(rgb, attn_cls)
-                        pca_rgb = None
-                        if explain_pca_enable and pca_feat is not None:
-                            pca_rgb = upsample_rgb_map(
-                                compute_feature_pca_rgb(pca_feat),
-                                orig_h,
-                                orig_w,
-                            )
-                        plot_path = os.path.join(plots_dir, f"{base}_dashboard.png")
-                        build_dashboard(
-                            plot_path,
-                            rgb,
-                            pred,
-                            conf,
-                            ent,
-                            class_prob,
-                            attn_cls,
-                            attn_rollout,
-                            overlay_pred,
-                            overlay_attn,
-                            pca_rgb=pca_rgb,
-                            layout=layout,
-                        )
-                    except Exception:
-                        context.logger.error(
-                            "XAI plotting failed for %s\n%s"
-                            % (base, traceback.format_exc())
-                        )
-
+                raise InferenceError(f"No input files found in {input_dir}")
+            total_tiles = 0.0
             for idx, tile_path in enumerate(tile_files, start=1):
-                context.logger.info(f"Running tile inference {idx}/{len(tile_files)}")
-                _infer_tile_file(tile_path, idx)
-            metrics = {"files_total": float(len(tile_files))}
+                base = os.path.splitext(os.path.basename(tile_path))[0]
+                context.logger.info(
+                    "Running file inference %s/%s: %s" % (idx, len(tile_files), base)
+                )
+                out_path = os.path.join(output_dir, f"{base}{output_suffix}")
+                file_metrics = _infer_one_tif(tile_path, out_path, plot_prefix=base)
+                total_tiles += float(file_metrics.get("tiles_total", 0.0))
+            metrics = {
+                "files_total": float(len(tile_files)),
+                "tiles_total": total_tiles,
+            }
             artifacts = {"output_dir": output_dir, "checkpoint": checkpoint}
             return PhaseOutcome(metrics=metrics, artifacts=artifacts)
-        if not input_tif or not output_tif:
+        if not input_tif:
             raise InferenceError(
-                "input_tif and output_tif are required for single-file inference"
+                "Either inference.input_tif or inference.input_dir must be set."
             )
-        with rasterio.open(input_tif) as src:
-            profile = src.profile.copy()
-            height, width = src.height, src.width
-            channels = src.count
-        if channels != 3:
-            raise InferenceError("Expected 3-band imagery.")
-        prob_accum = np.zeros(
-            (model_cfg["num_classes"], height, width), dtype=np.float32
-        )
-        count_accum = np.zeros((height, width), dtype=np.float32)
-        total_tiles = math.ceil(height / stride) * math.ceil(width / stride)
-        context.logger.info(
-            f"Running inference on {total_tiles} tiles with stride {stride}."
-        )
+        if not output_tif:
+            raise InferenceError("output_tif is required when input_tif is set")
         if explain_enabled:
             plots_dir = plots_dir or os.path.join(os.path.dirname(output_tif), "plots")
             os.makedirs(plots_dir, exist_ok=True)
-            if plot_every_n is None:
-                plot_every_n = 10 if total_tiles > 50 else 1
-        tile_counter = 0
-        with (
-            rasterio.open(input_tif) as src,
-            TimedBlock(context.logger, "Inference phase"),
-        ):
-            for y in range(0, height, stride):
-                for x in range(0, width, stride):
-                    tile_counter += 1
-                    y_max = min(y + tile_size, height)
-                    x_max = min(x + tile_size, width)
-                    window = Window.from_slices((y, y_max), (x, x_max))
-                    img_tile = src.read(window=window, boundless=True)
-                    img_tile = np.transpose(img_tile, (1, 2, 0))
-                    if np.max(img_tile) == 0:
-                        continue
-                    img_tile_raw = img_tile
-                    orig_h, orig_w = img_tile.shape[:2]
-                    pad_h = max(0, tile_size - orig_h)
-                    pad_w = max(0, tile_size - orig_w)
-                    if pad_h or pad_w:
-                        img_tile = np.pad(
-                            img_tile,
-                            ((0, pad_h), (0, pad_w), (0, 0)),
-                            mode="reflect",
-                        )
-                    tile_probs = np.zeros(
-                        (model_cfg["num_classes"], orig_h, orig_w), dtype=np.float32
-                    )
-                    pca_feat = None
-                    for transform in tta_transforms:
-                        aug_img = transform.apply(img_tile)
-                        img_tile_norm = (aug_img.astype(np.float32) / 255.0).astype(
-                            np.float32
-                        )
-                        img_t = (
-                            torch.from_numpy(img_tile_norm)
-                            .permute(2, 0, 1)
-                            .unsqueeze(0)
-                            .to(device)
-                        )
-                        feats = extract_multiscale_features(
-                            aug_img.astype(np.float32),
-                            backbone,
-                            processor,
-                            device,
-                            model_cfg["layers"],
-                            ps=ps,
-                        )
-                        feats_batched = [f.to(device).unsqueeze(0) for f in feats]
-                        if (
-                            explain_enabled
-                            and explain_pca_enable
-                            and transform.name == "none"
-                        ):
-                            selected_idx = len(feats_batched) - 1
-                            if (
-                                explain_pca_layer is not None
-                                and explain_pca_layer in model_cfg["layers"]
-                            ):
-                                selected_idx = model_cfg["layers"].index(
-                                    int(explain_pca_layer)
-                                )
-                            pca_feat = feats_batched[selected_idx]
-                        with torch.no_grad(), autocast:
-                            logits = head(img_t, feats_batched)
-                            logits = transform.invert_logits(logits)
-                            if logits.shape[-2:] != img_t.shape[-2:]:
-                                logits = F.interpolate(
-                                    logits,
-                                    size=img_t.shape[-2:],
-                                    mode="bilinear",
-                                    align_corners=False,
-                                )
-                            probs = (
-                                torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
-                            )
-                        probs = probs[:, :orig_h, :orig_w]
-                        tile_probs += probs
-                    tile_probs /= len(tta_transforms)
-                    if (
-                        explain_enabled
-                        and plot_every_n
-                        and tile_counter % plot_every_n == 0
-                    ):
-                        try:
-                            rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
-                            attn_cls, attn_rollout, had_attn = compute_attention_maps(
-                                img_tile_raw.astype(np.float32),
-                                backbone,
-                                processor,
-                                device,
-                                ps,
-                                logger=context.logger,
-                            )
-                            if not had_attn:
-                                context.logger.info(
-                                    f"Using Grad-CAM fallback for tile y={y} x={x}."
-                                )
-                                gradcam = compute_gradcam_map(
-                                    img_tile_raw.astype(np.float32),
-                                    backbone,
-                                    head,
-                                    processor,
-                                    device,
-                                    model_cfg["layers"],
-                                    ps,
-                                    class_index,
-                                    logger=context.logger,
-                                )
-                                attn_cls = gradcam
-                                attn_rollout = gradcam
-                            attn_cls = upsample_map(attn_cls, orig_h, orig_w)
-                            attn_rollout = upsample_map(attn_rollout, orig_h, orig_w)
-                            conf, ent, class_prob = compute_xai_maps(
-                                tile_probs, class_index
-                            )
-                            pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
-                            overlay_pred = overlay_heatmap(
-                                rgb,
-                                pred_tile.astype(np.float32)
-                                / max(1, model_cfg["num_classes"] - 1),
-                            )
-                            overlay_attn = overlay_heatmap(rgb, attn_cls)
-                            pca_rgb = None
-                            if explain_pca_enable and pca_feat is not None:
-                                pca_rgb = upsample_rgb_map(
-                                    compute_feature_pca_rgb(pca_feat),
-                                    orig_h,
-                                    orig_w,
-                                )
-                            plot_path = os.path.join(
-                                plots_dir, f"tile_y{y}_x{x}_dashboard.png"
-                            )
-                            build_dashboard(
-                                plot_path,
-                                rgb,
-                                pred_tile,
-                                conf,
-                                ent,
-                                class_prob,
-                                attn_cls,
-                                attn_rollout,
-                                overlay_pred,
-                                overlay_attn,
-                                pca_rgb=pca_rgb,
-                                layout=layout,
-                            )
-                        except Exception:
-                            context.logger.error(
-                                "XAI plotting failed for tile y=%s x=%s\n%s"
-                                % (y, x, traceback.format_exc())
-                            )
-                    prob_accum[:, y:y_max, x:x_max] += tile_probs
-                    count_accum[y:y_max, x:x_max] += 1
-                    if tile_counter % 50 == 0 or tile_counter == total_tiles:
-                        context.logger.info(
-                            f"Inference progress: {tile_counter}/{total_tiles} tiles."
-                        )
-                        context.hook_manager.on_inference_tile(
-                            context,
-                            self.name,
-                            tile_counter,
-                            total_tiles,
-                        )
-        count_accum[count_accum == 0] = 1
-        prob_accum /= count_accum
-        pred_full = prob_accum.argmax(axis=0).astype(np.uint8)
-        profile.update(dtype=rasterio.uint8, count=1, nodata=0)
-        os.makedirs(os.path.dirname(output_tif) or ".", exist_ok=True)
-        with rasterio.open(output_tif, "w", **profile) as dst:
-            dst.write(pred_full, 1)
-        context.logger.info(f"Saved prediction to {output_tif}")
-        metrics = {"tiles_total": float(total_tiles)}
+        single_prefix = os.path.splitext(os.path.basename(input_tif))[0]
+        metrics = _infer_one_tif(input_tif, output_tif, plot_prefix=single_prefix)
         artifacts = {"output_tif": output_tif, "checkpoint": checkpoint}
         return PhaseOutcome(metrics=metrics, artifacts=artifacts)
-
-
-def save_epoch_plot(
-    output_path: str,
-    samples: list[dict[str, Any]],
-    cmap: str,
-    gt_overlay_alpha: float = 0.35,
-) -> None:
-    """Save a per-epoch validation grid with GT overlays and predictions.
-
-    Args:
-        output_path (str): PNG output path.
-        samples (list[dict[str, Any]]): Plot samples with rgb/gt/pred/iou/f1 keys.
-        cmap (str): Matplotlib colormap name.
-        gt_overlay_alpha (float): Alpha for GT overlay on RGB.
-    """
-
-    import matplotlib.pyplot as plt
-
-    rows = len(samples)
-    if rows == 0:
-        return
-    fig, axes = plt.subplots(rows, 2, figsize=(10, rows * 3.6))
-    if rows == 1:
-        axes = np.expand_dims(axes, axis=0)
-    axes_arr = np.asarray(axes, dtype=object)
-    for row_idx, sample in enumerate(samples):
-        rgb = sample["rgb"]
-        gt_mask = sample["gt_mask"]
-        pred_mask = sample["pred_mask"]
-        iou = float(sample["iou"])
-        f1 = float(sample["f1"])
-        left_ax = axes_arr[row_idx, 0]
-        right_ax = axes_arr[row_idx, 1]
-        left_ax.imshow(rgb)
-        gt_overlay = np.ma.masked_where(gt_mask == 0, gt_mask)
-        left_ax.imshow(gt_overlay, cmap=cmap, alpha=gt_overlay_alpha)
-        left_ax.set_title(f"Tile {row_idx + 1} | GT overlay")
-        left_ax.axis("off")
-        right_ax.imshow(pred_mask, cmap=cmap)
-        right_ax.set_title(f"Tile {row_idx + 1} | Pred IoU={iou:.3f} F1={f1:.3f}")
-        right_ax.axis("off")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
-
-
-def save_epoch_xai_plot(
-    output_path: str,
-    samples: list[dict[str, Any]],
-    cmap: str,
-    topk_channels: int = 5,
-    render_rollout: bool = True,
-    render_pca: bool = True,
-    gt_overlay_alpha: float = 0.35,
-) -> None:
-    """Save a per-epoch explainability grid for sampled validation tiles.
-
-    Args:
-        output_path (str): PNG output path.
-        samples (list[dict[str, Any]]): Samples with rgb/gt/pred and XAI maps.
-        cmap (str): Matplotlib colormap used for segmentation masks.
-        topk_channels (int): Number of top channel maps to render per sample.
-        render_rollout (bool): Whether to include attention rollout panel.
-        render_pca (bool): Whether to include a PCA feature panel.
-        gt_overlay_alpha (float): Alpha for GT overlay on RGB.
-    """
-
-    import matplotlib.pyplot as plt
-
-    rows = len(samples)
-    if rows == 0:
-        return
-    topk = max(1, int(topk_channels))
-    base_cols = 5 if render_rollout else 4
-    if render_pca:
-        base_cols += 1
-    cols = base_cols + topk
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.1))
-    if rows == 1:
-        axes = np.expand_dims(axes, axis=0)
-    axes_arr = np.asarray(axes, dtype=object)
-    for row_idx, sample in enumerate(samples):
-        rgb = sample["rgb"]
-        gt_mask = sample["gt_mask"]
-        pred_mask = sample["pred_mask"]
-        iou = float(sample["iou"])
-        f1 = float(sample["f1"])
-        zero_map = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
-        attn_cls = np.asarray(sample.get("attn_cls", zero_map), dtype=np.float32)
-        attn_rollout = np.asarray(
-            sample.get("attn_rollout", zero_map), dtype=np.float32
-        )
-        gradcam = np.asarray(sample.get("gradcam", zero_map), dtype=np.float32)
-        zero_rgb = np.zeros((rgb.shape[0], rgb.shape[1], 3), dtype=np.float32)
-        pca_rgb = np.asarray(sample.get("pca_rgb", zero_rgb), dtype=np.float32)
-        if pca_rgb.ndim != 3 or pca_rgb.shape[2] != 3:
-            pca_rgb = zero_rgb
-        top_maps = [
-            np.asarray(map_data, dtype=np.float32)
-            for map_data in sample.get("top_maps", [])
-        ]
-        top_indices = [int(idx) for idx in sample.get("top_channels", [])]
-        top_scores = [float(score) for score in sample.get("top_scores", [])]
-
-        col_idx = 0
-        gt_ax = axes_arr[row_idx, col_idx]
-        gt_ax.imshow(rgb)
-        gt_overlay = np.ma.masked_where(gt_mask == 0, gt_mask)
-        gt_ax.imshow(gt_overlay, cmap=cmap, alpha=gt_overlay_alpha)
-        gt_ax.set_title(f"Tile {row_idx + 1} | GT overlay")
-        gt_ax.axis("off")
-        col_idx += 1
-
-        pred_ax = axes_arr[row_idx, col_idx]
-        pred_ax.imshow(pred_mask, cmap=cmap)
-        pred_ax.set_title(f"Pred IoU={iou:.3f} F1={f1:.3f}")
-        pred_ax.axis("off")
-        col_idx += 1
-
-        cls_ax = axes_arr[row_idx, col_idx]
-        cls_ax.imshow(overlay_heatmap(rgb, attn_cls, cmap="viridis", alpha=0.45))
-        cls_ax.set_title("DINO CLS focus")
-        cls_ax.axis("off")
-        col_idx += 1
-
-        if render_rollout:
-            rollout_ax = axes_arr[row_idx, col_idx]
-            rollout_ax.imshow(
-                overlay_heatmap(rgb, attn_rollout, cmap="viridis", alpha=0.45)
-            )
-            rollout_ax.set_title("DINO rollout")
-            rollout_ax.axis("off")
-            col_idx += 1
-
-        cam_ax = axes_arr[row_idx, col_idx]
-        cam_ax.imshow(overlay_heatmap(rgb, gradcam, cmap="magma", alpha=0.5))
-        cam_ax.set_title("Grad-CAM")
-        cam_ax.axis("off")
-        col_idx += 1
-
-        if render_pca:
-            pca_ax = axes_arr[row_idx, col_idx]
-            pca_ax.imshow(np.clip(pca_rgb, 0.0, 1.0))
-            pca_ax.set_title("DINO PCA (PC1-3)")
-            pca_ax.axis("off")
-            col_idx += 1
-
-        for top_idx in range(topk):
-            top_ax = axes_arr[row_idx, col_idx + top_idx]
-            if top_idx < len(top_maps):
-                map_data = top_maps[top_idx]
-                channel_id = (
-                    str(top_indices[top_idx]) if top_idx < len(top_indices) else "?"
-                )
-                score = top_scores[top_idx] if top_idx < len(top_scores) else 0.0
-                top_ax.imshow(overlay_heatmap(rgb, map_data, cmap="plasma", alpha=0.45))
-                top_ax.set_title(f"Top {top_idx + 1} ch={channel_id} w={score:.3g}")
-            else:
-                top_ax.imshow(rgb)
-                top_ax.set_title(f"Top {top_idx + 1} unavailable")
-            top_ax.axis("off")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
-
-
-def resolve_cam_layer(layers: list[int], mode: str) -> int | None:
-    """Resolve the DINO layer index to use for CAM extraction.
-
-    Args:
-        layers (list[int]): Configured backbone layer indices.
-        mode (str): Selection mode (`last_requested_layer` or `first_requested_layer`).
-
-    Returns:
-        int | None: Selected layer index, or None when no layers are provided.
-    """
-
-    if not layers:
-        return None
-    normalized = str(mode).strip().lower()
-    if normalized == "first_requested_layer":
-        return int(layers[0])
-    return int(layers[-1])
-
-
-def compute_tile_iou_f1(
-    pred_mask: np.ndarray,
-    gt_mask: np.ndarray,
-    class_index: int = 1,
-    ignore_index: int | None = None,
-) -> tuple[float, float]:
-    """Compute binary IoU and F1 for one validation tile.
-
-    Args:
-        pred_mask (np.ndarray): Predicted class mask.
-        gt_mask (np.ndarray): Ground-truth class mask.
-        class_index (int): Positive class index for binary metrics.
-        ignore_index (int | None): Optional label index ignored in metric counts.
-
-    Returns:
-        tuple[float, float]: IoU and F1 values for the selected class.
-    """
-
-    pred = pred_mask.astype(np.int64)
-    gt = gt_mask.astype(np.int64)
-    valid = np.ones_like(gt, dtype=bool)
-    if ignore_index is not None:
-        valid &= gt != int(ignore_index)
-    if not np.any(valid):
-        return 0.0, 0.0
-    pred_pos = pred[valid] == int(class_index)
-    gt_pos = gt[valid] == int(class_index)
-    tp = int(np.logical_and(pred_pos, gt_pos).sum())
-    fp = int(np.logical_and(pred_pos, np.logical_not(gt_pos)).sum())
-    fn = int(np.logical_and(np.logical_not(pred_pos), gt_pos).sum())
-    denom_iou = tp + fp + fn
-    iou = tp / denom_iou if denom_iou > 0 else 0.0
-    denom_f1 = 2 * tp + fp + fn
-    f1 = (2 * tp) / denom_f1 if denom_f1 > 0 else 0.0
-    return float(iou), float(f1)

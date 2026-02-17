@@ -43,6 +43,11 @@ DEFAULT_DATASET_VALIDATION_CONFIG = {
     "require_finite_features": True,
     "require_finite_images": True,
 }
+DEFAULT_TILE_FILTER_CONFIG = {
+    "enabled": False,
+    "mode": "foreground_any",
+    "foreground_labels": (1,),
+}
 
 
 def _normalize_dataset_validation_cfg(
@@ -98,6 +103,71 @@ def _label_validity_mask(
     for cls in allowed_labels:
         mask |= label == int(cls)
     return mask
+
+
+def _normalize_tile_filter_cfg(
+    tile_filter_cfg: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return normalized tile-filter settings.
+
+    Args:
+        tile_filter_cfg (Optional[dict[str, Any]]): Raw tile-filter config.
+
+    Returns:
+        dict[str, Any]: Normalized tile-filter config.
+    """
+
+    cfg = dict(DEFAULT_TILE_FILTER_CONFIG)
+    if tile_filter_cfg:
+        cfg.update(tile_filter_cfg)
+    mode = str(cfg.get("mode", "foreground_any")).strip().lower()
+    if mode not in {"foreground_any"}:
+        mode = "foreground_any"
+    labels_raw = cfg.get("foreground_labels", (1,))
+    if isinstance(labels_raw, (list, tuple, set)):
+        labels = tuple(sorted({int(v) for v in labels_raw}))
+    else:
+        labels = (1,)
+    if not labels:
+        labels = (1,)
+    cfg["enabled"] = bool(cfg.get("enabled", False))
+    cfg["mode"] = mode
+    cfg["foreground_labels"] = labels
+    return cfg
+
+
+def _tile_passes_label_filter(
+    label: np.ndarray | torch.Tensor,
+    tile_filter_cfg: dict[str, Any],
+) -> bool:
+    """Return whether a tile satisfies the label-content filter.
+
+    Args:
+        label (np.ndarray | torch.Tensor): Tile label array.
+        tile_filter_cfg (dict[str, Any]): Normalized tile-filter config.
+
+    Returns:
+        bool: ``True`` when tile should be kept.
+    """
+
+    if not tile_filter_cfg.get("enabled", False):
+        return True
+    if tile_filter_cfg.get("mode") != "foreground_any":
+        return True
+    label_np = (
+        label.detach().cpu().numpy()
+        if isinstance(label, torch.Tensor)
+        else np.asarray(label)
+    )
+    if label_np.size == 0:
+        return False
+    if not np.isfinite(label_np).all():
+        label_np = np.nan_to_num(label_np, nan=-1)
+    label_int = label_np.astype(np.int64, copy=False)
+    for cls in tile_filter_cfg.get("foreground_labels", (1,)):
+        if np.any(label_int == int(cls)):
+            return True
+    return False
 
 
 def _sanitize_label_tensor(
@@ -654,6 +724,7 @@ def process_image_tiles_no_features(
     label_path: str,
     output_dir: str,
     tile_size: int,
+    tile_filter_cfg: dict[str, Any] | None = None,
     max_tiles: int | None = None,
     counter: Any | None = None,
     lock: Any | None = None,
@@ -666,6 +737,7 @@ def process_image_tiles_no_features(
         label_path (str): Path to the label raster.
         output_dir (str): Output directory for tiles.
         tile_size (int): Tile size in pixels.
+        tile_filter_cfg (dict[str, Any] | None): Optional tile-label filter config.
         max_tiles (int | None): Optional tile limit.
         counter (multiprocessing.Value | None): Shared tile counter.
         lock (multiprocessing.Lock | None): Shared lock for counter.
@@ -675,8 +747,9 @@ def process_image_tiles_no_features(
         dict: Status and tile counts for the processed image.
     """
 
+    tile_filter = _normalize_tile_filter_cfg(tile_filter_cfg)
     if stop_event is not None and stop_event.is_set():
-        return {"status": "stopped", "tiles_written": 0}
+        return {"status": "stopped", "tiles_written": 0, "skipped_no_foreground": 0}
     try:
         full_img = imread(img_path)
         full_label = subset_label_to_image_bounds(img_path, label_path)
@@ -684,15 +757,24 @@ def process_image_tiles_no_features(
         return {"status": "error", "error": str(exc)}
     h, w, _ = full_img.shape
     tiles_written = 0
+    skipped_no_foreground = 0
     for y in range(0, h, tile_size):
         for x in range(0, w, tile_size):
             if stop_event is not None and stop_event.is_set():
-                return {"status": "stopped", "tiles_written": tiles_written}
+                return {
+                    "status": "stopped",
+                    "tiles_written": tiles_written,
+                    "skipped_no_foreground": skipped_no_foreground,
+                }
             if max_tiles is not None and counter is not None:
                 if counter.value >= max_tiles:
                     if stop_event is not None:
                         stop_event.set()
-                    return {"status": "limit", "tiles_written": tiles_written}
+                    return {
+                        "status": "limit",
+                        "tiles_written": tiles_written,
+                        "skipped_no_foreground": skipped_no_foreground,
+                    }
             y_min, x_min = y, x
             y_max, x_max = y + tile_size, x + tile_size
             if y_max > h:
@@ -707,6 +789,9 @@ def process_image_tiles_no_features(
             lbl_crop = full_label[y_min:y_max, x_min:x_max]
             if img_crop.max() == 0:
                 continue
+            if not _tile_passes_label_filter(lbl_crop, tile_filter):
+                skipped_no_foreground += 1
+                continue
             if np.isnan(img_crop).any():
                 img_crop = np.nan_to_num(img_crop)
             if max_tiles is not None and counter is not None and lock is not None:
@@ -714,7 +799,11 @@ def process_image_tiles_no_features(
                     if counter.value >= max_tiles:
                         if stop_event is not None:
                             stop_event.set()
-                        return {"status": "limit", "tiles_written": tiles_written}
+                        return {
+                            "status": "limit",
+                            "tiles_written": tiles_written,
+                            "skipped_no_foreground": skipped_no_foreground,
+                        }
                     counter.value += 1
             payload = {
                 "image": torch.from_numpy(img_crop),
@@ -725,7 +814,11 @@ def process_image_tiles_no_features(
             torch.save(payload, temp_path)
             os.rename(temp_path, save_path)
             tiles_written += 1
-    return {"status": "ok", "tiles_written": tiles_written}
+    return {
+        "status": "ok",
+        "tiles_written": tiles_written,
+        "skipped_no_foreground": skipped_no_foreground,
+    }
 
 
 def subset_label_to_image_bounds(img_path: str, lab_path: str) -> np.ndarray:
@@ -956,6 +1049,7 @@ def prepare_data_tiles(
     device: torch.device,
     tile_size: int = 512,
     cache_features: bool = True,
+    tile_filter_cfg: Optional[dict[str, Any]] = None,
     workers: int | None = None,
     max_tiles: int | None = None,
     logger: Optional["VerbosityLogger"] = None,
@@ -972,6 +1066,7 @@ def prepare_data_tiles(
         device (torch.device): Device for inference.
         tile_size (int): Tile size in pixels.
         cache_features (bool): Whether to cache DINO features on disk.
+        tile_filter_cfg (Optional[dict[str, Any]]): Optional tile-label filter config.
         workers (int | None): Number of worker processes for tiling.
         max_tiles (int | None): Optional tile limit for preparation.
         logger (Optional["VerbosityLogger"]): Logger instance.
@@ -1039,6 +1134,12 @@ def prepare_data_tiles(
         _log_info(f"[INFO] Found {len(existing)} existing tiles.")
     if max_tiles is not None and max_tiles <= 0:
         max_tiles = None
+    tile_filter = _normalize_tile_filter_cfg(tile_filter_cfg)
+    if tile_filter["enabled"]:
+        _log_info(
+            "Tile label filter enabled: mode=%s foreground_labels=%s"
+            % (tile_filter["mode"], list(tile_filter["foreground_labels"]))
+        )
     count_existing = cache_features
     if max_tiles is not None and count_existing and existing:
         if len(existing) >= max_tiles:
@@ -1078,6 +1179,7 @@ def prepare_data_tiles(
         cancelled = 0
         errors = 0
         limit_hits = 0
+        skipped_no_foreground = 0
         image_durations: list[float] = []
         shutdown_wait = 0.0
         limit_detected_at: float | None = None
@@ -1103,6 +1205,7 @@ def prepare_data_tiles(
                 label_path,
                 output_dir,
                 tile_size,
+                tile_filter,
                 max_tiles,
                 counter,
                 lock,
@@ -1131,6 +1234,7 @@ def prepare_data_tiles(
                         errors += 1
                         _log_debug(f"Skipping corrupted image {basename}: {exc}")
                         continue
+                    skipped_no_foreground += int(result.get("skipped_no_foreground", 0))
                     status = result.get("status")
                     if status == "limit":
                         limit_hits += 1
@@ -1184,7 +1288,8 @@ def prepare_data_tiles(
         _log_info(
             "Multiprocessing tiling summary :: submitted=%d completed=%d "
             "cancelled=%d errors=%d limit_hits=%d avg_image_time=%.2fs "
-            "drain_wait=%.2fs executor_shutdown_wait=%.2fs"
+            "drain_wait=%.2fs executor_shutdown_wait=%.2fs "
+            "skipped_no_foreground=%d"
             % (
                 submit_idx,
                 completed,
@@ -1194,6 +1299,7 @@ def prepare_data_tiles(
                 avg_image_time,
                 drain_wait,
                 shutdown_wait,
+                skipped_no_foreground,
             )
         )
         return
@@ -1217,6 +1323,7 @@ def prepare_data_tiles(
             _log_debug(f"Skipping corrupted image {basename}.")
             continue
         H, W, _ = full_img.shape
+        skipped_no_foreground = 0
         for y in range(0, H, tile_size):
             for x in range(0, W, tile_size):
                 if max_tiles is not None and tiles_written >= max_tiles:
@@ -1237,6 +1344,10 @@ def prepare_data_tiles(
                 lbl_crop = full_label[y_min:y_max, x_min:x_max]
                 if img_crop.max() == 0:
                     _log_debug(f"Skipping zero tile {tile_name}")
+                    continue
+                if not _tile_passes_label_filter(lbl_crop, tile_filter):
+                    skipped_no_foreground += 1
+                    _log_debug(f"Skipping no-foreground tile {tile_name}")
                     continue
                 if np.isnan(img_crop).any():
                     img_crop = np.nan_to_num(img_crop)
@@ -1272,6 +1383,10 @@ def prepare_data_tiles(
                             os.remove(temp_path)
                         continue
                     raise e
+        if tile_filter["enabled"] and skipped_no_foreground > 0:
+            _log_info(
+                "Image %s: skipped_no_foreground=%d" % (basename, skipped_no_foreground)
+            )
     del model
     del processor
     torch.cuda.empty_cache()

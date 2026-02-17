@@ -5,7 +5,19 @@
 
 ## [Unreleased]
 ### Changed
-- None yet.
+- Add prepare-time foreground label filtering (`dataset.tile_filter`) so tile caching can keep
+  only tiles containing configured target labels, including multiprocessing support and skip-count
+  logging (`utils/data.py`, `pipeline/phases.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Add epoch-level branch-importance explainability metrics (gradient sensitivity of image vs DINO
+  features) plus Lite+ H/4 gate-importance summaries in XAI plots and MLflow metrics
+  (`pipeline/inference_utils.py`, `pipeline/phases.py`, `models/unet_lite_plus.py`,
+  `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Add epoch-wise validation DINO channel-importance tracking with grouped stable-channel bars,
+  evolution trends, heatmaps, JSON artifacts, and MLflow summary metrics for interpretability
+  over training (`pipeline/phases.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Unify inference execution so `input_dir` now reuses the same sliding-window tiled engine as
+  `input_tif` (with merged outputs per file), removing duplicate full-image folder logic and
+  reducing OOM risk on large rasters (`pipeline/phases.py`, `README.md`, `ARCHITECTURE.md`).
 
 ## [0.1.5] - 2026-02-16
 ### Changed
