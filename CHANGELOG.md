@@ -4,6 +4,8 @@
 - Every completed task must create a new version entry and move changes from Unreleased into that release.
 
 ## [Unreleased]
+
+## [0.1.6] - 2026-02-17
 ### Changed
 - Add prepare-time foreground label filtering (`dataset.tile_filter`) so tile caching can keep
   only tiles containing configured target labels, including multiprocessing support and skip-count
@@ -20,6 +22,21 @@
   artifacts under per-run subfolders `plots/{metrics,xai,inference}` to keep
   MLflow runs uncluttered (`pipeline/inference_utils.py`, `pipeline/phases.py`,
   `pipeline/plotting.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Export split optimizer learning rates to MLflow epoch metrics (`lr_muon`,
+  `lr_adamw`) while preserving the existing `lr` alias for compatibility
+  (`pipeline/phases.py`, `README.md`).
+- Route training and inference plot outputs directly into the active MLflow run
+  artifact subfolders (`artifacts/plots/{metrics,xai,inference}`) when MLflow
+  is enabled, keeping local output directories as fallback-only behavior
+  (`pipeline/phases.py`, `README.md`, `ARCHITECTURE.md`).
+- Add `unet_nano_fapm` head with low-rank split-and-modulate DINO projections
+  (NanoFAPM), late RGB fusion, and a lightweight boundary branch fused into
+  final logits (`models/unet_nano_fapm.py`, `models/__init__.py`, `README.md`,
+  `ARCHITECTURE.md`).
+- Extend segmentation loss with optional focal classification term and boundary
+  BCE supervision, including boundary-target generation and train/eval wiring
+  for heads exposing `edge_logits` (`utils/losses.py`, `pipeline/train_utils.py`,
+  `pipeline/phases.py`, `config_*.yml`, `README.md`).
 - Add epoch-wise validation DINO channel-importance tracking with grouped stable-channel bars,
   evolution trends, heatmaps, JSON artifacts, and MLflow summary metrics for interpretability
   over training (`pipeline/phases.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).

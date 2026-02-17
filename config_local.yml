@@ -122,6 +122,11 @@ train:
     dice_weight: 1.0
     aux_weight: 0.4
     label_smoothing: 0.1
+    use_focal: false
+    focal_gamma: 2.0
+    focal_alpha:
+    boundary_weight: 0.1
+    boundary_kernel_size: 3
   stability:
     amp:
       enabled: auto

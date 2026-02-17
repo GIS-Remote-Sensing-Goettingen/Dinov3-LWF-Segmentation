@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from utils import SegmentationLoss, SegmentationMetrics, VerbosityLogger
-from utils.losses import LOSS_COMPONENT_KEYS
+from utils.losses import LOSS_COMPONENT_KEYS, compute_boundary_targets
 
 from .context import StabilityConfig
 
@@ -162,6 +162,90 @@ def align_labels_to_logits(y: torch.Tensor, logits: torch.Tensor) -> torch.Tenso
     return aligned.squeeze(1).long()
 
 
+def forward_with_optional_extras(
+    model_call: Any,
+    image: torch.Tensor,
+    features: list[torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    """Forward a model while collecting optional aux and boundary logits.
+
+    Args:
+        model_call (Any): Model or wrapper with forward methods.
+        image (torch.Tensor): Input image tensor.
+        features (list[torch.Tensor]): Multiscale feature tensors.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        Main logits, aux logits, and optional edge logits.
+
+    Examples:
+        >>> class Dummy:
+        ...     def forward_with_aux(self, image, features):
+        ...         return features[0], None
+        >>> logits, aux, edge = forward_with_optional_extras(
+        ...     Dummy(),
+        ...     torch.randn(1, 3, 2, 2),
+        ...     [torch.randn(1, 2, 2, 2)],
+        ... )
+        >>> aux is None and edge is None and tuple(logits.shape) == (1, 2, 2, 2)
+        True
+    """
+
+    if hasattr(model_call, "forward_with_extras"):
+        payload = cast(dict[str, Any], model_call.forward_with_extras(image, features))
+        logits = cast(torch.Tensor, payload["logits"])
+        aux_logits = cast(torch.Tensor | None, payload.get("aux_logits"))
+        edge_logits = cast(torch.Tensor | None, payload.get("edge_logits"))
+        return logits, aux_logits, edge_logits
+    if hasattr(model_call, "forward_with_aux"):
+        logits, aux_logits = model_call.forward_with_aux(image, features)
+        return logits, aux_logits, None
+    logits = model_call(image, features)
+    return logits, None, None
+
+
+def build_boundary_targets(
+    labels: torch.Tensor,
+    edge_logits: torch.Tensor | None,
+    num_classes: int,
+    ignore_index: int | None,
+    kernel_size: int = 3,
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Build boundary targets aligned to optional edge logits.
+
+    Args:
+        labels (torch.Tensor): Integer label tensor.
+        edge_logits (torch.Tensor | None): Optional boundary logits.
+        num_classes (int): Number of classes in labels.
+        ignore_index (int | None): Optional ignore index.
+        kernel_size (int): Laplacian kernel size.
+
+    Returns:
+        tuple[torch.Tensor | None, torch.Tensor | None]: Edge targets and valid mask.
+
+    Examples:
+        >>> labels = torch.tensor([[[0, 1], [1, 1]]])
+        >>> edge_t, edge_m = build_boundary_targets(
+        ...     labels=labels,
+        ...     edge_logits=torch.randn(1, 1, 2, 2),
+        ...     num_classes=2,
+        ...     ignore_index=None,
+        ... )
+        >>> edge_t is not None and edge_m is not None
+        True
+    """
+
+    if edge_logits is None:
+        return None, None
+    edge_labels = align_labels_to_logits(labels, edge_logits)
+    return compute_boundary_targets(
+        edge_labels,
+        num_classes=num_classes,
+        ignore_index=ignore_index,
+        kernel_size=kernel_size,
+    )
+
+
 def split_params_for_muon(
     model: torch.nn.Module,
 ) -> tuple[list[torch.nn.Parameter], list[torch.nn.Parameter]]:
@@ -252,6 +336,7 @@ def evaluate(
     layers: list[int] | None = None,
     ps: int = 16,
     stability: StabilityConfig | None = None,
+    boundary_kernel_size: int = 3,
 ) -> tuple[float, dict[str, Any]]:
     """Evaluate the model on the validation set.
 
@@ -269,6 +354,7 @@ def evaluate(
         layers (list[int] | None): Backbone layers to extract.
         ps (int): Patch size for the backbone.
         stability (StabilityConfig | None): Stability policy controls.
+        boundary_kernel_size (int): Kernel size for boundary target extraction.
 
     Returns:
         tuple[float, dict[str, Any]]: Average loss and metrics summary.
@@ -321,16 +407,23 @@ def evaluate(
                 )
             model_call = cast(Any, model)
             with autocast:
-                if hasattr(model_call, "forward_with_aux"):
-                    logits, aux_logits = model_call.forward_with_aux(img, feats)
-                else:
-                    logits = model_call(img, feats)
-                    aux_logits = None
+                logits, aux_logits, edge_logits = forward_with_optional_extras(
+                    model_call,
+                    img,
+                    feats,
+                )
                 target_main = align_labels_to_logits(y, logits)
                 target_aux = (
                     align_labels_to_logits(y, aux_logits)
                     if aux_logits is not None
                     else None
+                )
+                edge_targets, edge_mask = build_boundary_targets(
+                    labels=y,
+                    edge_logits=edge_logits,
+                    num_classes=loss_fn.num_classes,
+                    ignore_index=loss_fn.ignore_index,
+                    kernel_size=boundary_kernel_size,
                 )
                 logits_for_loss = logits.float() if stability_cfg.loss_fp32 else logits
                 aux_for_loss = (
@@ -338,11 +431,19 @@ def evaluate(
                     if aux_logits is not None and stability_cfg.loss_fp32
                     else aux_logits
                 )
+                edge_for_loss = (
+                    edge_logits.float()
+                    if edge_logits is not None and stability_cfg.loss_fp32
+                    else edge_logits
+                )
                 components = loss_fn.compute_components(
                     logits_for_loss,
                     target_main,
                     aux_logits=aux_for_loss,
                     aux_targets=target_aux,
+                    edge_logits=edge_for_loss,
+                    edge_targets=edge_targets,
+                    edge_mask=edge_mask,
                 )
                 loss = components["loss_total"]
             batch_max_abs_logit = float(

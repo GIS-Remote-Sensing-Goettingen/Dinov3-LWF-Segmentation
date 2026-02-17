@@ -13,11 +13,15 @@ from torch import nn
 LOSS_COMPONENT_KEYS: tuple[str, ...] = (
     "loss_total",
     "loss_main_ce",
+    "loss_main_focal",
     "loss_main_dice",
     "loss_aux_ce",
+    "loss_aux_focal",
     "loss_aux_dice",
+    "loss_edge_bce",
     "loss_weighted_main",
     "loss_weighted_aux",
+    "loss_weighted_edge",
 )
 
 
@@ -79,6 +83,57 @@ class DiceLoss(nn.Module):
         return 1.0 - dice.mean()
 
 
+def compute_boundary_targets(
+    targets: torch.Tensor,
+    num_classes: int,
+    ignore_index: Optional[int] = None,
+    kernel_size: int = 3,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute binary edge targets and valid masks from segmentation labels.
+
+    Args:
+        targets (torch.Tensor): Integer labels with shape (B, H, W) or (H, W).
+        num_classes (int): Number of semantic classes.
+        ignore_index (Optional[int]): Optional ignore label.
+        kernel_size (int): Laplacian kernel size. Only 3 is currently supported.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: Edge targets and valid mask, both with
+        shape (B, 1, H, W).
+
+    Examples:
+        >>> labels = torch.tensor([[[0, 0, 1], [0, 1, 1], [0, 0, 1]]])
+        >>> edge, mask = compute_boundary_targets(labels, num_classes=2)
+        >>> edge.shape, mask.shape
+        (torch.Size([1, 1, 3, 3]), torch.Size([1, 1, 3, 3]))
+    """
+
+    if kernel_size != 3:
+        raise ValueError("compute_boundary_targets currently supports kernel_size=3")
+    if targets.ndim == 2:
+        targets = targets.unsqueeze(0)
+    targets = targets.long()
+    valid_mask = torch.ones_like(targets, dtype=torch.bool)
+    if ignore_index is not None:
+        valid_mask = targets != int(ignore_index)
+    safe_targets = torch.where(valid_mask, targets, torch.zeros_like(targets))
+    safe_targets = safe_targets.clamp(min=0, max=num_classes - 1)
+    one_hot = F.one_hot(safe_targets, num_classes=num_classes).permute(0, 3, 1, 2)
+    one_hot = one_hot.float() * valid_mask.unsqueeze(1).float()
+
+    laplacian = torch.tensor(
+        [[-1.0, -1.0, -1.0], [-1.0, 8.0, -1.0], [-1.0, -1.0, -1.0]],
+        device=targets.device,
+        dtype=torch.float32,
+    ).view(1, 1, 3, 3)
+    kernel = laplacian.repeat(num_classes, 1, 1, 1)
+    response = F.conv2d(one_hot, kernel, padding=1, groups=num_classes).abs()
+    edge_targets = (response > 0).any(dim=1, keepdim=True).float()
+    edge_mask = valid_mask.unsqueeze(1).float()
+    edge_targets = edge_targets * edge_mask
+    return edge_targets, edge_mask
+
+
 class SegmentationLoss(nn.Module):
     """
     Combined cross-entropy and Dice loss with optional auxiliary output.
@@ -100,6 +155,10 @@ class SegmentationLoss(nn.Module):
         class_weights: Optional[List[float]] = None,
         ignore_index: Optional[int] = None,
         label_smoothing: float = 0.0,
+        use_focal: bool = False,
+        focal_gamma: float = 2.0,
+        focal_alpha: Optional[float] = None,
+        boundary_weight: float = 0.0,
     ) -> None:
         """Initialize the combined segmentation loss.
 
@@ -111,6 +170,10 @@ class SegmentationLoss(nn.Module):
             class_weights (Optional[List[float]]): Optional class weights.
             ignore_index (Optional[int]): Optional ignore index.
             label_smoothing (float): Cross-entropy label smoothing value.
+            use_focal (bool): Replace CE with focal loss when True.
+            focal_gamma (float): Focal focusing parameter.
+            focal_alpha (Optional[float]): Optional focal alpha weight in [0, 1].
+            boundary_weight (float): Weight for boundary BCE supervision.
         """
 
         super().__init__()
@@ -119,6 +182,12 @@ class SegmentationLoss(nn.Module):
         self.aux_weight = aux_weight
         self.ignore_index = ignore_index
         self.label_smoothing = min(max(float(label_smoothing), 0.0), 0.999)
+        self.use_focal = bool(use_focal)
+        self.focal_gamma = max(float(focal_gamma), 0.0)
+        self.focal_alpha = (
+            None if focal_alpha is None else min(max(float(focal_alpha), 0.0), 1.0)
+        )
+        self.boundary_weight = max(float(boundary_weight), 0.0)
         weight_tensor = None
         if class_weights is not None:
             weight_tensor = torch.tensor(class_weights, dtype=torch.float32)
@@ -147,12 +216,43 @@ class SegmentationLoss(nn.Module):
             label_smoothing=self.label_smoothing,
         )
 
+    def _focal_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute multiclass focal loss from logits and integer targets.
+
+        Args:
+            logits (torch.Tensor): Logits tensor.
+            targets (torch.Tensor): Integer target labels.
+
+        Returns:
+            torch.Tensor: Scalar focal loss tensor.
+        """
+
+        ignore = self.ignore_index if self.ignore_index is not None else -100
+        ce = F.cross_entropy(
+            logits,
+            targets,
+            weight=self.class_weights,
+            ignore_index=ignore,
+            reduction="none",
+        )
+        valid_mask = targets != ignore
+        pt = torch.exp(-ce)
+        focal = ((1.0 - pt).clamp(min=0.0) ** self.focal_gamma) * ce
+        if self.focal_alpha is not None:
+            focal = focal * self.focal_alpha
+        focal = focal * valid_mask.float()
+        denom = valid_mask.float().sum().clamp_min(1.0)
+        return focal.sum() / denom
+
     def forward(
         self,
         logits: torch.Tensor,
         targets: torch.Tensor,
         aux_logits: Optional[torch.Tensor] = None,
         aux_targets: Optional[torch.Tensor] = None,
+        edge_logits: Optional[torch.Tensor] = None,
+        edge_targets: Optional[torch.Tensor] = None,
+        edge_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute the combined loss with optional auxiliary output.
 
@@ -161,6 +261,9 @@ class SegmentationLoss(nn.Module):
             targets (torch.Tensor): Target labels.
             aux_logits (Optional[torch.Tensor]): Auxiliary logits tensor.
             aux_targets (Optional[torch.Tensor]): Auxiliary targets tensor.
+            edge_logits (Optional[torch.Tensor]): Boundary logits tensor.
+            edge_targets (Optional[torch.Tensor]): Binary boundary targets.
+            edge_mask (Optional[torch.Tensor]): Optional boundary valid mask.
 
         Returns:
             torch.Tensor: Scalar loss tensor.
@@ -171,6 +274,9 @@ class SegmentationLoss(nn.Module):
             targets=targets,
             aux_logits=aux_logits,
             aux_targets=aux_targets,
+            edge_logits=edge_logits,
+            edge_targets=edge_targets,
+            edge_mask=edge_mask,
         )["loss_total"]
 
     def compute_components(
@@ -179,6 +285,9 @@ class SegmentationLoss(nn.Module):
         targets: torch.Tensor,
         aux_logits: Optional[torch.Tensor] = None,
         aux_targets: Optional[torch.Tensor] = None,
+        edge_logits: Optional[torch.Tensor] = None,
+        edge_targets: Optional[torch.Tensor] = None,
+        edge_mask: Optional[torch.Tensor] = None,
     ) -> dict[str, torch.Tensor]:
         """Compute weighted and unweighted loss components.
 
@@ -187,6 +296,9 @@ class SegmentationLoss(nn.Module):
             targets (torch.Tensor): Target labels.
             aux_logits (Optional[torch.Tensor]): Auxiliary logits tensor.
             aux_targets (Optional[torch.Tensor]): Auxiliary targets tensor.
+            edge_logits (Optional[torch.Tensor]): Boundary logits tensor.
+            edge_targets (Optional[torch.Tensor]): Binary boundary targets.
+            edge_mask (Optional[torch.Tensor]): Optional boundary valid mask.
 
         Returns:
             dict[str, torch.Tensor]: Loss components keyed by
@@ -195,31 +307,62 @@ class SegmentationLoss(nn.Module):
 
         zero = torch.zeros((), device=logits.device, dtype=logits.dtype)
         main_ce = zero
+        main_focal = zero
         main_dice = zero
         aux_ce = zero
+        aux_focal = zero
         aux_dice = zero
+        edge_bce = zero
 
         if self.ce_weight:
-            main_ce = self._ce_loss(logits, targets)
+            if self.use_focal:
+                main_focal = self._focal_loss(logits, targets)
+            else:
+                main_ce = self._ce_loss(logits, targets)
         if self.dice_weight:
             main_dice = self.dice(logits, targets)
         if aux_logits is not None and aux_targets is not None and self.aux_weight > 0:
             if self.ce_weight:
-                aux_ce = self._ce_loss(aux_logits, aux_targets)
+                if self.use_focal:
+                    aux_focal = self._focal_loss(aux_logits, aux_targets)
+                else:
+                    aux_ce = self._ce_loss(aux_logits, aux_targets)
             if self.dice_weight:
                 aux_dice = self.dice(aux_logits, aux_targets)
+        if (
+            edge_logits is not None
+            and edge_targets is not None
+            and self.boundary_weight > 0
+        ):
+            edge_map = F.binary_cross_entropy_with_logits(
+                edge_logits,
+                edge_targets.float(),
+                reduction="none",
+            )
+            if edge_mask is not None:
+                mask = edge_mask.float()
+                edge_bce = (edge_map * mask).sum() / mask.sum().clamp_min(1.0)
+            else:
+                edge_bce = edge_map.mean()
 
-        weighted_main = self.ce_weight * main_ce + self.dice_weight * main_dice
-        weighted_aux = self.aux_weight * (
-            self.ce_weight * aux_ce + self.dice_weight * aux_dice
+        weighted_main = self.ce_weight * (main_ce + main_focal) + self.dice_weight * (
+            main_dice
         )
-        total = weighted_main + weighted_aux
+        weighted_aux = self.aux_weight * (
+            self.ce_weight * (aux_ce + aux_focal) + self.dice_weight * aux_dice
+        )
+        weighted_edge = self.boundary_weight * edge_bce
+        total = weighted_main + weighted_aux + weighted_edge
         return {
             "loss_total": total,
             "loss_main_ce": main_ce,
+            "loss_main_focal": main_focal,
             "loss_main_dice": main_dice,
             "loss_aux_ce": aux_ce,
+            "loss_aux_focal": aux_focal,
             "loss_aux_dice": aux_dice,
+            "loss_edge_bce": edge_bce,
             "loss_weighted_main": weighted_main,
             "loss_weighted_aux": weighted_aux,
+            "loss_weighted_edge": weighted_edge,
         }

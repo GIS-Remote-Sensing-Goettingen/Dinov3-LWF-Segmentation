@@ -35,10 +35,14 @@ MLflow-compatible artifacts for research workflows.
   artifacts (bar/trend/heatmap + JSON summaries).
 - Plot artifacts are grouped per run under `artifacts/plots/metrics`,
   `artifacts/plots/xai`, and `artifacts/plots/inference` to reduce clutter.
+- When MLflow is active, plots are written directly into these run subfolders;
+  local plot directories are used only as a fallback when MLflow logging is disabled.
 - Decoder family includes opt-in lightweight variants (`unet_lite`,
-  `unet_lite_plus`, `unet_nano`) so users can trade compute for quality
-  without changing pipeline wiring. `unet_nano` keeps the deep path tiny and
-  adds RGB priors only in late decoder stages (H/4, H/2).
+  `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`) so users can trade compute
+  for quality without changing pipeline wiring. `unet_nano` keeps the deep path
+  tiny and adds RGB priors only in late decoder stages (H/4, H/2), while
+  `unet_nano_fapm` adds low-rank split-and-modulate DINO projections and a
+  lightweight boundary branch fused into final logits.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.

@@ -79,9 +79,11 @@ from .train_utils import (
     ModelEMA,
     align_labels_to_logits,
     build_autocast,
+    build_boundary_targets,
     count_nonfinite_parameters,
     evaluate,
     extract_multiscale_features_batch,
+    forward_with_optional_extras,
     move_features_to_device,
     split_params_for_muon,
 )
@@ -361,6 +363,7 @@ class TrainPhase(Phase):
         loss_ignore_index = loss_cfg.get("ignore_index")
         if loss_ignore_index is None and context.dataset_validation.enabled:
             loss_ignore_index = context.dataset_validation.ignore_index
+        boundary_kernel_size = max(3, int(loss_cfg.get("boundary_kernel_size", 3)))
         loss_fn = SegmentationLoss(
             num_classes=model_cfg["num_classes"],
             ce_weight=loss_cfg.get("ce_weight", 1.0),
@@ -369,6 +372,10 @@ class TrainPhase(Phase):
             class_weights=loss_cfg.get("class_weights"),
             ignore_index=loss_ignore_index,
             label_smoothing=loss_cfg.get("label_smoothing", 0.0),
+            use_focal=loss_cfg.get("use_focal", False),
+            focal_gamma=loss_cfg.get("focal_gamma", 2.0),
+            focal_alpha=loss_cfg.get("focal_alpha"),
+            boundary_weight=loss_cfg.get("boundary_weight", 0.1),
         ).to(device)
         backbone = None
         processor = None
@@ -400,7 +407,11 @@ class TrainPhase(Phase):
         log_batch_metrics = get_hook_option(context.config, "log_batch_metrics", False)
         log_batch_interval = get_hook_option(context.config, "log_batch_interval", 10)
         plot_enabled = bool(section.get("epoch_plot", False))
-        plot_dir = section.get("epoch_plot_dir", os.path.join("output", "plot"))
+        plot_root_dir = section.get("epoch_plot_dir", os.path.join("output", "plot"))
+        if context.mlflow_logger is not None:
+            plot_root_dir = str(context.mlflow_logger.artifacts_dir / "plots")
+        plot_metrics_dir = os.path.join(plot_root_dir, "metrics")
+        plot_xai_dir = os.path.join(plot_root_dir, "xai")
         plot_cmap = section.get("epoch_plot_cmap", "tab20")
         plot_pairs = max(1, int(section.get("epoch_plot_pairs", 4)))
         plot_seed_offset = int(section.get("epoch_plot_seed_offset", 1000))
@@ -612,18 +623,25 @@ class TrainPhase(Phase):
                                 )
                             model_call = cast(Any, model)
                             with autocast:
-                                if hasattr(model_call, "forward_with_aux"):
-                                    logits, aux_logits = model_call.forward_with_aux(
-                                        img, feats
+                                logits, aux_logits, edge_logits = (
+                                    forward_with_optional_extras(
+                                        model_call,
+                                        img,
+                                        feats,
                                     )
-                                else:
-                                    logits = model_call(img, feats)
-                                    aux_logits = None
+                                )
                                 target_main = align_labels_to_logits(y, logits)
                                 target_aux = (
                                     align_labels_to_logits(y, aux_logits)
                                     if aux_logits is not None
                                     else None
+                                )
+                                edge_targets, edge_mask = build_boundary_targets(
+                                    labels=y,
+                                    edge_logits=edge_logits,
+                                    num_classes=loss_fn.num_classes,
+                                    ignore_index=loss_fn.ignore_index,
+                                    kernel_size=boundary_kernel_size,
                                 )
                                 logits_for_loss = (
                                     logits.float() if stability.loss_fp32 else logits
@@ -633,11 +651,19 @@ class TrainPhase(Phase):
                                     if aux_logits is not None and stability.loss_fp32
                                     else aux_logits
                                 )
+                                edge_for_loss = (
+                                    edge_logits.float()
+                                    if edge_logits is not None and stability.loss_fp32
+                                    else edge_logits
+                                )
                                 loss_components = loss_fn.compute_components(
                                     logits_for_loss,
                                     target_main,
                                     aux_logits=aux_for_loss,
                                     aux_targets=target_aux,
+                                    edge_logits=edge_for_loss,
+                                    edge_targets=edge_targets,
+                                    edge_mask=edge_mask,
                                 )
                                 loss = loss_components["loss_total"] / grad_accum
                         except Exception as exc:
@@ -858,6 +884,7 @@ class TrainPhase(Phase):
                         layers=model_cfg["layers"],
                         ps=ps,
                         stability=stability,
+                        boundary_kernel_size=boundary_kernel_size,
                     )
                     xai_epoch_metrics: dict[str, float] = {}
                     if (
@@ -865,7 +892,9 @@ class TrainPhase(Phase):
                         and val_loader is not None
                         and context.dist_ctx.is_main
                     ):
-                        os.makedirs(plot_dir, exist_ok=True)
+                        os.makedirs(plot_metrics_dir, exist_ok=True)
+                        if plot_xai_enable:
+                            os.makedirs(plot_xai_dir, exist_ok=True)
                         val_count = dataset_size(val_loader.dataset)
                         if val_count <= 0:
                             context.logger.error(
@@ -1265,21 +1294,16 @@ class TrainPhase(Phase):
                                     break
                             if sample_plots:
                                 out_path = os.path.join(
-                                    plot_dir, f"epoch_{epoch + 1:04d}.png"
+                                    plot_metrics_dir, f"epoch_{epoch + 1:04d}.png"
                                 )
                                 save_epoch_plot(
                                     out_path,
                                     sample_plots,
                                     plot_cmap,
                                 )
-                                if context.mlflow_logger is not None:
-                                    context.mlflow_logger.log_artifact(
-                                        out_path,
-                                        artifact_path="plots/metrics",
-                                    )
                                 if plot_xai_enable:
                                     xai_out_path = os.path.join(
-                                        plot_dir, f"epoch_{epoch + 1:04d}_xai.png"
+                                        plot_xai_dir, f"epoch_{epoch + 1:04d}_xai.png"
                                     )
                                     save_epoch_xai_plot(
                                         xai_out_path,
@@ -1289,11 +1313,6 @@ class TrainPhase(Phase):
                                         render_rollout=plot_xai_render_rollout,
                                         render_pca=plot_xai_pca_enable,
                                     )
-                                    if context.mlflow_logger is not None:
-                                        context.mlflow_logger.log_artifact(
-                                            xai_out_path,
-                                            artifact_path="plots/xai",
-                                        )
                                     branch_summary = summarize_branch_importance_epoch(
                                         branch_img_importances,
                                         branch_dino_importances,
@@ -1313,17 +1332,12 @@ class TrainPhase(Phase):
                                             }
                                         )
                                         branch_trend_path = os.path.join(
-                                            plot_dir, "branch_importance_trends.png"
+                                            plot_xai_dir, "branch_importance_trends.png"
                                         )
                                         _save_branch_importance_trend_plot(
                                             branch_trend_path,
                                             branch_importance_history,
                                         )
-                                        if context.mlflow_logger is not None:
-                                            context.mlflow_logger.log_artifact(
-                                                branch_trend_path,
-                                                artifact_path="plots/xai",
-                                            )
                                         xai_epoch_metrics.update(branch_summary)
                                     layer_means, layer_metrics = (
                                         summarize_dino_layer_importance_epoch(
@@ -1342,7 +1356,7 @@ class TrainPhase(Phase):
                                             }
                                         )
                                         layer_trend_path = os.path.join(
-                                            plot_dir,
+                                            plot_xai_dir,
                                             "dino_layer_importance_trends.png",
                                         )
                                         _save_dino_layer_importance_trend_plot(
@@ -1353,11 +1367,6 @@ class TrainPhase(Phase):
                                                 for layer_id in model_cfg["layers"]
                                             ],
                                         )
-                                        if context.mlflow_logger is not None:
-                                            context.mlflow_logger.log_artifact(
-                                                layer_trend_path,
-                                                artifact_path="plots/xai",
-                                            )
                                         xai_epoch_metrics.update(layer_metrics)
                                     if gate_importances:
                                         xai_epoch_metrics.update(
@@ -1390,7 +1399,7 @@ class TrainPhase(Phase):
                                                 min_presence=plot_xai_channel_min_presence,
                                             )
                                             bar_path = os.path.join(
-                                                plot_dir,
+                                                plot_xai_dir,
                                                 (
                                                     f"epoch_{epoch + 1:04d}_"
                                                     "channel_importance_bar.png"
@@ -1403,7 +1412,7 @@ class TrainPhase(Phase):
                                                 stable_channels=stable_channels,
                                             )
                                             trend_path = os.path.join(
-                                                plot_dir,
+                                                plot_xai_dir,
                                                 "channel_importance_trends.png",
                                             )
                                             _save_channel_importance_trend_plot(
@@ -1412,7 +1421,7 @@ class TrainPhase(Phase):
                                                 stable_channels,
                                             )
                                             heatmap_path = os.path.join(
-                                                plot_dir,
+                                                plot_xai_dir,
                                                 "channel_importance_heatmap.png",
                                             )
                                             _save_channel_importance_heatmap(
@@ -1420,14 +1429,9 @@ class TrainPhase(Phase):
                                                 channel_importance_history,
                                                 stable_channels,
                                             )
-                                            artifact_paths = [
-                                                bar_path,
-                                                trend_path,
-                                                heatmap_path,
-                                            ]
                                             if plot_xai_channel_save_json:
                                                 channel_json_path = os.path.join(
-                                                    plot_dir,
+                                                    plot_xai_dir,
                                                     (
                                                         f"epoch_{epoch + 1:04d}_"
                                                         "channel_importance.json"
@@ -1438,13 +1442,6 @@ class TrainPhase(Phase):
                                                     epoch_summary=epoch_channel_summary,
                                                     stable_channels=stable_channels,
                                                 )
-                                                artifact_paths.append(channel_json_path)
-                                            if context.mlflow_logger is not None:
-                                                for artifact_path in artifact_paths:
-                                                    context.mlflow_logger.log_artifact(
-                                                        artifact_path,
-                                                        artifact_path="plots/xai",
-                                                    )
                                             top_channels = epoch_channel_summary[
                                                 "top_channels"
                                             ]
@@ -1547,6 +1544,8 @@ class TrainPhase(Phase):
                         "val_iou": float(val_metrics["miou"]),
                         "val_f1": float(val_metrics["mdice"]),
                         "lr": scheduler.get_last_lr()[0],
+                        "lr_muon": scheduler.get_last_lr()[0],
+                        "lr_adamw": float(optimizer.param_groups[0]["adamw_lr"]),
                         "nonfinite_batches": float(epoch_health["nonfinite_batches"]),
                         "skipped_optimizer_steps": float(
                             epoch_health["skipped_optimizer_steps"]
@@ -1703,6 +1702,8 @@ class InferencePhase(Phase):
         explain_cfg = infer_cfg.get("explain", {})
         explain_enabled = bool(explain_cfg.get("enable", False))
         plots_dir = explain_cfg.get("output_dir")
+        if explain_enabled and context.mlflow_logger is not None:
+            plots_dir = str(context.mlflow_logger.artifacts_dir / "plots" / "inference")
         class_index = int(explain_cfg.get("class_index", 1))
         layout = explain_cfg.get("dashboard_layout", "4x3")
         explain_pca_enable = bool(explain_cfg.get("pca_enable", True))
@@ -1965,11 +1966,6 @@ class InferencePhase(Phase):
                 out_path = os.path.join(output_dir, f"{base}{output_suffix}")
                 file_metrics = _infer_one_tif(tile_path, out_path, plot_prefix=base)
                 total_tiles += float(file_metrics.get("tiles_total", 0.0))
-            if explain_enabled and plots_dir and context.mlflow_logger is not None:
-                context.mlflow_logger.log_artifact(
-                    plots_dir,
-                    artifact_path="plots/inference",
-                )
             metrics = {
                 "files_total": float(len(tile_files)),
                 "tiles_total": total_tiles,
@@ -1987,10 +1983,5 @@ class InferencePhase(Phase):
             os.makedirs(plots_dir, exist_ok=True)
         single_prefix = os.path.splitext(os.path.basename(input_tif))[0]
         metrics = _infer_one_tif(input_tif, output_tif, plot_prefix=single_prefix)
-        if explain_enabled and plots_dir and context.mlflow_logger is not None:
-            context.mlflow_logger.log_artifact(
-                plots_dir,
-                artifact_path="plots/inference",
-            )
         artifacts = {"output_tif": output_tif, "checkpoint": checkpoint}
         return PhaseOutcome(metrics=metrics, artifacts=artifacts)
