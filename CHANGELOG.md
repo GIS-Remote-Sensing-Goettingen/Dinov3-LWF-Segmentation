@@ -21,6 +21,9 @@
 - Add new `unet_nano` decoder head: an aggressively compact DINO-only U-Net variant with
   GroupNorm + GELU + Dropout2d blocks, deep supervision compatibility, and registry/docs
   integration (`models/unet_nano.py`, `models/__init__.py`, `README.md`, `ARCHITECTURE.md`).
+- Update `unet_nano` to include Lite-style late RGB prior fusion at H/4 and H/2 so boundary
+  details can be recovered without widening the deep decoder path
+  (`models/unet_nano.py`, `README.md`, `ARCHITECTURE.md`).
 
 ## [0.1.5] - 2026-02-16
 ### Changed

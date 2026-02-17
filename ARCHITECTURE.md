@@ -34,7 +34,8 @@ MLflow-compatible artifacts for research workflows.
   importance evolution artifacts (bar/trend/heatmap + JSON summaries).
 - Decoder family includes opt-in lightweight variants (`unet_lite`,
   `unet_lite_plus`, `unet_nano`) so users can trade compute for quality
-  without changing pipeline wiring.
+  without changing pipeline wiring. `unet_nano` keeps the deep path tiny and
+  adds RGB priors only in late decoder stages (H/4, H/2).
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.

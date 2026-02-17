@@ -1,14 +1,13 @@
 """
-DINO-only Nano U-Net head for aggressive capacity reduction.
+Nano U-Net head with DINO backbone features and late RGB prior fusion.
 
 Architecture overview:
-- No RGB spatial-prior branch (SPM) to keep the model minimal and force
-  reliance on DINO semantic features.
-- Fidelity-aware projections compress 4 DINO scales into compact widths
-  [64, 64, 32, 32] from deep to shallow.
-- Decoder uses tiny GroupNorm+GELU blocks with Dropout2d regularization.
+- DINO path: fidelity-aware projections compress 4 backbone scales into compact
+  widths [64, 64, 32, 32] from deep to shallow.
+- Decoder path: tiny GroupNorm+GELU blocks with Dropout2d regularization.
 - Deep supervision logits are emitted at H/8.
-- Final prediction upsamples from H/8 to full resolution.
+- Late RGB fusion: Spatial Prior Module (SPM) features are fused at H/4 and H/2
+  to recover boundary detail without widening the deep decoder.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .base import SegmentationHead
-from .unet_v2 import FidelityAwareProjection
+from .unet_v2 import FidelityAwareProjection, SpatialPriorModule
 
 
 def _group_count(channels: int, max_groups: int = 8) -> int:
@@ -90,7 +89,7 @@ class NanoDoubleConv(nn.Module):
 
 
 class DinoUNetNanoHead(SegmentationHead):
-    """Aggressively compact decoder head targeting shape-biased segmentation.
+    """Aggressively compact decoder head with late RGB boundary fusion.
 
     Examples:
         >>> head = DinoUNetNanoHead(num_classes=2, dino_channels=64)
@@ -115,6 +114,8 @@ class DinoUNetNanoHead(SegmentationHead):
         """
 
         super().__init__()
+        self.spm = SpatialPriorModule(in_channels=3, base_channels=16)
+
         self.fapm1 = FidelityAwareProjection(dino_channels, 64)
         self.fapm2 = FidelityAwareProjection(dino_channels, 64)
         self.fapm3 = FidelityAwareProjection(dino_channels, 32)
@@ -131,8 +132,16 @@ class DinoUNetNanoHead(SegmentationHead):
         self.conv3 = NanoDoubleConv(32 + 32, 32, dropout_rate=0.1)
 
         self.ds_head = nn.Conv2d(32, num_classes, kernel_size=1)
-        self.final_up = nn.Upsample(scale_factor=4, mode="bilinear", align_corners=False)
-        self.final_conv = nn.Conv2d(32, num_classes, kernel_size=1)
+
+        # Late fusion with RGB priors (mirrors lite/lite+ strategy, kept minimal).
+        self.up4 = nn.ConvTranspose2d(32, 32, kernel_size=2, stride=2)
+        self.conv4 = NanoDoubleConv(32 + 32, 32, dropout_rate=0.1)
+
+        self.up5 = nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2)
+        self.conv5 = NanoDoubleConv(16 + 16, 16, dropout_rate=0.1)
+
+        self.final_up = nn.ConvTranspose2d(16, 16, kernel_size=2, stride=2)
+        self.final_conv = nn.Conv2d(16, num_classes, kernel_size=1)
 
     def _concat(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         """Align skip features to decoder resolution before concatenation.
@@ -165,6 +174,8 @@ class DinoUNetNanoHead(SegmentationHead):
             aux logits, and intermediate tensors.
         """
 
+        spm_h2, spm_h4 = self.spm(image)  # H/2 and H/4
+
         d_shallow = self.fapm4(features[0])  # H/8
         d_mid1 = self.fapm3(features[1])  # H/16
         d_mid2 = self.fapm2(features[2])  # H/32
@@ -185,6 +196,16 @@ class DinoUNetNanoHead(SegmentationHead):
 
         aux_logits = self.ds_head(x)
 
+        # Late RGB fusion at H/4.
+        x = self.up4(x)
+        x = self.conv4(self._concat(x, spm_h4))
+        decoder_h4 = x
+
+        # Late RGB fusion at H/2.
+        x = self.up5(x)
+        x = self.conv5(self._concat(x, spm_h2))
+        decoder_h2 = x
+
         x = self.final_up(x)
         if x.shape[-2:] != image.shape[-2:]:
             x = F.interpolate(
@@ -195,6 +216,8 @@ class DinoUNetNanoHead(SegmentationHead):
         extras = {
             "bottleneck_features": bottleneck_feat,
             "decoder_h8": decoder_h8,
+            "decoder_h4": decoder_h4,
+            "decoder_h2": decoder_h2,
         }
         return logits, aux_logits, extras
 
@@ -232,7 +255,9 @@ class DinoUNetNanoHead(SegmentationHead):
         payload.update(extras)
         return payload
 
-    def forward(self, image: torch.Tensor, features: List[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self, image: torch.Tensor, features: List[torch.Tensor]
+    ) -> torch.Tensor:
         """Forward pass returning only main logits.
 
         Args:
