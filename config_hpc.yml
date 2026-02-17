@@ -63,7 +63,7 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_nano
+  head: unet_lite_plus
   num_classes: 2
   dino_channels: 1024
 
@@ -145,7 +145,7 @@ inference:
   output_dir: test/
   output_suffix: _pred.tif
   glob: "*.tif"
-  checkpoint: weights/unet_lite_plus_best.pth
+  checkpoint: weights/unet_nano_best.pth
   tile_size: 1024
   overlap: 0.25
   tta:
