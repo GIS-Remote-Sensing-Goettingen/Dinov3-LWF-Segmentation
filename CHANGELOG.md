@@ -47,6 +47,9 @@
   preserving legacy `use_focal` behavior for backward compatibility
   (`pipeline/train_config.py`, `pipeline/phases.py`, `utils/losses.py`,
   `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Fix train-phase crash in module-XAI collection when a sampled item has no
+  plot payload (channel-tracking-only path) by making module sample/config
+  handling null-safe (`pipeline/module_xai.py`).
 
 ## [0.1.6] - 2026-02-17
 ### Changed

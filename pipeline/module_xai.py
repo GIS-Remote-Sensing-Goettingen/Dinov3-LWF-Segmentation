@@ -150,7 +150,9 @@ def _roc_ap(scores: np.ndarray, labels: np.ndarray) -> dict[str, Any]:
     tpr = tp / positives
     fpr = fp / negatives
     auroc = float(
-        np.trapz(np.concatenate(([0.0], tpr, [1.0])), np.concatenate(([0.0], fpr, [1.0])))
+        np.trapz(
+            np.concatenate(([0.0], tpr, [1.0])), np.concatenate(([0.0], fpr, [1.0]))
+        )
     )
     precision = tp / np.clip(tp + fp, 1.0, None)
     recall = tpr
@@ -243,7 +245,9 @@ def _save_layermix_panel(
     ax[0].set_title("RGB")
     ax[0].axis("off")
     ax[1].imshow(rgb)
-    boundary_overlay = np.ma.masked_where(~boundary_mask, boundary_mask.astype(np.float32))
+    boundary_overlay = np.ma.masked_where(
+        ~boundary_mask, boundary_mask.astype(np.float32)
+    )
     ax[1].imshow(boundary_overlay, cmap="Reds", alpha=0.45)
     ax[1].set_title("GT boundary band")
     ax[1].axis("off")
@@ -323,7 +327,9 @@ def _save_gate_panel(
 
     fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.6))
     axes[0].imshow(overlay_heatmap(rgb, gate_map, cmap="magma", alpha=0.5))
-    boundary_overlay = np.ma.masked_where(~boundary_mask, boundary_mask.astype(np.float32))
+    boundary_overlay = np.ma.masked_where(
+        ~boundary_mask, boundary_mask.astype(np.float32)
+    )
     axes[0].imshow(boundary_overlay, cmap="Greens", alpha=0.25)
     axes[0].set_title("Gate map + GT boundary")
     axes[0].axis("off")
@@ -530,20 +536,25 @@ def _save_trend_plot(
 
 
 def build_module_xai_sample(
-    sample_payload: dict[str, Any],
-    sample_extras: dict[str, Any],
+    sample_payload: dict[str, Any] | None,
+    sample_extras: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Build one module-XAI sample payload.
 
     Args:
-        sample_payload (dict[str, Any]): Existing sample payload with RGB/GT/pred.
-        sample_extras (dict[str, Any]): Extra tensors from head forward pass.
+        sample_payload (dict[str, Any] | None): Existing sample payload with
+            RGB/GT/pred.
+        sample_extras (dict[str, Any] | None): Extra tensors from head forward
+            pass.
 
     Returns:
         dict[str, Any] | None: Module-XAI payload or ``None`` when mandatory
         sample fields are missing.
     """
 
+    if not isinstance(sample_payload, dict):
+        return None
+    extras = sample_extras if isinstance(sample_extras, dict) else {}
     rgb = sample_payload.get("rgb")
     gt_mask = sample_payload.get("gt_mask")
     pred_mask = sample_payload.get("pred_mask")
@@ -562,13 +573,13 @@ def build_module_xai_sample(
         "lora_delta_norm_map",
         "skeleton_logits",
     ):
-        output[key] = _tensor_to_numpy(sample_extras.get(key))
+        output[key] = _tensor_to_numpy(extras.get(key))
     return output
 
 
 def update_module_xai_epoch(
     epoch: int,
-    module_cfg: dict[str, Any],
+    module_cfg: dict[str, Any] | None,
     layer_ids: list[int],
     class_index: int,
     plot_xai_dir: str,
@@ -580,7 +591,8 @@ def update_module_xai_epoch(
 
     Args:
         epoch (int): 1-based epoch index.
-        module_cfg (dict[str, Any]): `train.plots.xai.module` configuration.
+        module_cfg (dict[str, Any] | None): `train.plots.xai.module`
+            configuration.
         layer_ids (list[int]): DINO layer ids used by the model.
         class_index (int): Foreground class index for module diagnostics.
         plot_xai_dir (str): Base XAI directory for artifacts.
@@ -592,6 +604,7 @@ def update_module_xai_epoch(
         dict[str, float]: MLflow-friendly scalar metrics.
     """
 
+    module_cfg = module_cfg if isinstance(module_cfg, dict) else {}
     enabled = bool(module_cfg.get("enable", True))
     if not enabled:
         return {}
@@ -660,7 +673,9 @@ def update_module_xai_epoch(
                 alpha_layers: list[np.ndarray] = []
                 for layer_idx in range(int(alpha_np.shape[0])):
                     alpha_layers.append(
-                        upsample_map(alpha_np[layer_idx], gt_mask.shape[0], gt_mask.shape[1])
+                        upsample_map(
+                            alpha_np[layer_idx], gt_mask.shape[0], gt_mask.shape[1]
+                        )
                     )
                 alpha_up = np.stack(alpha_layers, axis=0).astype(np.float32)
                 alpha_up = alpha_up / np.clip(
@@ -674,27 +689,33 @@ def update_module_xai_epoch(
 
                 boundary_vals = np.asarray(
                     [
-                        float(np.mean(alpha_up[idx][boundary_mask]))
-                        if np.any(boundary_mask)
-                        else float("nan")
+                        (
+                            float(np.mean(alpha_up[idx][boundary_mask]))
+                            if np.any(boundary_mask)
+                            else float("nan")
+                        )
                         for idx in range(alpha_up.shape[0])
                     ],
                     dtype=np.float32,
                 )
                 interior_vals = np.asarray(
                     [
-                        float(np.mean(alpha_up[idx][interior_mask]))
-                        if np.any(interior_mask)
-                        else float("nan")
+                        (
+                            float(np.mean(alpha_up[idx][interior_mask]))
+                            if np.any(interior_mask)
+                            else float("nan")
+                        )
                         for idx in range(alpha_up.shape[0])
                     ],
                     dtype=np.float32,
                 )
                 background_vals = np.asarray(
                     [
-                        float(np.mean(alpha_up[idx][background_mask]))
-                        if np.any(background_mask)
-                        else float("nan")
+                        (
+                            float(np.mean(alpha_up[idx][background_mask]))
+                            if np.any(background_mask)
+                            else float("nan")
+                        )
                         for idx in range(alpha_up.shape[0])
                     ],
                     dtype=np.float32,
@@ -745,13 +766,23 @@ def update_module_xai_epoch(
                     )
 
         pre_gate_logits = _tensor_to_numpy(sample.get("pre_gate_logits"))
-        if pre_gate_logits is not None and pre_gate_logits.ndim == 4 and np.any(boundary_mask):
-            pre_pred = np.argmax(np.asarray(pre_gate_logits[0], dtype=np.float32), axis=0)
+        if (
+            pre_gate_logits is not None
+            and pre_gate_logits.ndim == 4
+            and np.any(boundary_mask)
+        ):
+            pre_pred = np.argmax(
+                np.asarray(pre_gate_logits[0], dtype=np.float32), axis=0
+            )
             pre_pred = np.asarray(pre_pred, dtype=np.int32)
             if tuple(pre_pred.shape) != tuple(gt_mask.shape):
-                pre_pred = upsample_map(
-                    pre_pred.astype(np.float32), gt_mask.shape[0], gt_mask.shape[1]
-                ).round().astype(np.int32)
+                pre_pred = (
+                    upsample_map(
+                        pre_pred.astype(np.float32), gt_mask.shape[0], gt_mask.shape[1]
+                    )
+                    .round()
+                    .astype(np.int32)
+                )
             pre_error = np.logical_and(pre_pred != gt_mask, boundary_mask)
             post_error = np.logical_and(pred_mask != gt_mask, boundary_mask)
             delta_map = pre_error.astype(np.float32) - post_error.astype(np.float32)
@@ -772,7 +803,9 @@ def update_module_xai_epoch(
                 )
 
         if enable_lora:
-            lora_base = _squeeze_to_hw(_tensor_to_numpy(sample.get("lora_base_norm_map")))
+            lora_base = _squeeze_to_hw(
+                _tensor_to_numpy(sample.get("lora_base_norm_map"))
+            )
             lora_delta = _squeeze_to_hw(
                 _tensor_to_numpy(sample.get("lora_delta_norm_map"))
             )
@@ -784,9 +817,13 @@ def update_module_xai_epoch(
                 if ratio_values.size > 0:
                     lora_ratio_values.append(float(np.mean(ratio_values)))
                     if np.any(boundary_mask):
-                        lora_region_boundary.append(float(np.mean(ratio[boundary_mask])))
+                        lora_region_boundary.append(
+                            float(np.mean(ratio[boundary_mask]))
+                        )
                     if np.any(interior_mask):
-                        lora_region_interior.append(float(np.mean(ratio[interior_mask])))
+                        lora_region_interior.append(
+                            float(np.mean(ratio[interior_mask]))
+                        )
                     if np.any(background_mask):
                         lora_region_background.append(
                             float(np.mean(ratio[background_mask]))
@@ -801,25 +838,39 @@ def update_module_xai_epoch(
                             ratio_map=ratio,
                             ratio_values=ratio_values,
                             region_means={
-                                "boundary": float(np.mean(ratio[boundary_mask]))
-                                if np.any(boundary_mask)
-                                else float("nan"),
-                                "interior": float(np.mean(ratio[interior_mask]))
-                                if np.any(interior_mask)
-                                else float("nan"),
-                                "background": float(np.mean(ratio[background_mask]))
-                                if np.any(background_mask)
-                                else float("nan"),
+                                "boundary": (
+                                    float(np.mean(ratio[boundary_mask]))
+                                    if np.any(boundary_mask)
+                                    else float("nan")
+                                ),
+                                "interior": (
+                                    float(np.mean(ratio[interior_mask]))
+                                    if np.any(interior_mask)
+                                    else float("nan")
+                                ),
+                                "background": (
+                                    float(np.mean(ratio[background_mask]))
+                                    if np.any(background_mask)
+                                    else float("nan")
+                                ),
                             },
                         )
 
         if enable_topology:
-            skeleton_logits = _squeeze_to_hw(_tensor_to_numpy(sample.get("skeleton_logits")))
+            skeleton_logits = _squeeze_to_hw(
+                _tensor_to_numpy(sample.get("skeleton_logits"))
+            )
             if skeleton_logits is not None:
                 skel_prob = 1.0 / (1.0 + np.exp(-skeleton_logits))
-                skel_up = upsample_map(skel_prob.astype(np.float32), gt_mask.shape[0], gt_mask.shape[1])
+                skel_up = upsample_map(
+                    skel_prob.astype(np.float32), gt_mask.shape[0], gt_mask.shape[1]
+                )
                 pred_skel = skel_up >= float(gate_threshold)
-                gt_tensor = torch.from_numpy(fg_mask.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+                gt_tensor = (
+                    torch.from_numpy(fg_mask.astype(np.float32))
+                    .unsqueeze(0)
+                    .unsqueeze(0)
+                )
                 gt_skel = (
                     soft_skeletonize(gt_tensor, iters=10)
                     .squeeze(0)
@@ -830,8 +881,12 @@ def update_module_xai_epoch(
                     > 0.2
                 )
                 pred_fg = pred_mask == int(class_index)
-                tprec = float(np.sum(np.logical_and(pred_skel, fg_mask))) / max(float(np.sum(pred_skel)), 1.0)
-                tsens = float(np.sum(np.logical_and(gt_skel, pred_fg))) / max(float(np.sum(gt_skel)), 1.0)
+                tprec = float(np.sum(np.logical_and(pred_skel, fg_mask))) / max(
+                    float(np.sum(pred_skel)), 1.0
+                )
+                tsens = float(np.sum(np.logical_and(gt_skel, pred_fg))) / max(
+                    float(np.sum(gt_skel)), 1.0
+                )
                 cldice_proxy = float((2.0 * tprec * tsens) / max(tprec + tsens, 1e-8))
                 pred_components = float(_count_components(pred_skel))
                 gt_components = float(_count_components(gt_skel))
@@ -863,13 +918,17 @@ def update_module_xai_epoch(
     if layermix_entropy_values:
         metrics["xai_layermix_entropy_mean"] = float(np.mean(layermix_entropy_values))
     if layermix_shift_values:
-        metrics["xai_layermix_boundary_shift_mean"] = float(np.mean(layermix_shift_values))
+        metrics["xai_layermix_boundary_shift_mean"] = float(
+            np.mean(layermix_shift_values)
+        )
     if gate_aurocs:
         metrics["xai_gate_boundary_auroc"] = float(np.mean(gate_aurocs))
     if gate_aps:
         metrics["xai_gate_boundary_ap"] = float(np.mean(gate_aps))
     if boundary_delta_values:
-        metrics["xai_boundary_error_reduction_mean"] = float(np.mean(boundary_delta_values))
+        metrics["xai_boundary_error_reduction_mean"] = float(
+            np.mean(boundary_delta_values)
+        )
     if lora_ratio_values:
         metrics["xai_lora_ratio_mean"] = float(np.mean(lora_ratio_values))
     if lora_region_boundary:
@@ -877,20 +936,34 @@ def update_module_xai_epoch(
     if lora_region_interior:
         metrics["xai_lora_ratio_interior_mean"] = float(np.mean(lora_region_interior))
     if lora_region_background:
-        metrics["xai_lora_ratio_background_mean"] = float(np.mean(lora_region_background))
+        metrics["xai_lora_ratio_background_mean"] = float(
+            np.mean(lora_region_background)
+        )
     if topology_cldice_values:
         metrics["xai_topology_cldice_proxy"] = float(np.mean(topology_cldice_values))
     if topology_pred_components:
-        metrics["xai_topology_skel_components_pred"] = float(np.mean(topology_pred_components))
+        metrics["xai_topology_skel_components_pred"] = float(
+            np.mean(topology_pred_components)
+        )
     if topology_gt_components:
-        metrics["xai_topology_skel_components_gt"] = float(np.mean(topology_gt_components))
+        metrics["xai_topology_skel_components_gt"] = float(
+            np.mean(topology_gt_components)
+        )
     if topology_delta_components:
-        metrics["xai_topology_skel_component_delta"] = float(np.mean(topology_delta_components))
+        metrics["xai_topology_skel_component_delta"] = float(
+            np.mean(topology_delta_components)
+        )
 
     if layer_region_boundary_accum:
-        boundary_mean = np.nanmean(np.stack(layer_region_boundary_accum, axis=0), axis=0)
-        interior_mean = np.nanmean(np.stack(layer_region_interior_accum, axis=0), axis=0)
-        background_mean = np.nanmean(np.stack(layer_region_background_accum, axis=0), axis=0)
+        boundary_mean = np.nanmean(
+            np.stack(layer_region_boundary_accum, axis=0), axis=0
+        )
+        interior_mean = np.nanmean(
+            np.stack(layer_region_interior_accum, axis=0), axis=0
+        )
+        background_mean = np.nanmean(
+            np.stack(layer_region_background_accum, axis=0), axis=0
+        )
         if save_maps_this_epoch:
             _save_alpha_region_bar(
                 output_path=os.path.join(
@@ -986,7 +1059,9 @@ def update_module_xai_epoch(
             "Module XAI epoch %s metrics: %s"
             % (
                 int(epoch),
-                ", ".join(f"{key}={value:.4f}" for key, value in sorted(metrics.items())),
+                ", ".join(
+                    f"{key}={value:.4f}" for key, value in sorted(metrics.items())
+                ),
             )
         )
     return metrics

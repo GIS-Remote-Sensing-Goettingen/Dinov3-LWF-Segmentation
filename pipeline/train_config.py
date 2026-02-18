@@ -115,31 +115,47 @@ def parse_train_loss_config(
     return ResolvedLossConfig(
         ce_weight=ce_weight,
         focal_weight=float(focal_weight),
-        dice_weight=float(loss_main_cfg.get("dice_weight", loss_cfg.get("dice_weight", 1.0))),
-        aux_weight=float(loss_main_cfg.get("aux_weight", loss_cfg.get("aux_weight", 0.4))),
+        dice_weight=float(
+            loss_main_cfg.get("dice_weight", loss_cfg.get("dice_weight", 1.0))
+        ),
+        aux_weight=float(
+            loss_main_cfg.get("aux_weight", loss_cfg.get("aux_weight", 0.4))
+        ),
         class_weights=loss_cfg.get("class_weights"),
         ignore_index=ignore_index,
         label_smoothing=float(
             loss_main_cfg.get("label_smoothing", loss_cfg.get("label_smoothing", 0.0))
         ),
-        focal_gamma=float(loss_focal_cfg.get("gamma", loss_cfg.get("focal_gamma", 2.0))),
+        focal_gamma=float(
+            loss_focal_cfg.get("gamma", loss_cfg.get("focal_gamma", 2.0))
+        ),
         focal_alpha=loss_focal_cfg.get("alpha", loss_cfg.get("focal_alpha")),
         boundary_weight=float(
             loss_boundary_cfg.get("weight", loss_cfg.get("boundary_weight", 0.1))
         ),
         boundary_kernel_size=max(
             3,
-            int(loss_boundary_cfg.get("kernel_size", loss_cfg.get("boundary_kernel_size", 3))),
+            int(
+                loss_boundary_cfg.get(
+                    "kernel_size", loss_cfg.get("boundary_kernel_size", 3)
+                )
+            ),
         ),
         skeleton_weight=float(
             topology_cfg.get("skeleton_weight", loss_cfg.get("skeleton_weight", 0.0))
         ),
-        topology_weight=float(topology_cfg.get("weight", loss_cfg.get("topology_weight", 0.0))),
+        topology_weight=float(
+            topology_cfg.get("weight", loss_cfg.get("topology_weight", 0.0))
+        ),
         topology_class_index=int(
             topology_cfg.get("class_index", loss_cfg.get("topology_class_index", 1))
         ),
-        topology_iters=int(topology_cfg.get("iters", loss_cfg.get("topology_iters", 10))),
-        topology_on_aux=bool(topology_cfg.get("on_aux", loss_cfg.get("topology_on_aux", True))),
+        topology_iters=int(
+            topology_cfg.get("iters", loss_cfg.get("topology_iters", 10))
+        ),
+        topology_on_aux=bool(
+            topology_cfg.get("on_aux", loss_cfg.get("topology_on_aux", True))
+        ),
         topology_downsample=int(
             topology_cfg.get("downsample", loss_cfg.get("topology_downsample", 1))
         ),
@@ -167,9 +183,15 @@ def parse_train_plot_config(train_cfg: dict[str, Any]) -> ResolvedPlotConfig:
         (True, 2, True, False)
     """
 
-    plots_cfg = train_cfg.get("plots", {}) if isinstance(train_cfg.get("plots", {}), dict) else {}
+    plots_cfg = (
+        train_cfg.get("plots", {})
+        if isinstance(train_cfg.get("plots", {}), dict)
+        else {}
+    )
     epoch_plot_cfg = (
-        plots_cfg.get("epoch", {}) if isinstance(plots_cfg.get("epoch", {}), dict) else {}
+        plots_cfg.get("epoch", {})
+        if isinstance(plots_cfg.get("epoch", {}), dict)
+        else {}
     )
     xai_plot_cfg = (
         plots_cfg.get("xai", {}) if isinstance(plots_cfg.get("xai", {}), dict) else {}
@@ -205,7 +227,9 @@ def parse_train_plot_config(train_cfg: dict[str, Any]) -> ResolvedPlotConfig:
         "gate_threshold": float(
             train_cfg.get("epoch_plot_xai_module_gate_threshold", 0.5)
         ),
-        "entropy_eps": float(train_cfg.get("epoch_plot_xai_module_entropy_eps", 1.0e-8)),
+        "entropy_eps": float(
+            train_cfg.get("epoch_plot_xai_module_entropy_eps", 1.0e-8)
+        ),
         "strict": bool(train_cfg.get("epoch_plot_xai_module_strict", False)),
         "enable_lora_ratio": bool(
             train_cfg.get("epoch_plot_xai_module_enable_lora_ratio", True)
@@ -248,7 +272,9 @@ def parse_train_plot_config(train_cfg: dict[str, Any]) -> ResolvedPlotConfig:
             )
         ),
         cmap=str(epoch_plot_cfg.get("cmap", train_cfg.get("epoch_plot_cmap", "tab20"))),
-        pairs=max(1, int(epoch_plot_cfg.get("pairs", train_cfg.get("epoch_plot_pairs", 4)))),
+        pairs=max(
+            1, int(epoch_plot_cfg.get("pairs", train_cfg.get("epoch_plot_pairs", 4)))
+        ),
         seed_offset=int(
             epoch_plot_cfg.get(
                 "seed_offset",
@@ -256,7 +282,9 @@ def parse_train_plot_config(train_cfg: dict[str, Any]) -> ResolvedPlotConfig:
             )
         ),
         metric_class_index=metric_class_index,
-        xai_enable=bool(xai_plot_cfg.get("enable", train_cfg.get("epoch_plot_xai_enable", False))),
+        xai_enable=bool(
+            xai_plot_cfg.get("enable", train_cfg.get("epoch_plot_xai_enable", False))
+        ),
         xai_class_index=xai_class_index,
         xai_topk_channels=xai_topk_channels,
         xai_channel_top_k_per_sample=max(
@@ -264,7 +292,9 @@ def parse_train_plot_config(train_cfg: dict[str, Any]) -> ResolvedPlotConfig:
             int(
                 xai_channel_cfg.get(
                     "top_k_per_sample",
-                    train_cfg.get("epoch_plot_xai_channel_top_k_per_sample", xai_topk_channels),
+                    train_cfg.get(
+                        "epoch_plot_xai_channel_top_k_per_sample", xai_topk_channels
+                    ),
                 )
             ),
         ),
