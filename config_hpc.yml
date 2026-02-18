@@ -151,22 +151,22 @@ train:
   loss:
     # Main segmentation terms.
     main:
-      ce_weight: 1.0
+      ce_weight: 0.0
       dice_weight: 1.0
       aux_weight: 0.4
       label_smoothing: 0.08
     # Focal is controlled by weigh
     focal:
-      weight: 0.0
+      weight: 1.0
       gamma: 2.0
       alpha:
     # Boundary supervision term.
     boundary:
-      weight: 0.1
+      weight: 0.3
       kernel_size: 3
   # Topology and skeleton terms are grouped separately for clarity.
   topology:
-    skeleton_weight: 0.05
+    skeleton_weight: 0.1
     weight: 0.15
     class_index: 1
     iters: 10
