@@ -20,6 +20,8 @@ MLflow-compatible artifacts for research workflows.
   non-finite handling, and checkpoint safety gates.
 - **Dataset validation policy:** `dataset.validation` defines finite checks and allowed label
   values for both dataloading and cache verification.
+- **Tile intake policy:** `dataset.tile_filter` can keep only tiles containing foreground labels
+  during prepare, reducing background-only training samples.
 
 ## Tracking & Artifacts
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.
@@ -27,9 +29,20 @@ MLflow-compatible artifacts for research workflows.
 - `artifacts/run_summary.json` for run metadata and phase outputs.
 - Epoch logging emits explicit validation aliases (mIoU/IoU/F1) plus decomposed
   train/validation loss components for richer MLflow dashboards.
+- Epoch XAI logging can emit branch-importance metrics (image-vs-DINO gradient
+  sensitivity), per-layer DINO connection importance trends, Lite+ gate
+  importance summaries, and epoch-wise DINO channel importance evolution
+  artifacts (bar/trend/heatmap + JSON summaries).
+- Plot artifacts are grouped per run under `artifacts/plots/metrics`,
+  `artifacts/plots/xai`, and `artifacts/plots/inference` to reduce clutter.
+- When MLflow is active, plots are written directly into these run subfolders;
+  local plot directories are used only as a fallback when MLflow logging is disabled.
 - Decoder family includes opt-in lightweight variants (`unet_lite`,
-  `unet_lite_plus`) so users can trade compute for quality without changing
-  pipeline wiring.
+  `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`) so users can trade compute
+  for quality without changing pipeline wiring. `unet_nano` keeps the deep path
+  tiny and adds RGB priors only in late decoder stages (H/4, H/2), while
+  `unet_nano_fapm` adds low-rank split-and-modulate DINO projections and a
+  lightweight boundary branch fused into final logits.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.
@@ -38,10 +51,15 @@ MLflow-compatible artifacts for research workflows.
 
 ## Workflow
 1. Prepare tiles and features (optional)
+   Foreground-aware filtering can be applied here (`dataset.tile_filter`) so only tiles with
+   configured target labels are cached.
 2. Verify cached tiles (readability + semantic checks) (optional)
 3. Train segmentation head with per-epoch validation visualization panels (optional),
    including optional XAI dashboards (DINO attention, Grad-CAM, PCA feature maps,
-   top-k feature channels). Training augmentation includes geometric transforms and
+   top-k feature channels, and channel-importance evolution plots). Training
+   augmentation includes geometric transforms and
    optional image-only regularizers (color jitter/cutout/gridmask), which are
    cache-safe by default when precomputed features are used.
 4. Run inference (optional)
+   Both `input_tif` and `input_dir` modes use the same sliding-window tiled inference
+   and merge path to keep behavior consistent and memory-bounded on large inputs.

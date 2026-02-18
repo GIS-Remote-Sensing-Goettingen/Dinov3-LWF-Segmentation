@@ -142,6 +142,7 @@ class AttentionGateLite(nn.Module):
             nn.Sigmoid(),
         )
         self.act = nn.GELU()
+        self.last_alpha: torch.Tensor | None = None
 
     def forward(self, gate: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         """Filter skip features with decoder gating signal.
@@ -160,6 +161,7 @@ class AttentionGateLite(nn.Module):
             )
         psi = self.act(self.w_g(gate) + self.w_x(skip))
         psi = self.psi(psi)
+        self.last_alpha = psi
         return skip * psi
 
 
@@ -268,6 +270,12 @@ class DinoUNetLitePlusHead(SegmentationHead):
 
         x = self.up4(x, target_size=spm_h4.shape[-2:])
         spm_h4_gated = self.gate_h4(x, spm_h4)
+        gate_h4_alpha = self.gate_h4.last_alpha
+        gate_h4_mean = (
+            gate_h4_alpha.mean()
+            if gate_h4_alpha is not None
+            else torch.tensor(float("nan"), device=x.device)
+        )
         x = self.conv4(self._concat(x, spm_h4_gated))
         decoder_h4 = x
 
@@ -283,6 +291,7 @@ class DinoUNetLitePlusHead(SegmentationHead):
             "decoder_h8": decoder_h8,
             "decoder_h4": decoder_h4,
             "decoder_h2": decoder_h2,
+            "gate_h4_mean": gate_h4_mean,
         }
         return logits, ds_out, extras
 

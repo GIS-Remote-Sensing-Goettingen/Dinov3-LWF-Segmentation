@@ -507,6 +507,183 @@ def compute_gradcam_map(
     return result["cam_map"]
 
 
+def compute_branch_importance(
+    head: torch.nn.Module,
+    image: torch.Tensor,
+    features: list[torch.Tensor],
+    class_index: int,
+    logger: Any | None = None,
+) -> dict[str, float]:
+    """Estimate relative importance of RGB image input vs. DINO feature inputs.
+
+    The metric is gradient-based: we backpropagate a scalar target from model
+    logits and compare average absolute gradient magnitudes on image and
+    projected DINO feature tensors.
+
+    Args:
+        head (torch.nn.Module): Segmentation head.
+        image (torch.Tensor): Input image tensor with shape (1, C, H, W).
+        features (list[torch.Tensor]): Feature tensors passed to the head.
+        class_index (int): Target class index for attribution.
+        logger (Any | None): Optional logger for failures.
+
+    Returns:
+        dict[str, float]: Branch-importance summary with keys
+        `img_importance`, `dino_importance`, and `img_to_dino_ratio`.
+
+    Examples:
+        >>> result = compute_branch_importance(  # doctest: +SKIP
+        ...     head=head,
+        ...     image=torch.randn(1, 3, 32, 32),
+        ...     features=[torch.randn(1, 8, 4, 4)],
+        ...     class_index=1,
+        ... )
+        >>> "img_importance" in result  # doctest: +SKIP
+        True
+    """
+
+    if image.dim() != 4 or image.shape[0] != 1:
+        return {
+            "img_importance": 0.5,
+            "dino_importance": 0.5,
+            "img_to_dino_ratio": 1.0,
+        }
+    if not features:
+        return {
+            "img_importance": 1.0,
+            "dino_importance": 0.0,
+            "img_to_dino_ratio": float("inf"),
+        }
+    try:
+        image_var = image.detach().clone().requires_grad_(True)
+        feature_vars = [feat.detach().clone().requires_grad_(True) for feat in features]
+        with torch.enable_grad():
+            if hasattr(head, "forward_with_aux"):
+                logits, _ = head.forward_with_aux(image_var, feature_vars)
+            else:
+                logits = head(image_var, feature_vars)
+            if logits.dim() == 4 and 0 <= class_index < int(logits.shape[1]):
+                target = logits[:, class_index].mean()
+            else:
+                target = logits.mean()
+            grads = torch.autograd.grad(
+                target,
+                [image_var, *feature_vars],
+                retain_graph=False,
+                create_graph=False,
+                allow_unused=True,
+            )
+
+        img_grad = grads[0] if grads else None
+        img_grad_score = (
+            float(img_grad.detach().abs().mean().item())
+            if img_grad is not None
+            else 0.0
+        )
+        dino_grad_scores = [
+            float(grad.detach().abs().mean().item())
+            for grad in grads[1:]
+            if grad is not None
+        ]
+        dino_grad_score = float(np.mean(dino_grad_scores)) if dino_grad_scores else 0.0
+        denom = max(img_grad_score + dino_grad_score, 1e-12)
+        img_importance = img_grad_score / denom
+        dino_importance = dino_grad_score / denom
+        ratio = img_grad_score / max(dino_grad_score, 1e-12)
+        return {
+            "img_importance": float(img_importance),
+            "dino_importance": float(dino_importance),
+            "img_to_dino_ratio": float(ratio),
+        }
+    except Exception as exc:
+        if logger:
+            logger.info(f"Branch importance failed; using neutral split. ({exc})")
+        return {
+            "img_importance": 0.5,
+            "dino_importance": 0.5,
+            "img_to_dino_ratio": 1.0,
+        }
+    finally:
+        head.zero_grad(set_to_none=True)
+
+
+def compute_dino_layer_importance(
+    head: torch.nn.Module,
+    image: torch.Tensor,
+    features: list[torch.Tensor],
+    layer_ids: list[int],
+    class_index: int,
+    logger: Any | None = None,
+) -> dict[int, float]:
+    """Estimate relative importance of each DINO feature connection.
+
+    Importance is computed from mean absolute gradients on each feature tensor
+    and normalized to sum to 1.0 across the provided feature list.
+
+    Args:
+        head (torch.nn.Module): Segmentation head.
+        image (torch.Tensor): Input image tensor with shape (1, C, H, W).
+        features (list[torch.Tensor]): Feature tensors passed to the head.
+        layer_ids (list[int]): DINO layer identifiers for each feature tensor.
+        class_index (int): Target class index for attribution.
+        logger (Any | None): Optional logger for failures.
+
+    Returns:
+        dict[int, float]: Mapping from DINO layer id to normalized importance.
+
+    Examples:
+        >>> layer_imp = compute_dino_layer_importance(  # doctest: +SKIP
+        ...     head=head,
+        ...     image=torch.randn(1, 3, 32, 32),
+        ...     features=[torch.randn(1, 8, 4, 4), torch.randn(1, 8, 2, 2)],
+        ...     layer_ids=[7, 14],
+        ...     class_index=1,
+        ... )
+        >>> 7 in layer_imp  # doctest: +SKIP
+        True
+    """
+
+    if not features:
+        return {}
+    if len(layer_ids) != len(features):
+        layer_ids = list(range(len(features)))
+    try:
+        image_var = image.detach().clone().requires_grad_(True)
+        feature_vars = [feat.detach().clone().requires_grad_(True) for feat in features]
+        with torch.enable_grad():
+            if hasattr(head, "forward_with_aux"):
+                logits, _ = head.forward_with_aux(image_var, feature_vars)
+            else:
+                logits = head(image_var, feature_vars)
+            if logits.dim() == 4 and 0 <= class_index < int(logits.shape[1]):
+                target = logits[:, class_index].mean()
+            else:
+                target = logits.mean()
+            grads = torch.autograd.grad(
+                target,
+                feature_vars,
+                retain_graph=False,
+                create_graph=False,
+                allow_unused=True,
+            )
+        raw_scores = [
+            float(grad.detach().abs().mean().item()) if grad is not None else 0.0
+            for grad in grads
+        ]
+        denom = max(float(sum(raw_scores)), 1e-12)
+        return {
+            int(layer_id): float(score / denom)
+            for layer_id, score in zip(layer_ids, raw_scores)
+        }
+    except Exception as exc:
+        if logger:
+            logger.info(f"DINO layer importance failed; using uniform split. ({exc})")
+        uniform = 1.0 / max(1, len(layer_ids))
+        return {int(layer_id): float(uniform) for layer_id in layer_ids}
+    finally:
+        head.zero_grad(set_to_none=True)
+
+
 def compute_gradcam_with_topk_channels(
     image_hw3: np.ndarray,
     backbone: torch.nn.Module,
