@@ -133,44 +133,66 @@ train:
   grad_accum_steps: 1
   compile: false
   ema_decay: 0.0
-  epoch_plot: true
-  epoch_plot_dir: output/plot  # fallback only when MLflow logging is disabled
-  epoch_plot_cmap: tab20
-  epoch_plot_pairs: 4
-  epoch_plot_seed_offset: 1000
-  epoch_plot_metric_class_index: 1
-  epoch_plot_xai_enable: true
-  epoch_plot_xai_class_index: 1
-  epoch_plot_xai_topk_channels: 5
-  epoch_plot_xai_cam_layer_mode: last_requested_layer
-  epoch_plot_xai_render_attn_rollout: true
-  epoch_plot_xai_pca_enable: true
-  epoch_plot_xai_pca_layer_mode: same_as_cam
-  epoch_plot_xai_branch_importance_enable: true
-  epoch_plot_xai_branch_importance_class_index: 1
-  epoch_plot_xai_branch_importance_max_samples: 4
-  epoch_plot_xai_channel_tracking_enable: true
-  epoch_plot_xai_channel_tracking_max_samples: 64
-  epoch_plot_xai_channel_top_k_per_sample: 5
-  epoch_plot_xai_channel_top_n_stable: 10
-  epoch_plot_xai_channel_min_presence: 0.05
-  epoch_plot_xai_channel_save_json: true
+  plots:
+    epoch:
+      enable: true
+      dir: output/plot  # fallback only when MLflow logging is disabled
+      cmap: tab20
+      pairs: 4
+      seed_offset: 1000
+      metric_class_index: 1
+    xai:
+      enable: true
+      class_index: 1
+      topk_channels: 5
+      cam_layer_mode: last_requested_layer
+      render_attn_rollout: true
+      pca:
+        enable: true
+        layer_mode: same_as_cam
+      branch_importance:
+        enable: true
+        class_index: 1
+        max_samples: 4
+      channel_tracking:
+        enable: true
+        max_samples: 64
+        top_k_per_sample: 5
+        top_n_stable: 10
+        min_presence: 0.05
+        save_json: true
+      module:
+        enable: true
+        every_n_epochs: 5
+        max_samples: 8
+        save_maps: true
+        boundary_band_px: 3
+        gate_threshold: 0.5
+        entropy_eps: 1.0e-8
+        strict: false
+        enable_lora_ratio: true
+        enable_topology_panels: true
   loss:
-    ce_weight: 1.0
-    dice_weight: 1.0
-    aux_weight: 0.4
-    label_smoothing: 0.1
-    use_focal: false
-    focal_gamma: 2.0
-    focal_alpha:
-    boundary_weight: 0.1
-    boundary_kernel_size: 3
+    main:
+      ce_weight: 1.0
+      dice_weight: 1.0
+      aux_weight: 0.4
+      label_smoothing: 0.1
+    # Focal is weight-driven: 0.0 disables it while CE stays active.
+    focal:
+      weight: 0.0
+      gamma: 2.0
+      alpha:
+    boundary:
+      weight: 0.1
+      kernel_size: 3
+  topology:
     skeleton_weight: 0.0
-    topology_weight: 0.0
-    topology_class_index: 1
-    topology_iters: 10
-    topology_on_aux: true
-    topology_downsample: 1
+    weight: 0.0
+    class_index: 1
+    iters: 10
+    on_aux: true
+    downsample: 1
   stability:
     amp:
       enabled: auto      # auto | on | off
@@ -248,7 +270,7 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, configurable CE/focal + Dice (+ optional boundary BCE/skeleton BCE/soft-clDice topology) losses, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), per-layer DINO connection importance trends, Lite+ gate importance, per-epoch branch-importance trendlines (`branch_importance_trends.png`), per-epoch DINO-layer trendlines (`dino_layer_importance_trends.png`), and per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries).
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, configurable CE/focal + Dice (+ optional boundary BCE/skeleton BCE/soft-clDice topology) losses, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), per-layer DINO connection importance trends, Lite+ gate importance, per-epoch branch-importance trendlines (`branch_importance_trends.png`), per-epoch DINO-layer trendlines (`dino_layer_importance_trends.png`), per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries), and module-specific diagnostics under `plots/xai/module/` (layer-fusion argmax/entropy + region bars, gate boundary ROC panels, boundary error-reduction maps, LoRA ratio maps/histograms, and topology skeleton overlays with trend plots).
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
 - **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), split learning-rate traces (`train.lr_muon`, `train.lr_adamw`), branch + DINO-layer importance means, and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags. Artifacts are grouped under `artifacts/plots/{metrics,xai,inference}` per run.
 - With MLflow enabled, training and inference plots are written directly under the active run artifact tree (`artifacts/plots/...`) to avoid mixed local output folders.

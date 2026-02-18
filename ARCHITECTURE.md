@@ -19,6 +19,9 @@ MLflow-compatible artifacts for research workflows.
 - **Processors:** Pre/post phase modules for snapshotting and summaries.
 - **Stability policy:** `train.stability` controls AMP mode/dtype, fp32 loss, gradient clipping,
   non-finite handling, and checkpoint safety gates.
+- **Training config schema:** `train.plots` now groups all epoch/XAI plotting options,
+  `train.loss` groups main/focal/boundary loss terms, and `train.topology` groups
+  skeleton/clDice settings so class indices and weights are not mixed in one block.
 - **Dataset validation policy:** `dataset.validation` defines finite checks and allowed label
   values for both dataloading and cache verification.
 - **Tile intake policy:** `dataset.tile_filter` can keep only tiles containing foreground labels
@@ -33,7 +36,10 @@ MLflow-compatible artifacts for research workflows.
 - Epoch XAI logging can emit branch-importance metrics (image-vs-DINO gradient
   sensitivity), per-layer DINO connection importance trends, Lite+ gate
   importance summaries, and epoch-wise DINO channel importance evolution
-  artifacts (bar/trend/heatmap + JSON summaries).
+  artifacts (bar/trend/heatmap + JSON summaries). A module-specific XAI bundle
+  can additionally log layer-fusion alpha diagnostics, boundary-gate ROC/effect
+  maps, LoRA ratio distributions, and topology/skeleton connectivity summaries
+  under `artifacts/plots/xai/module`.
 - Plot artifacts are grouped per run under `artifacts/plots/metrics`,
   `artifacts/plots/xai`, and `artifacts/plots/inference` to reduce clutter.
 - When MLflow is active, plots are written directly into these run subfolders;

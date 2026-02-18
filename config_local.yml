@@ -108,44 +108,70 @@ train:
   grad_accum_steps: 1
   compile: false
   ema_decay: 0.0
-  epoch_plot: true
-  epoch_plot_dir: output/plot
-  epoch_plot_cmap: tab20
-  epoch_plot_pairs: 4
-  epoch_plot_seed_offset: 1000
-  epoch_plot_metric_class_index: 1
-  epoch_plot_xai_enable: true
-  epoch_plot_xai_class_index: 1
-  epoch_plot_xai_topk_channels: 5
-  epoch_plot_xai_cam_layer_mode: last_requested_layer
-  epoch_plot_xai_render_attn_rollout: true
-  epoch_plot_xai_pca_enable: true
-  epoch_plot_xai_pca_layer_mode: same_as_cam
-  epoch_plot_xai_branch_importance_enable: true
-  epoch_plot_xai_branch_importance_class_index: 1
-  epoch_plot_xai_branch_importance_max_samples: 4
-  epoch_plot_xai_channel_tracking_enable: true
-  epoch_plot_xai_channel_tracking_max_samples: 64
-  epoch_plot_xai_channel_top_k_per_sample: 5
-  epoch_plot_xai_channel_top_n_stable: 10
-  epoch_plot_xai_channel_min_presence: 0.05
-  epoch_plot_xai_channel_save_json: true
+  # Plot settings are grouped under one branch.
+  plots:
+    epoch:
+      enable: true
+      dir: output/plot
+      cmap: tab20
+      pairs: 4
+      seed_offset: 1000
+      metric_class_index: 1
+    xai:
+      enable: true
+      class_index: 1
+      topk_channels: 5
+      cam_layer_mode: last_requested_layer
+      render_attn_rollout: true
+      pca:
+        enable: true
+        layer_mode: same_as_cam
+      branch_importance:
+        enable: true
+        class_index: 1
+        max_samples: 4
+      channel_tracking:
+        enable: true
+        max_samples: 64
+        top_k_per_sample: 5
+        top_n_stable: 10
+        min_presence: 0.05
+        save_json: true
+      module:
+        enable: true
+        every_n_epochs: 5
+        max_samples: 8
+        save_maps: true
+        boundary_band_px: 3
+        gate_threshold: 0.5
+        entropy_eps: 1.0e-8
+        strict: false
+        enable_lora_ratio: true
+        enable_topology_panels: true
   loss:
-    ce_weight: 1.0
-    dice_weight: 1.0
-    aux_weight: 0.4
-    label_smoothing: 0.08
-    use_focal: false
-    focal_gamma: 2.0
-    focal_alpha:
-    boundary_weight: 0.1
-    boundary_kernel_size: 3
+    # Main segmentation terms.
+    main:
+      ce_weight: 1.0
+      dice_weight: 1.0
+      aux_weight: 0.4
+      label_smoothing: 0.08
+    # Focal is controlled by weight (0.0 = disabled).
+    focal:
+      weight: 0.0
+      gamma: 2.0
+      alpha:
+    # Boundary supervision term.
+    boundary:
+      weight: 0.1
+      kernel_size: 3
+  # Topology and skeleton terms are grouped separately for clarity.
+  topology:
     skeleton_weight: 0.05
-    topology_weight: 0.15
-    topology_class_index: 1
-    topology_iters: 10
-    topology_on_aux: true
-    topology_downsample: 1
+    weight: 0.15
+    class_index: 1
+    iters: 10
+    on_aux: true
+    downsample: 1
   stability:
     amp:
       enabled: auto

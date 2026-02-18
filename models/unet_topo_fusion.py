@@ -159,9 +159,30 @@ class LowRankAdapterProjection(nn.Module):
             torch.Tensor: Projected output.
         """
 
+        output, _ = self.forward_with_stats(x)
+        return output
+
+    def forward_with_stats(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Project input and expose LoRA/base norm maps for diagnostics.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            tuple[torch.Tensor, dict[str, torch.Tensor]]: Projected output and
+            diagnostic maps with `base_norm_map` and `delta_norm_map`.
+        """
+
         base = self.base(x)
         update = self.lora_up(self.lora_down(self.dropout(x))) * self.scale
-        return self.act(self.norm(base + update))
+        out = self.act(self.norm(base + update))
+        stats = {
+            "base_norm_map": torch.linalg.vector_norm(base, dim=1, keepdim=True),
+            "delta_norm_map": torch.linalg.vector_norm(update, dim=1, keepdim=True),
+        }
+        return out, stats
 
 
 class LayerFusionMixer(nn.Module):
@@ -223,9 +244,7 @@ class LayerFusionMixer(nn.Module):
         c0 = int(features[0].shape[1])
         h0, w0 = int(features[0].shape[2]), int(features[0].shape[3])
         if c0 != self.channels:
-            raise ValueError(
-                f"Expected {self.channels} channels per layer, got {c0}."
-            )
+            raise ValueError(f"Expected {self.channels} channels per layer, got {c0}.")
         for idx, feat in enumerate(features[1:], start=1):
             if int(feat.shape[1]) != self.channels:
                 raise ValueError(
@@ -341,7 +360,9 @@ class DinoUNetTopoFusionHead(SegmentationHead):
             max_layers=self.max_layers_for_fusion,
             hidden=mixer_hidden,
         )
-        self.mix_refine = NanoDoubleConv(fusion_hidden, fusion_hidden, dropout_rate=0.05)
+        self.mix_refine = NanoDoubleConv(
+            fusion_hidden, fusion_hidden, dropout_rate=0.05
+        )
 
         self.tap_shallow = nn.Conv2d(fusion_hidden, 32, kernel_size=1, bias=False)
         self.tap_mid = nn.Sequential(
@@ -412,15 +433,32 @@ class DinoUNetTopoFusionHead(SegmentationHead):
     def _build_dino_pyramid(
         self,
         features: list[torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
         """Project, fuse, and downsample DINO features into decoder taps.
 
         Args:
             features (list[torch.Tensor]): Input DINO feature tensors.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            Deep, mid, shallow taps; alpha map; and per-layer mean alpha.
+            tuple[
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor | None,
+                torch.Tensor | None,
+            ]:
+            Deep, mid, shallow taps; alpha map; per-layer mean alpha; and
+            LoRA/base norm maps aggregated at the fused feature resolution.
         """
 
         selected = list(features[: self.max_layers_for_fusion])
@@ -428,13 +466,31 @@ class DinoUNetTopoFusionHead(SegmentationHead):
             raise ValueError(
                 "DinoUNetTopoFusionHead requires at least one DINO feature map."
             )
-        projected = [self.layer_proj(feat) for feat in selected]
+        projected: list[torch.Tensor] = []
+        base_norm_maps: list[torch.Tensor] = []
+        delta_norm_maps: list[torch.Tensor] = []
+        for feat in selected:
+            proj, stats = self.layer_proj.forward_with_stats(feat)
+            projected.append(proj)
+            base_norm_maps.append(stats["base_norm_map"])
+            delta_norm_maps.append(stats["delta_norm_map"])
         fused, alpha, alpha_mean = self.layer_mixer(projected)
         fused = self.mix_refine(fused)
         shallow = self.tap_shallow(fused)
         mid = self.tap_mid(fused)
         deep = self.tap_deep(mid)
-        return deep, mid, shallow, alpha, alpha_mean
+        base_norm_map: torch.Tensor | None = None
+        delta_norm_map: torch.Tensor | None = None
+        if base_norm_maps and delta_norm_maps:
+            base_stack = torch.stack(
+                [map_tensor.squeeze(1) for map_tensor in base_norm_maps], dim=1
+            )
+            delta_stack = torch.stack(
+                [map_tensor.squeeze(1) for map_tensor in delta_norm_maps], dim=1
+            )
+            base_norm_map = (base_stack * alpha).sum(dim=1, keepdim=True)
+            delta_norm_map = (delta_stack * alpha).sum(dim=1, keepdim=True)
+        return deep, mid, shallow, alpha, alpha_mean, base_norm_map, delta_norm_map
 
     def _forward_impl(
         self, image: torch.Tensor, features: List[torch.Tensor]
@@ -450,7 +506,9 @@ class DinoUNetTopoFusionHead(SegmentationHead):
         """
 
         spm_h2, spm_h4 = self.spm(image)
-        deep, mid, shallow, alpha, alpha_mean = self._build_dino_pyramid(features)
+        deep, mid, shallow, alpha, alpha_mean, lora_base_map, lora_delta_map = (
+            self._build_dino_pyramid(features)
+        )
 
         x = self.bottleneck(deep)
         x = self.conv1(self._concat(self.up1(x), mid))
@@ -478,10 +536,13 @@ class DinoUNetTopoFusionHead(SegmentationHead):
 
         edge_feat = self.edge_feat_act(self.edge_feat_norm(self.edge_feat(x)))
         edge_logits = self.edge_logits(edge_feat)
+        pre_gate_logits = self.mask_logits(x)
         gate = torch.sigmoid(self.boundary_gate(edge_feat))
         multiplier = 1.0 + self.boundary_gate_scale * gate
         if self.boundary_gate_clamp:
-            multiplier = torch.clamp(multiplier, min=1.0, max=1.0 + self.boundary_gate_scale)
+            multiplier = torch.clamp(
+                multiplier, min=1.0, max=1.0 + self.boundary_gate_scale
+            )
         x_refined = x * multiplier
         logits = self.mask_logits(x_refined)
 
@@ -491,6 +552,10 @@ class DinoUNetTopoFusionHead(SegmentationHead):
             "edge_logits": edge_logits,
             "skeleton_logits": skeleton_logits,
             "layer_mix_weights_mean": alpha_mean,
+            "gate_map": gate,
+            "pre_gate_logits": pre_gate_logits,
+            "lora_base_norm_map": lora_base_map,
+            "lora_delta_norm_map": lora_delta_map,
             "gate_mean": float(gate.mean().item()),
             "gate_std": float(gate.std(unbiased=False).item()),
         }

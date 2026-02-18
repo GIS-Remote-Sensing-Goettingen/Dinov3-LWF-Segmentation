@@ -279,6 +279,7 @@ class SegmentationLoss(nn.Module):
         self,
         num_classes: int,
         ce_weight: float = 1.0,
+        focal_weight: float = 0.0,
         dice_weight: float = 1.0,
         aux_weight: float = 0.4,
         class_weights: Optional[List[float]] = None,
@@ -300,12 +301,13 @@ class SegmentationLoss(nn.Module):
         Args:
             num_classes (int): Number of segmentation classes.
             ce_weight (float): Cross-entropy weight.
+            focal_weight (float): Focal-loss weight.
             dice_weight (float): Dice loss weight.
             aux_weight (float): Auxiliary loss weight.
             class_weights (Optional[List[float]]): Optional class weights.
             ignore_index (Optional[int]): Optional ignore index.
             label_smoothing (float): Cross-entropy label smoothing value.
-            use_focal (bool): Replace CE with focal loss when True.
+            use_focal (bool): Legacy toggle to replace CE with focal loss.
             focal_gamma (float): Focal focusing parameter.
             focal_alpha (Optional[float]): Optional focal alpha weight in [0, 1].
             boundary_weight (float): Weight for boundary BCE supervision.
@@ -318,7 +320,8 @@ class SegmentationLoss(nn.Module):
         """
 
         super().__init__()
-        self.ce_weight = ce_weight
+        self.ce_weight = float(ce_weight)
+        self.focal_weight = max(float(focal_weight), 0.0)
         self.dice_weight = dice_weight
         self.aux_weight = aux_weight
         self.ignore_index = ignore_index
@@ -328,6 +331,9 @@ class SegmentationLoss(nn.Module):
         self.focal_alpha = (
             None if focal_alpha is None else min(max(float(focal_alpha), 0.0), 1.0)
         )
+        if self.use_focal and self.focal_weight <= 0.0:
+            self.focal_weight = self.ce_weight
+            self.ce_weight = 0.0
         self.boundary_weight = max(float(boundary_weight), 0.0)
         self.skeleton_weight = max(float(skeleton_weight), 0.0)
         self.topology_weight = max(float(topology_weight), 0.0)
@@ -468,19 +474,17 @@ class SegmentationLoss(nn.Module):
         skeleton_bce = zero
         topology_cldice = zero
 
-        if self.ce_weight:
-            if self.use_focal:
-                main_focal = self._focal_loss(logits, targets)
-            else:
-                main_ce = self._ce_loss(logits, targets)
+        if self.ce_weight > 0:
+            main_ce = self._ce_loss(logits, targets)
+        if self.focal_weight > 0:
+            main_focal = self._focal_loss(logits, targets)
         if self.dice_weight:
             main_dice = self.dice(logits, targets)
         if aux_logits is not None and aux_targets is not None and self.aux_weight > 0:
-            if self.ce_weight:
-                if self.use_focal:
-                    aux_focal = self._focal_loss(aux_logits, aux_targets)
-                else:
-                    aux_ce = self._ce_loss(aux_logits, aux_targets)
+            if self.ce_weight > 0:
+                aux_ce = self._ce_loss(aux_logits, aux_targets)
+            if self.focal_weight > 0:
+                aux_focal = self._focal_loss(aux_logits, aux_targets)
             if self.dice_weight:
                 aux_dice = self.dice(aux_logits, aux_targets)
         if (
@@ -586,11 +590,15 @@ class SegmentationLoss(nn.Module):
                 1.0
             )
 
-        weighted_main = self.ce_weight * (main_ce + main_focal) + self.dice_weight * (
-            main_dice
+        weighted_main = (
+            self.ce_weight * main_ce
+            + self.focal_weight * main_focal
+            + self.dice_weight * main_dice
         )
         weighted_aux = self.aux_weight * (
-            self.ce_weight * (aux_ce + aux_focal) + self.dice_weight * aux_dice
+            self.ce_weight * aux_ce
+            + self.focal_weight * aux_focal
+            + self.dice_weight * aux_dice
         )
         weighted_edge = self.boundary_weight * edge_bce
         weighted_skeleton = self.skeleton_weight * skeleton_bce

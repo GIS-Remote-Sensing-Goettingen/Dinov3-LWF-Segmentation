@@ -32,6 +32,21 @@
   probability (`0.10`), disabling GridMask, lowering label smoothing
   (`0.08`), and enabling gradual topology supervision
   (`skeleton_weight=0.05`, `topology_weight=0.15`).
+- Add module-specific XAI diagnostics for compatible heads with per-epoch
+  metrics and optional sampled map panels: layer-fusion alpha argmax/entropy +
+  region bars, gate-vs-boundary ROC, boundary error reduction (pre/post gate),
+  LoRA update ratio maps/histograms, and topology skeleton/connectivity
+  summaries with trend plots under `plots/xai/module`
+  (`pipeline/module_xai.py`, `pipeline/phases.py`, `models/unet_topo_fusion.py`,
+  `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Reorganize training config for readability: move plot options under
+  `train.plots`, split losses into `train.loss.main/focal/boundary`, move
+  topology controls to `train.topology`, and add inline comments in all shipped
+  configs; parser now supports both new nested keys and legacy flat keys.
+  Also switch focal control to a weight-based setting (`focal.weight`) while
+  preserving legacy `use_focal` behavior for backward compatibility
+  (`pipeline/train_config.py`, `pipeline/phases.py`, `utils/losses.py`,
+  `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
 
 ## [0.1.6] - 2026-02-17
 ### Changed
