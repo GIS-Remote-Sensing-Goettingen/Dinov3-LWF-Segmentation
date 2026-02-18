@@ -361,4 +361,3 @@ class DinoUNetNanoFAPMHead(SegmentationHead):
 
         logits, _, _, _ = self._forward_impl(image, features)
         return logits
-

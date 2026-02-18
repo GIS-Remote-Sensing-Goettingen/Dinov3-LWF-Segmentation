@@ -10,6 +10,7 @@ MLflow-compatible artifacts for research workflows.
 - `models/`: Segmentation heads (U-Net variants, MaskFormer-style head).
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
 - `config.py`: YAML configuration loader.
+- `MODELS.md`: Formula-level notes on DINO layer extraction and FAPM projections.
 
 ## Phase Orchestration
 - **Phase base class:** Standardizes enable checks, timing, and error handling.
@@ -38,11 +39,13 @@ MLflow-compatible artifacts for research workflows.
 - When MLflow is active, plots are written directly into these run subfolders;
   local plot directories are used only as a fallback when MLflow logging is disabled.
 - Decoder family includes opt-in lightweight variants (`unet_lite`,
-  `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`) so users can trade compute
+  `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`, `unet_topo_fusion`) so users can trade compute
   for quality without changing pipeline wiring. `unet_nano` keeps the deep path
   tiny and adds RGB priors only in late decoder stages (H/4, H/2), while
   `unet_nano_fapm` adds low-rank split-and-modulate DINO projections and a
-  lightweight boundary branch fused into final logits.
+  lightweight boundary branch fused into final logits. `unet_topo_fusion`
+  adds learned DINO layer mixing, LoRA-style projection adapters, boundary
+  feature gating, and an auxiliary skeleton stream for topology-aware training.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.
@@ -59,7 +62,9 @@ MLflow-compatible artifacts for research workflows.
    top-k feature channels, and channel-importance evolution plots). Training
    augmentation includes geometric transforms and
    optional image-only regularizers (color jitter/cutout/gridmask), which are
-   cache-safe by default when precomputed features are used.
+   cache-safe by default when precomputed features are used. Image/label tensors
+   are patch-aligned to backbone patch size during train/eval on-the-fly feature
+   extraction to avoid DINO token-grid misalignment.
 4. Run inference (optional)
    Both `input_tif` and `input_dir` modes use the same sliding-window tiled inference
    and merge path to keep behavior consistent and memory-bounded on large inputs.

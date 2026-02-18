@@ -15,6 +15,8 @@ from utils.losses import LOSS_COMPONENT_KEYS, compute_boundary_targets
 
 from .context import StabilityConfig
 
+_PATCH_CROP_WARNED: set[tuple[int, int, int]] = set()
+
 
 class ModelEMA:
     """Maintain an exponential moving average of model parameters.
@@ -162,11 +164,67 @@ def align_labels_to_logits(y: torch.Tensor, logits: torch.Tensor) -> torch.Tenso
     return aligned.squeeze(1).long()
 
 
+def align_to_patch_grid(
+    image: torch.Tensor,
+    labels: torch.Tensor | None,
+    patch_size: int,
+    logger: VerbosityLogger | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Crop tensors to the nearest lower patch-size multiple.
+
+    Args:
+        image (torch.Tensor): Image tensor shaped (B, C, H, W).
+        labels (torch.Tensor | None): Optional labels shaped (B, H, W) or (H, W).
+        patch_size (int): Backbone patch size.
+        logger (VerbosityLogger | None): Optional logger for one-time crop warnings.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor | None]: Cropped image and labels.
+
+    Examples:
+        >>> img = torch.randn(1, 3, 33, 35)
+        >>> y = torch.zeros(1, 33, 35).long()
+        >>> i2, y2 = align_to_patch_grid(img, y, patch_size=16)
+        >>> tuple(i2.shape), tuple(y2.shape)
+        ((1, 3, 32, 32), (1, 32, 32))
+    """
+
+    if patch_size <= 1:
+        return image, labels
+    h, w = int(image.shape[-2]), int(image.shape[-1])
+    h_eff = max((h // patch_size) * patch_size, patch_size)
+    w_eff = max((w // patch_size) * patch_size, patch_size)
+    if h_eff == h and w_eff == w:
+        return image, labels
+    if logger is not None:
+        key = (h, w, int(patch_size))
+        if key not in _PATCH_CROP_WARNED:
+            _PATCH_CROP_WARNED.add(key)
+            logger.warning(
+                "Cropping inputs from "
+                f"{h}x{w} to {h_eff}x{w_eff} to match DINO patch size {patch_size}."
+            )
+    image = image[..., :h_eff, :w_eff]
+    if labels is None:
+        return image, labels
+    if labels.ndim == 2:
+        labels = labels[:h_eff, :w_eff]
+    elif labels.ndim >= 3:
+        labels = labels[..., :h_eff, :w_eff]
+    return image, labels
+
+
 def forward_with_optional_extras(
     model_call: Any,
     image: torch.Tensor,
     features: list[torch.Tensor],
-) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    dict[str, Any],
+]:
     """Forward a model while collecting optional aux and boundary logits.
 
     Args:
@@ -175,19 +233,26 @@ def forward_with_optional_extras(
         features (list[torch.Tensor]): Multiscale feature tensors.
 
     Returns:
-        tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        Main logits, aux logits, and optional edge logits.
+        tuple[
+            torch.Tensor,
+            torch.Tensor | None,
+            torch.Tensor | None,
+            torch.Tensor | None,
+            dict[str, Any],
+        ]:
+        Main logits, aux logits, optional edge logits, optional skeleton logits,
+        and raw payload extras.
 
     Examples:
         >>> class Dummy:
         ...     def forward_with_aux(self, image, features):
         ...         return features[0], None
-        >>> logits, aux, edge = forward_with_optional_extras(
+        >>> logits, aux, edge, skel, payload = forward_with_optional_extras(
         ...     Dummy(),
         ...     torch.randn(1, 3, 2, 2),
         ...     [torch.randn(1, 2, 2, 2)],
         ... )
-        >>> aux is None and edge is None and tuple(logits.shape) == (1, 2, 2, 2)
+        >>> aux is None and edge is None and skel is None and payload == {}
         True
     """
 
@@ -196,12 +261,13 @@ def forward_with_optional_extras(
         logits = cast(torch.Tensor, payload["logits"])
         aux_logits = cast(torch.Tensor | None, payload.get("aux_logits"))
         edge_logits = cast(torch.Tensor | None, payload.get("edge_logits"))
-        return logits, aux_logits, edge_logits
+        skeleton_logits = cast(torch.Tensor | None, payload.get("skeleton_logits"))
+        return logits, aux_logits, edge_logits, skeleton_logits, payload
     if hasattr(model_call, "forward_with_aux"):
         logits, aux_logits = model_call.forward_with_aux(image, features)
-        return logits, aux_logits, None
+        return logits, aux_logits, None, None, {}
     logits = model_call(image, features)
-    return logits, None, None
+    return logits, None, None, None, {}
 
 
 def build_boundary_targets(
@@ -385,11 +451,17 @@ def evaluate(
     nonfinite_val_batches = 0
     nonfinite_val_loss_batches = 0
     max_abs_logit = 0.0
+    gate_mean_sum = 0.0
+    gate_std_sum = 0.0
+    gate_stat_batches = 0
+    layer_mix_sum: torch.Tensor | None = None
+    layer_mix_count = 0
     autocast = build_autocast(use_amp=use_amp, amp_dtype=stability_cfg.amp_dtype)
     with torch.no_grad():
         for batch_idx, (img, features, y) in enumerate(loader, 1):
             img = img.to(device)
             y = y.to(device)
+            img, y = align_to_patch_grid(img, y, patch_size=ps, logger=logger)
             if cache_features and features:
                 feats = move_features_to_device(features, device)
             else:
@@ -407,10 +479,12 @@ def evaluate(
                 )
             model_call = cast(Any, model)
             with autocast:
-                logits, aux_logits, edge_logits = forward_with_optional_extras(
-                    model_call,
-                    img,
-                    feats,
+                logits, aux_logits, edge_logits, skeleton_logits, payload = (
+                    forward_with_optional_extras(
+                        model_call,
+                        img,
+                        feats,
+                    )
                 )
                 target_main = align_labels_to_logits(y, logits)
                 target_aux = (
@@ -436,6 +510,11 @@ def evaluate(
                     if edge_logits is not None and stability_cfg.loss_fp32
                     else edge_logits
                 )
+                skeleton_for_loss = (
+                    skeleton_logits.float()
+                    if skeleton_logits is not None and stability_cfg.loss_fp32
+                    else skeleton_logits
+                )
                 components = loss_fn.compute_components(
                     logits_for_loss,
                     target_main,
@@ -444,8 +523,24 @@ def evaluate(
                     edge_logits=edge_for_loss,
                     edge_targets=edge_targets,
                     edge_mask=edge_mask,
+                    skeleton_logits=skeleton_for_loss,
                 )
                 loss = components["loss_total"]
+            gate_mean = payload.get("gate_mean")
+            gate_std = payload.get("gate_std")
+            if gate_mean is not None and gate_std is not None:
+                gate_mean_sum += float(torch.as_tensor(gate_mean).detach().item())
+                gate_std_sum += float(torch.as_tensor(gate_std).detach().item())
+                gate_stat_batches += 1
+            layer_mix = payload.get("layer_mix_weights_mean")
+            if layer_mix is not None:
+                layer_vec = torch.as_tensor(layer_mix).detach().float().cpu()
+                if layer_mix_sum is None:
+                    layer_mix_sum = layer_vec.clone()
+                else:
+                    dim = min(int(layer_mix_sum.numel()), int(layer_vec.numel()))
+                    layer_mix_sum[:dim] += layer_vec[:dim]
+                layer_mix_count += 1
             batch_max_abs_logit = float(
                 torch.nan_to_num(
                     logits.detach().float().abs(),
@@ -500,6 +595,17 @@ def evaluate(
     metric_summary["nonfinite_val_batches"] = float(nonfinite_val_batches)
     metric_summary["nonfinite_val_loss_batches"] = float(nonfinite_val_loss_batches)
     metric_summary["max_abs_logit"] = float(max_abs_logit)
+    if gate_stat_batches > 0:
+        metric_summary["gate_mean"] = float(gate_mean_sum / gate_stat_batches)
+        metric_summary["gate_std"] = float(gate_std_sum / gate_stat_batches)
+    if layer_mix_sum is not None and layer_mix_count > 0:
+        layer_mean = layer_mix_sum / float(layer_mix_count)
+        layer_ids = layers or list(range(int(layer_mean.numel())))
+        for idx in range(int(layer_mean.numel())):
+            layer_id = layer_ids[idx] if idx < len(layer_ids) else idx
+            metric_summary[f"layer_mix_{int(layer_id)}_mean"] = float(
+                layer_mean[idx].item()
+            )
     if logger:
         logger.debug(
             f"Validation summary :: loss={avg_loss:.4f}, "

@@ -78,6 +78,7 @@ from .plotting import (
 from .train_utils import (
     ModelEMA,
     align_labels_to_logits,
+    align_to_patch_grid,
     build_autocast,
     build_boundary_targets,
     count_nonfinite_parameters,
@@ -310,6 +311,7 @@ class TrainPhase(Phase):
             model_cfg["head"],
             num_classes=model_cfg["num_classes"],
             dino_channels=model_cfg["dino_channels"],
+            model_cfg=context.config.get("model", {}),
         ).to(device)
         if section.get("compile", False) and hasattr(torch, "compile"):
             model = cast(torch.nn.Module, torch.compile(model))
@@ -376,6 +378,12 @@ class TrainPhase(Phase):
             focal_gamma=loss_cfg.get("focal_gamma", 2.0),
             focal_alpha=loss_cfg.get("focal_alpha"),
             boundary_weight=loss_cfg.get("boundary_weight", 0.1),
+            skeleton_weight=loss_cfg.get("skeleton_weight", 0.0),
+            topology_weight=loss_cfg.get("topology_weight", 0.0),
+            topology_class_index=loss_cfg.get("topology_class_index", 1),
+            topology_iters=loss_cfg.get("topology_iters", 10),
+            topology_on_aux=loss_cfg.get("topology_on_aux", True),
+            topology_downsample=loss_cfg.get("topology_downsample", 1),
         ).to(device)
         backbone = None
         processor = None
@@ -600,6 +608,7 @@ class TrainPhase(Phase):
                             last_log_time = time.time()
                         img = img.to(device)
                         y = y.to(device)
+                        img, y = align_to_patch_grid(img, y, ps, context.logger)
                         try:
                             if cache_features and features:
                                 feats = move_features_to_device(features, device)
@@ -623,12 +632,8 @@ class TrainPhase(Phase):
                                 )
                             model_call = cast(Any, model)
                             with autocast:
-                                logits, aux_logits, edge_logits = (
-                                    forward_with_optional_extras(
-                                        model_call,
-                                        img,
-                                        feats,
-                                    )
+                                logits, aux_logits, edge_logits, skeleton_logits, _ = (
+                                    forward_with_optional_extras(model_call, img, feats)
                                 )
                                 target_main = align_labels_to_logits(y, logits)
                                 target_aux = (
@@ -664,6 +669,12 @@ class TrainPhase(Phase):
                                     edge_logits=edge_for_loss,
                                     edge_targets=edge_targets,
                                     edge_mask=edge_mask,
+                                    skeleton_logits=(
+                                        skeleton_logits.float()
+                                        if skeleton_logits is not None
+                                        and stability.loss_fp32
+                                        else skeleton_logits
+                                    ),
                                 )
                                 loss = loss_components["loss_total"] / grad_accum
                         except Exception as exc:
@@ -1680,6 +1691,7 @@ class InferencePhase(Phase):
             model_cfg["head"],
             num_classes=model_cfg["num_classes"],
             dino_channels=model_cfg["dino_channels"],
+            model_cfg=context.config.get("model", {}),
         ).to(device)
         checkpoint = infer_cfg["checkpoint"]
         context.logger.info(f"Loading checkpoint {checkpoint}")

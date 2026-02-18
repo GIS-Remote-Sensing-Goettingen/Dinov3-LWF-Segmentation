@@ -29,13 +29,13 @@ dataset:
     allow_feature_mismatch: false
     cutout:
       enable: true
-      prob: 0.25
+      prob: 0.10
       min_frac: 0.08
       max_frac: 0.22
       num_holes: 1
       fill: 0.0
     gridmask:
-      enable: true
+      enable: false
       prob: 0.20
       d_min: 48
       d_max: 128
@@ -66,6 +66,19 @@ model:
   head: unet_lite
   num_classes: 2
   dino_channels: 1024
+  enable_layer_fusion: true
+  enable_lora: true
+  enable_boundary_gate: true
+  fusion_hidden: 64
+  layer_fusion_hidden: 128
+  max_layers_for_fusion: 6
+  lora_rank: 8
+  lora_alpha: 16.0
+  lora_dropout: 0.0
+  lora_freeze_base: true
+  boundary_gate_scale: 0.1
+  boundary_gate_clamp: true
+  layer_mix_maps_enable: false
 
 prepare:
   enable: false
@@ -121,12 +134,18 @@ train:
     ce_weight: 1.0
     dice_weight: 1.0
     aux_weight: 0.4
-    label_smoothing: 0.1
+    label_smoothing: 0.08
     use_focal: false
     focal_gamma: 2.0
     focal_alpha:
     boundary_weight: 0.1
     boundary_kernel_size: 3
+    skeleton_weight: 0.05
+    topology_weight: 0.15
+    topology_class_index: 1
+    topology_iters: 10
+    topology_on_aux: true
+    topology_downsample: 1
   stability:
     amp:
       enabled: auto
