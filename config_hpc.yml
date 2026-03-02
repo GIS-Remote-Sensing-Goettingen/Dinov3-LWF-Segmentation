@@ -78,7 +78,7 @@ model:
   # Frozen DINOv3-SAT backbone; selected transformer layers are fused by the head.
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: dino_segdino_light # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
+  head: dino_dense_probe # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
   num_classes: 2
   dino_channels: 1024
   # Dense linear probe baseline options.
