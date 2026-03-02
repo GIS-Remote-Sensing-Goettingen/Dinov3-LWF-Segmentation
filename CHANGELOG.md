@@ -5,6 +5,25 @@
 
 ## [Unreleased]
 ### Changed
+- Add config-integrity tests that verify shipped YAML profiles parse correctly,
+  stay key-synchronized (`config.example.yml`, `config_hpc.yml`,
+  `config_local.yml`), and remain viable for model/train parser wiring
+  (`test/test_config_integrity.py`).
+- Synchronize config schema surface across `config.example.yml`,
+  `config_hpc.yml`, and `config_local.yml` by adding missing distributed
+  resource keys (`resources.distributed`, `resources.dist_backend`) to the
+  HPC/local configs for maintainability and parity.
+- Add two lightweight DINOv3 baseline heads under `models/`: `dino_dense_probe`
+  (dense linear probe on last-layer tokens) and `dino_segdino_light`
+  (SegDINO-style multi-layer light fusion), wire them into the model registry,
+  and add strict configured-layer count checks for the SegDINO baseline
+  (`models/dino_dense_probe.py`, `models/dino_segdino_light.py`,
+  `models/__init__.py`, `test/test_dino_baselines.py`).
+- Add grouped model config knobs for the new baselines
+  (`model.dense_probe.*`, `model.segdino_light.*`) in shipped configs
+  (`config_*.yml`).
+- Add `scripts/export_metrics_csv.py` to convert `artifacts/metrics.jsonl` into
+  thesis-ready CSV tables.
 - Add explanatory inline comments across `config_hpc.yml`, `config_local.yml`,
   and `config.example.yml` so training/loss/topology/XAI options are easier to
   understand without reading code.

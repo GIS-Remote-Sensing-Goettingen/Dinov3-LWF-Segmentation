@@ -47,14 +47,18 @@ MLflow-compatible artifacts for research workflows.
   `artifacts/plots/xai`, and `artifacts/plots/inference` to reduce clutter.
 - When MLflow is active, plots are written directly into these run subfolders;
   local plot directories are used only as a fallback when MLflow logging is disabled.
-- Decoder family includes opt-in lightweight variants (`unet_lite`,
-  `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`, `unet_topo_fusion`) so users can trade compute
-  for quality without changing pipeline wiring. `unet_nano` keeps the deep path
-  tiny and adds RGB priors only in late decoder stages (H/4, H/2), while
-  `unet_nano_fapm` adds low-rank split-and-modulate DINO projections and a
-  lightweight boundary branch fused into final logits. `unet_topo_fusion`
-  adds learned DINO layer mixing, LoRA-style projection adapters, boundary
-  feature gating, and an auxiliary skeleton stream for topology-aware training.
+- Decoder family includes lightweight baselines and compact variants
+  (`dino_dense_probe`, `dino_segdino_light`, `unet_lite`, `unet_lite_plus`,
+  `unet_nano`, `unet_nano_fapm`, `unet_topo_fusion`) so users can trade compute
+  for quality without changing pipeline wiring. `dino_dense_probe` is the
+  minimal dense-probe head over last-layer DINO tokens, and
+  `dino_segdino_light` is a SegDINO-style multi-layer fusion head.
+  `unet_nano` keeps the deep path tiny and adds RGB priors only in late decoder
+  stages (H/4, H/2), while `unet_nano_fapm` adds low-rank split-and-modulate
+  DINO projections and a lightweight boundary branch fused into final logits.
+  `unet_topo_fusion` adds learned DINO layer mixing, LoRA-style projection
+  adapters, boundary feature gating, and an auxiliary skeleton stream for
+  topology-aware training.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.
