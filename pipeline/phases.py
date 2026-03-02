@@ -58,6 +58,7 @@ from .inference_utils import (
     upsample_map,
     upsample_rgb_map,
 )
+from .module_xai import build_module_xai_sample, update_module_xai_epoch
 from .phase_runner import Phase
 from .plotting import (
     _aggregate_channel_importance_samples,
@@ -75,9 +76,11 @@ from .plotting import (
     summarize_branch_importance_epoch,
     summarize_dino_layer_importance_epoch,
 )
+from .train_config import parse_train_loss_config, parse_train_plot_config
 from .train_utils import (
     ModelEMA,
     align_labels_to_logits,
+    align_to_patch_grid,
     build_autocast,
     build_boundary_targets,
     count_nonfinite_parameters,
@@ -310,6 +313,7 @@ class TrainPhase(Phase):
             model_cfg["head"],
             num_classes=model_cfg["num_classes"],
             dino_channels=model_cfg["dino_channels"],
+            model_cfg=context.config.get("model", {}),
         ).to(device)
         if section.get("compile", False) and hasattr(torch, "compile"):
             model = cast(torch.nn.Module, torch.compile(model))
@@ -359,23 +363,35 @@ class TrainPhase(Phase):
             epochs=section.get("epochs", 30),
             steps_per_epoch=steps_per_epoch,
         )
-        loss_cfg = section.get("loss", {})
-        loss_ignore_index = loss_cfg.get("ignore_index")
-        if loss_ignore_index is None and context.dataset_validation.enabled:
-            loss_ignore_index = context.dataset_validation.ignore_index
-        boundary_kernel_size = max(3, int(loss_cfg.get("boundary_kernel_size", 3)))
+        resolved_loss = parse_train_loss_config(
+            section,
+            (
+                context.dataset_validation.ignore_index
+                if context.dataset_validation.enabled
+                else None
+            ),
+        )
+        boundary_kernel_size = resolved_loss.boundary_kernel_size
+        loss_ignore_index = resolved_loss.ignore_index
         loss_fn = SegmentationLoss(
             num_classes=model_cfg["num_classes"],
-            ce_weight=loss_cfg.get("ce_weight", 1.0),
-            dice_weight=loss_cfg.get("dice_weight", 1.0),
-            aux_weight=loss_cfg.get("aux_weight", 0.4),
-            class_weights=loss_cfg.get("class_weights"),
+            ce_weight=resolved_loss.ce_weight,
+            focal_weight=resolved_loss.focal_weight,
+            dice_weight=resolved_loss.dice_weight,
+            aux_weight=resolved_loss.aux_weight,
+            class_weights=resolved_loss.class_weights,
             ignore_index=loss_ignore_index,
-            label_smoothing=loss_cfg.get("label_smoothing", 0.0),
-            use_focal=loss_cfg.get("use_focal", False),
-            focal_gamma=loss_cfg.get("focal_gamma", 2.0),
-            focal_alpha=loss_cfg.get("focal_alpha"),
-            boundary_weight=loss_cfg.get("boundary_weight", 0.1),
+            label_smoothing=resolved_loss.label_smoothing,
+            use_focal=False,
+            focal_gamma=resolved_loss.focal_gamma,
+            focal_alpha=resolved_loss.focal_alpha,
+            boundary_weight=resolved_loss.boundary_weight,
+            skeleton_weight=resolved_loss.skeleton_weight,
+            topology_weight=resolved_loss.topology_weight,
+            topology_class_index=resolved_loss.topology_class_index,
+            topology_iters=resolved_loss.topology_iters,
+            topology_on_aux=resolved_loss.topology_on_aux,
+            topology_downsample=resolved_loss.topology_downsample,
         ).to(device)
         backbone = None
         processor = None
@@ -406,83 +422,44 @@ class TrainPhase(Phase):
         grad_accum = max(1, section.get("grad_accum_steps", 1))
         log_batch_metrics = get_hook_option(context.config, "log_batch_metrics", False)
         log_batch_interval = get_hook_option(context.config, "log_batch_interval", 10)
-        plot_enabled = bool(section.get("epoch_plot", False))
-        plot_root_dir = section.get("epoch_plot_dir", os.path.join("output", "plot"))
+        plot_cfg = parse_train_plot_config(section)
+        plot_enabled = plot_cfg.enabled
+        plot_root_dir = plot_cfg.root_dir
         if context.mlflow_logger is not None:
             plot_root_dir = str(context.mlflow_logger.artifacts_dir / "plots")
         plot_metrics_dir = os.path.join(plot_root_dir, "metrics")
         plot_xai_dir = os.path.join(plot_root_dir, "xai")
-        plot_cmap = section.get("epoch_plot_cmap", "tab20")
-        plot_pairs = max(1, int(section.get("epoch_plot_pairs", 4)))
-        plot_seed_offset = int(section.get("epoch_plot_seed_offset", 1000))
-        plot_metric_class_index = int(section.get("epoch_plot_metric_class_index", 1))
-        plot_xai_enable = bool(section.get("epoch_plot_xai_enable", False))
-        plot_xai_class_index = int(
-            section.get("epoch_plot_xai_class_index", plot_metric_class_index)
+        plot_cmap = plot_cfg.cmap
+        plot_pairs = plot_cfg.pairs
+        plot_seed_offset = plot_cfg.seed_offset
+        plot_metric_class_index = plot_cfg.metric_class_index
+        plot_xai_enable = plot_cfg.xai_enable
+        plot_xai_class_index = plot_cfg.xai_class_index
+        plot_xai_topk_channels = plot_cfg.xai_topk_channels
+        plot_xai_channel_top_k_per_sample = plot_cfg.xai_channel_top_k_per_sample
+        plot_xai_cam_layer_mode = plot_cfg.xai_cam_layer_mode
+        plot_xai_render_rollout = plot_cfg.xai_render_rollout
+        plot_xai_pca_enable = plot_cfg.xai_pca_enable
+        plot_xai_branch_importance_enable = plot_cfg.xai_branch_importance_enable
+        plot_xai_branch_importance_class_index = (
+            plot_cfg.xai_branch_importance_class_index
         )
-        plot_xai_topk_channels = max(
-            1, int(section.get("epoch_plot_xai_topk_channels", 5))
+        plot_xai_branch_importance_max_samples = (
+            plot_cfg.xai_branch_importance_max_samples
         )
-        plot_xai_channel_top_k_per_sample = max(
-            1,
-            int(
-                section.get(
-                    "epoch_plot_xai_channel_top_k_per_sample",
-                    plot_xai_topk_channels,
-                )
-            ),
+        plot_xai_channel_tracking_enable = plot_cfg.xai_channel_tracking_enable
+        plot_xai_channel_tracking_max_samples = (
+            plot_cfg.xai_channel_tracking_max_samples
         )
-        plot_xai_cam_layer_mode = str(
-            section.get("epoch_plot_xai_cam_layer_mode", "last_requested_layer")
-        )
-        plot_xai_render_rollout = bool(
-            section.get("epoch_plot_xai_render_attn_rollout", True)
-        )
-        plot_xai_pca_enable = bool(section.get("epoch_plot_xai_pca_enable", True))
-        plot_xai_branch_importance_enable = bool(
-            section.get("epoch_plot_xai_branch_importance_enable", True)
-        )
-        plot_xai_branch_importance_class_index = int(
-            section.get(
-                "epoch_plot_xai_branch_importance_class_index",
-                plot_xai_class_index,
-            )
-        )
-        plot_xai_branch_importance_max_samples = max(
-            1,
-            int(
-                section.get(
-                    "epoch_plot_xai_branch_importance_max_samples",
-                    plot_pairs,
-                )
-            ),
-        )
-        plot_xai_channel_tracking_enable = bool(
-            section.get("epoch_plot_xai_channel_tracking_enable", True)
-        )
-        plot_xai_channel_tracking_max_samples = max(
-            1,
-            int(section.get("epoch_plot_xai_channel_tracking_max_samples", 64)),
-        )
-        plot_xai_channel_top_n_stable = max(
-            1,
-            int(section.get("epoch_plot_xai_channel_top_n_stable", 10)),
-        )
-        plot_xai_channel_min_presence = float(
-            section.get("epoch_plot_xai_channel_min_presence", 0.05)
-        )
-        plot_xai_channel_min_presence = min(
-            1.0, max(0.0, plot_xai_channel_min_presence)
-        )
-        plot_xai_channel_save_json = bool(
-            section.get("epoch_plot_xai_channel_save_json", True)
-        )
+        plot_xai_channel_top_n_stable = plot_cfg.xai_channel_top_n_stable
+        plot_xai_channel_min_presence = plot_cfg.xai_channel_min_presence
+        plot_xai_channel_save_json = plot_cfg.xai_channel_save_json
+        xai_module_cfg = plot_cfg.xai_module_cfg
         plot_xai_cam_layer = resolve_cam_layer(
             model_cfg["layers"], plot_xai_cam_layer_mode
         )
-        plot_xai_pca_layer_mode = str(
-            section.get("epoch_plot_xai_pca_layer_mode", "same_as_cam")
-        )
+        model_layer_ids = [int(layer_id) for layer_id in model_cfg["layers"]]
+        plot_xai_pca_layer_mode = plot_cfg.xai_pca_layer_mode
         if plot_xai_pca_layer_mode.strip().lower() == "same_as_cam":
             plot_xai_pca_layer = plot_xai_cam_layer
         else:
@@ -496,6 +473,7 @@ class TrainPhase(Phase):
         channel_importance_history: list[dict[str, Any]] = []
         branch_importance_history: list[dict[str, float]] = []
         dino_layer_importance_history: list[dict[str, Any]] = []
+        module_xai_history: dict[str, Any] = {}
 
         with TimedBlock(context.logger, "Training phase"):
             for epoch in range(epochs):
@@ -600,6 +578,7 @@ class TrainPhase(Phase):
                             last_log_time = time.time()
                         img = img.to(device)
                         y = y.to(device)
+                        img, y = align_to_patch_grid(img, y, ps, context.logger)
                         try:
                             if cache_features and features:
                                 feats = move_features_to_device(features, device)
@@ -623,12 +602,8 @@ class TrainPhase(Phase):
                                 )
                             model_call = cast(Any, model)
                             with autocast:
-                                logits, aux_logits, edge_logits = (
-                                    forward_with_optional_extras(
-                                        model_call,
-                                        img,
-                                        feats,
-                                    )
+                                logits, aux_logits, edge_logits, skeleton_logits, _ = (
+                                    forward_with_optional_extras(model_call, img, feats)
                                 )
                                 target_main = align_labels_to_logits(y, logits)
                                 target_aux = (
@@ -664,6 +639,12 @@ class TrainPhase(Phase):
                                     edge_logits=edge_for_loss,
                                     edge_targets=edge_targets,
                                     edge_mask=edge_mask,
+                                    skeleton_logits=(
+                                        skeleton_logits.float()
+                                        if skeleton_logits is not None
+                                        and stability.loss_fp32
+                                        else skeleton_logits
+                                    ),
                                 )
                                 loss = loss_components["loss_total"] / grad_accum
                         except Exception as exc:
@@ -933,8 +914,8 @@ class TrainPhase(Phase):
                             branch_img_importances: list[float] = []
                             branch_dino_importances: list[float] = []
                             dino_layer_importance_samples: list[dict[int, float]] = []
-                            gate_importances: list[float] = []
                             channel_importance_samples: list[dict[str, Any]] = []
+                            module_xai_samples: list[dict[str, Any]] = []
                             eval_call = cast(Any, eval_model)
                             running_idx = 0
                             gradcam_topk = max(
@@ -1024,9 +1005,9 @@ class TrainPhase(Phase):
                                         )
                                     gate_importance: float | None = None
                                     sample_payload: dict[str, Any] | None = None
+                                    sample_extras: dict[str, Any] = {}
                                     if wants_plot:
                                         with torch.no_grad(), autocast:
-                                            sample_extras: dict[str, Any] = {}
                                             if plot_xai_enable and hasattr(
                                                 eval_call, "forward_with_extras"
                                             ):
@@ -1097,7 +1078,6 @@ class TrainPhase(Phase):
                                             sample_payload["gate_importance"] = (
                                                 gate_importance
                                             )
-                                            gate_importances.append(gate_importance)
                                         if (
                                             plot_xai_enable
                                             and plot_xai_branch_importance_enable
@@ -1278,6 +1258,14 @@ class TrainPhase(Phase):
                                             )
                                             if pca_rgb_map is not None:
                                                 sample_payload["pca_rgb"] = pca_rgb_map
+                                        module_sample = build_module_xai_sample(
+                                            sample_payload, sample_extras
+                                        )
+                                        if (
+                                            plot_xai_enable
+                                            and module_sample is not None
+                                        ):
+                                            module_xai_samples.append(module_sample)
                                     if wants_plot and sample_payload is not None:
                                         sample_plots.append(sample_payload)
                                     if (
@@ -1342,10 +1330,7 @@ class TrainPhase(Phase):
                                     layer_means, layer_metrics = (
                                         summarize_dino_layer_importance_epoch(
                                             dino_layer_importance_samples,
-                                            [
-                                                int(layer_id)
-                                                for layer_id in model_cfg["layers"]
-                                            ],
+                                            model_layer_ids,
                                         )
                                     )
                                     if layer_means:
@@ -1362,23 +1347,21 @@ class TrainPhase(Phase):
                                         _save_dino_layer_importance_trend_plot(
                                             layer_trend_path,
                                             dino_layer_importance_history,
-                                            [
-                                                int(layer_id)
-                                                for layer_id in model_cfg["layers"]
-                                            ],
+                                            model_layer_ids,
                                         )
                                         xai_epoch_metrics.update(layer_metrics)
-                                    if gate_importances:
-                                        xai_epoch_metrics.update(
-                                            {
-                                                "xai_gate_importance_mean": float(
-                                                    np.mean(gate_importances)
-                                                ),
-                                                "xai_gate_samples": float(
-                                                    len(gate_importances)
-                                                ),
-                                            }
+                                    xai_epoch_metrics.update(
+                                        update_module_xai_epoch(
+                                            epoch + 1,
+                                            xai_module_cfg,
+                                            model_layer_ids,
+                                            plot_xai_class_index,
+                                            plot_xai_dir,
+                                            module_xai_samples,
+                                            module_xai_history,
+                                            context.logger,
                                         )
+                                    )
                                     if (
                                         plot_xai_channel_tracking_enable
                                         and channel_importance_samples
@@ -1680,6 +1663,7 @@ class InferencePhase(Phase):
             model_cfg["head"],
             num_classes=model_cfg["num_classes"],
             dino_channels=model_cfg["dino_channels"],
+            model_cfg=context.config.get("model", {}),
         ).to(device)
         checkpoint = infer_cfg["checkpoint"]
         context.logger.info(f"Loading checkpoint {checkpoint}")

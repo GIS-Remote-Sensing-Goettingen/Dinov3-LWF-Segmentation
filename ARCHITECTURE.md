@@ -10,6 +10,7 @@ MLflow-compatible artifacts for research workflows.
 - `models/`: Segmentation heads (U-Net variants, MaskFormer-style head).
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
 - `config.py`: YAML configuration loader.
+- `MODELS.md`: Formula-level notes on DINO layer extraction and FAPM projections.
 
 ## Phase Orchestration
 - **Phase base class:** Standardizes enable checks, timing, and error handling.
@@ -18,6 +19,12 @@ MLflow-compatible artifacts for research workflows.
 - **Processors:** Pre/post phase modules for snapshotting and summaries.
 - **Stability policy:** `train.stability` controls AMP mode/dtype, fp32 loss, gradient clipping,
   non-finite handling, and checkpoint safety gates.
+- **Training config schema:** `train.plots` now groups all epoch/XAI plotting options,
+  `train.loss` groups main/focal/boundary loss terms, and `train.topology` groups
+  skeleton/clDice settings so class indices and weights are not mixed in one block.
+- **Model config schema:** topology-fusion controls are grouped under
+  `model.fusion`, `model.lora`, and `model.boundary_gate` (with legacy flat-key
+  compatibility for existing configs).
 - **Dataset validation policy:** `dataset.validation` defines finite checks and allowed label
   values for both dataloading and cache verification.
 - **Tile intake policy:** `dataset.tile_filter` can keep only tiles containing foreground labels
@@ -32,17 +39,22 @@ MLflow-compatible artifacts for research workflows.
 - Epoch XAI logging can emit branch-importance metrics (image-vs-DINO gradient
   sensitivity), per-layer DINO connection importance trends, Lite+ gate
   importance summaries, and epoch-wise DINO channel importance evolution
-  artifacts (bar/trend/heatmap + JSON summaries).
+  artifacts (bar/trend/heatmap + JSON summaries). A module-specific XAI bundle
+  can additionally log layer-fusion alpha diagnostics, boundary-gate ROC/effect
+  maps, LoRA ratio distributions, and topology/skeleton connectivity summaries
+  under `artifacts/plots/xai/module`.
 - Plot artifacts are grouped per run under `artifacts/plots/metrics`,
   `artifacts/plots/xai`, and `artifacts/plots/inference` to reduce clutter.
 - When MLflow is active, plots are written directly into these run subfolders;
   local plot directories are used only as a fallback when MLflow logging is disabled.
 - Decoder family includes opt-in lightweight variants (`unet_lite`,
-  `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`) so users can trade compute
+  `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`, `unet_topo_fusion`) so users can trade compute
   for quality without changing pipeline wiring. `unet_nano` keeps the deep path
   tiny and adds RGB priors only in late decoder stages (H/4, H/2), while
   `unet_nano_fapm` adds low-rank split-and-modulate DINO projections and a
-  lightweight boundary branch fused into final logits.
+  lightweight boundary branch fused into final logits. `unet_topo_fusion`
+  adds learned DINO layer mixing, LoRA-style projection adapters, boundary
+  feature gating, and an auxiliary skeleton stream for topology-aware training.
 
 ## Design Principles
 - **Modularity:** Small, focused modules with explicit contracts.
@@ -59,7 +71,9 @@ MLflow-compatible artifacts for research workflows.
    top-k feature channels, and channel-importance evolution plots). Training
    augmentation includes geometric transforms and
    optional image-only regularizers (color jitter/cutout/gridmask), which are
-   cache-safe by default when precomputed features are used.
+   cache-safe by default when precomputed features are used. Image/label tensors
+   are patch-aligned to backbone patch size during train/eval on-the-fly feature
+   extraction to avoid DINO token-grid misalignment.
 4. Run inference (optional)
    Both `input_tif` and `input_dir` modes use the same sliding-window tiled inference
    and merge path to keep behavior consistent and memory-bounded on large inputs.

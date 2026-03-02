@@ -95,9 +95,25 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_v2          # unet | unet_v2 | unet_lite | unet_lite_plus | maskformer
+  head: unet_v2          # unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
   num_classes: 2
   dino_channels: 1024
+  fusion:
+    enable: true
+    hidden: 64
+    layer_hidden: 128
+    max_layers: 6
+    save_maps: false
+  lora:
+    enable: true
+    rank: 8
+    alpha: 16.0
+    dropout: 0.0
+    freeze_base: true
+  boundary_gate:
+    enable: true
+    scale: 0.1
+    clamp: true
 
 prepare:
   enable: true
@@ -124,38 +140,66 @@ train:
   grad_accum_steps: 1
   compile: false
   ema_decay: 0.0
-  epoch_plot: true
-  epoch_plot_dir: output/plot  # fallback only when MLflow logging is disabled
-  epoch_plot_cmap: tab20
-  epoch_plot_pairs: 4
-  epoch_plot_seed_offset: 1000
-  epoch_plot_metric_class_index: 1
-  epoch_plot_xai_enable: true
-  epoch_plot_xai_class_index: 1
-  epoch_plot_xai_topk_channels: 5
-  epoch_plot_xai_cam_layer_mode: last_requested_layer
-  epoch_plot_xai_render_attn_rollout: true
-  epoch_plot_xai_pca_enable: true
-  epoch_plot_xai_pca_layer_mode: same_as_cam
-  epoch_plot_xai_branch_importance_enable: true
-  epoch_plot_xai_branch_importance_class_index: 1
-  epoch_plot_xai_branch_importance_max_samples: 4
-  epoch_plot_xai_channel_tracking_enable: true
-  epoch_plot_xai_channel_tracking_max_samples: 64
-  epoch_plot_xai_channel_top_k_per_sample: 5
-  epoch_plot_xai_channel_top_n_stable: 10
-  epoch_plot_xai_channel_min_presence: 0.05
-  epoch_plot_xai_channel_save_json: true
+  plots:
+    epoch:
+      enable: true
+      dir: output/plot  # fallback only when MLflow logging is disabled
+      cmap: tab20
+      pairs: 4
+      seed_offset: 1000
+      metric_class_index: 1
+    xai:
+      enable: true
+      class_index: 1
+      topk_channels: 5
+      cam_layer_mode: last_requested_layer
+      render_attn_rollout: true
+      pca:
+        enable: true
+        layer_mode: same_as_cam
+      branch_importance:
+        enable: true
+        class_index: 1
+        max_samples: 4
+      channel_tracking:
+        enable: true
+        max_samples: 64
+        top_k_per_sample: 5
+        top_n_stable: 10
+        min_presence: 0.05
+        save_json: true
+      module:
+        enable: true
+        every_n_epochs: 5
+        max_samples: 8
+        save_maps: true
+        boundary_band_px: 3
+        gate_threshold: 0.5
+        entropy_eps: 1.0e-8
+        strict: false
+        enable_lora_ratio: true
+        enable_topology_panels: true
   loss:
-    ce_weight: 1.0
-    dice_weight: 1.0
-    aux_weight: 0.4
-    label_smoothing: 0.1
-    use_focal: false
-    focal_gamma: 2.0
-    focal_alpha:
-    boundary_weight: 0.1
-    boundary_kernel_size: 3
+    main:
+      ce_weight: 1.0
+      dice_weight: 1.0
+      aux_weight: 0.4
+      label_smoothing: 0.1
+    # Focal is weight-driven: 0.0 disables it while CE stays active.
+    focal:
+      weight: 0.0
+      gamma: 2.0
+      alpha:
+    boundary:
+      weight: 0.1
+      kernel_size: 3
+  topology:
+    skeleton_weight: 0.0
+    weight: 0.0
+    class_index: 1
+    iters: 10
+    on_aux: true
+    downsample: 1
   stability:
     amp:
       enabled: auto      # auto | on | off
@@ -190,6 +234,7 @@ inference:
 ```
 
 Set `enable: true` for any section you want to run. The `paths` block provides base directories shared across phases, while individual sections can override them (e.g., use a different `processed_dir` for training vs. verification).
+Model options for topology-fusion heads are grouped under `model.fusion`, `model.lora`, and `model.boundary_gate`; legacy flat keys are still supported for backward compatibility.
 
 Inference input selection:
 - Set exactly one source: `inference.input_tif` or `inference.input_dir`.
@@ -219,6 +264,7 @@ The `model.head` key selects one of the decoders registered under `models/`:
 | `unet_lite_plus` | `models/unet_lite_plus.py` | Opt-in Lite+ variant using interpolate+conv upsampling, GN+GELU residual blocks, and lightweight gated H/4 fusion. |
 | `unet_nano` | `models/unet_nano.py` | Aggressively compact decoder with GroupNorm, GELU, Dropout2d, and late RGB fusion at H/4 and H/2. |
 | `unet_nano_fapm` | `models/unet_nano_fapm.py` | Nano variant with low-rank split-and-modulate projections (NanoFAPM) plus a lightweight boundary branch fused into final logits. |
+| `unet_topo_fusion` | `models/unet_topo_fusion.py` | Topology-aware variant with learned DINO layer fusion, LoRA-style projection adapters, boundary-feature gating, and a skeleton branch for soft-clDice supervision. |
 | `maskformer`| `models/maskformer.py` | Pixel decoder fused with transformer mask head (MaskFormer style).       |
 
 Adding a new decoder only requires implementing `SegmentationHead`, registering it in `models/__init__.py`, and referencing it via `model.head`.
@@ -226,13 +272,13 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 ## Utilities
 
 - `utils/data.py` handles tiling, label alignment, feature extraction, cache verification, and the `PrecomputedDataset`. It supports an optional foreground-label tile filter during preparation (`dataset.tile_filter`), applies optional train-time augmentations (flips/rotations + color jitter/cutout/gridmask), validates finiteness/label ranges, and supports region-based splits. Image-only augmentations are skipped by default when cached features are enabled unless `dataset.augmentations.allow_feature_mismatch` is set to `true`.
-- `utils/losses.py` implements the combined segmentation losses (CE or focal + Dice + optional boundary BCE) for main/aux outputs.
+- `utils/losses.py` implements the combined segmentation losses (CE or focal + Dice + optional boundary BCE + optional skeleton BCE + optional soft-clDice topology term) for main/aux outputs.
 - `utils/metrics.py` accumulates per-class IoU/Dice; we early-stop on validation mIoU instead of loss.
 - `utils/optim.py` contains the Muon optimizer (matrix-aware momentum with orthogonalization), AdamW handling, and a configurable EarlyStopping helper that works for min/max metrics.
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, configurable CE/focal + Dice (+ optional boundary BCE) loss, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), per-layer DINO connection importance trends, Lite+ gate importance, per-epoch branch-importance trendlines (`branch_importance_trends.png`), per-epoch DINO-layer trendlines (`dino_layer_importance_trends.png`), and per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries).
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, configurable CE/focal + Dice (+ optional boundary BCE/skeleton BCE/soft-clDice topology) losses, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), per-layer DINO connection importance trends, Lite+ gate importance, per-epoch branch-importance trendlines (`branch_importance_trends.png`), per-epoch DINO-layer trendlines (`dino_layer_importance_trends.png`), per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries), and module-specific diagnostics under `plots/xai/module/` (layer-fusion argmax/entropy + region bars, gate boundary ROC panels, boundary error-reduction maps, LoRA ratio maps/histograms, and topology skeleton overlays with trend plots).
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
 - **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), split learning-rate traces (`train.lr_muon`, `train.lr_adamw`), branch + DINO-layer importance means, and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags. Artifacts are grouped under `artifacts/plots/{metrics,xai,inference}` per run.
 - With MLflow enabled, training and inference plots are written directly under the active run artifact tree (`artifacts/plots/...`) to avoid mixed local output folders.
@@ -257,6 +303,7 @@ for mod in [
     "models.base",
     "models.unet",
     "models.unet_v2",
+    "models.unet_topo_fusion",
     "models.maskformer",
     "models.__init__",
     "utils.data",

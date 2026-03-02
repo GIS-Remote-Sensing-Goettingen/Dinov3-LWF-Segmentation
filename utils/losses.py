@@ -19,9 +19,13 @@ LOSS_COMPONENT_KEYS: tuple[str, ...] = (
     "loss_aux_focal",
     "loss_aux_dice",
     "loss_edge_bce",
+    "loss_skeleton_bce",
+    "loss_topology_cldice",
     "loss_weighted_main",
     "loss_weighted_aux",
     "loss_weighted_edge",
+    "loss_weighted_skeleton",
+    "loss_weighted_topology",
 )
 
 
@@ -134,6 +138,131 @@ def compute_boundary_targets(
     return edge_targets, edge_mask
 
 
+def soft_erode(x: torch.Tensor) -> torch.Tensor:
+    """Apply differentiable soft erosion.
+
+    Args:
+        x (torch.Tensor): Input map with shape (B, 1, H, W).
+
+    Returns:
+        torch.Tensor: Soft-eroded map.
+
+    Examples:
+        >>> x = torch.zeros(1, 1, 5, 5)
+        >>> x[:, :, 2, 2] = 1.0
+        >>> tuple(soft_erode(x).shape)
+        (1, 1, 5, 5)
+    """
+
+    p1 = -F.max_pool2d(-x, kernel_size=(3, 1), stride=1, padding=(1, 0))
+    p2 = -F.max_pool2d(-x, kernel_size=(1, 3), stride=1, padding=(0, 1))
+    return torch.minimum(p1, p2)
+
+
+def soft_dilate(x: torch.Tensor) -> torch.Tensor:
+    """Apply differentiable soft dilation.
+
+    Args:
+        x (torch.Tensor): Input map with shape (B, 1, H, W).
+
+    Returns:
+        torch.Tensor: Soft-dilated map.
+
+    Examples:
+        >>> x = torch.zeros(1, 1, 5, 5)
+        >>> x[:, :, 2, 2] = 1.0
+        >>> float(soft_dilate(x).max()) >= 1.0
+        True
+    """
+
+    return F.max_pool2d(x, kernel_size=3, stride=1, padding=1)
+
+
+def soft_open(x: torch.Tensor) -> torch.Tensor:
+    """Apply differentiable opening operation.
+
+    Args:
+        x (torch.Tensor): Input map with shape (B, 1, H, W).
+
+    Returns:
+        torch.Tensor: Opened map.
+
+    Examples:
+        >>> x = torch.zeros(1, 1, 5, 5)
+        >>> x[:, :, 2, 2] = 1.0
+        >>> tuple(soft_open(x).shape)
+        (1, 1, 5, 5)
+    """
+
+    return soft_dilate(soft_erode(x))
+
+
+def soft_skeletonize(x: torch.Tensor, iters: int = 10) -> torch.Tensor:
+    """Approximate a soft skeleton via iterative morphology.
+
+    Args:
+        x (torch.Tensor): Input map with shape (B, 1, H, W).
+        iters (int): Number of refinement iterations.
+
+    Returns:
+        torch.Tensor: Soft skeleton map.
+
+    Examples:
+        >>> m = torch.zeros(1, 1, 5, 5)
+        >>> m[:, :, 2, :] = 1.0
+        >>> s = soft_skeletonize(m, iters=5)
+        >>> tuple(s.shape)
+        (1, 1, 5, 5)
+    """
+
+    x = x.clamp(min=0.0, max=1.0)
+    skel = F.relu(x - soft_open(x))
+    iterations = max(1, int(iters))
+    for _ in range(iterations - 1):
+        x = soft_erode(x)
+        delta = F.relu(x - soft_open(x))
+        skel = skel + F.relu(delta - skel * delta)
+    return skel.clamp(min=0.0, max=1.0)
+
+
+def soft_cldice_loss(
+    pred_fg: torch.Tensor,
+    target_fg: torch.Tensor,
+    iters: int = 10,
+    smooth: float = 1e-6,
+) -> torch.Tensor:
+    """Compute soft-clDice loss for connectivity preservation.
+
+    Args:
+        pred_fg (torch.Tensor): Foreground probability map (B, 1, H, W).
+        target_fg (torch.Tensor): Binary target foreground map (B, 1, H, W).
+        iters (int): Skeletonization iterations.
+        smooth (float): Numerical stability term.
+
+    Returns:
+        torch.Tensor: Scalar soft-clDice loss.
+
+    Examples:
+        >>> p = torch.zeros(1, 1, 8, 8)
+        >>> t = torch.zeros(1, 1, 8, 8)
+        >>> p[:, :, 3, 1:7] = 0.8
+        >>> t[:, :, 3, 1:7] = 1.0
+        >>> float(soft_cldice_loss(p, t, iters=5)) < 0.5
+        True
+    """
+
+    pred_fg = pred_fg.clamp(min=0.0, max=1.0)
+    target_fg = target_fg.clamp(min=0.0, max=1.0)
+    skel_pred = soft_skeletonize(pred_fg, iters=iters)
+    skel_true = soft_skeletonize(target_fg, iters=iters)
+    tprec = (skel_pred * target_fg).sum(dim=(1, 2, 3))
+    tprec = (tprec + smooth) / (skel_pred.sum(dim=(1, 2, 3)) + smooth)
+    tsens = (skel_true * pred_fg).sum(dim=(1, 2, 3))
+    tsens = (tsens + smooth) / (skel_true.sum(dim=(1, 2, 3)) + smooth)
+    cldice = (2.0 * tprec * tsens + smooth) / (tprec + tsens + smooth)
+    return 1.0 - cldice.mean()
+
+
 class SegmentationLoss(nn.Module):
     """
     Combined cross-entropy and Dice loss with optional auxiliary output.
@@ -150,6 +279,7 @@ class SegmentationLoss(nn.Module):
         self,
         num_classes: int,
         ce_weight: float = 1.0,
+        focal_weight: float = 0.0,
         dice_weight: float = 1.0,
         aux_weight: float = 0.4,
         class_weights: Optional[List[float]] = None,
@@ -159,25 +289,39 @@ class SegmentationLoss(nn.Module):
         focal_gamma: float = 2.0,
         focal_alpha: Optional[float] = None,
         boundary_weight: float = 0.0,
+        skeleton_weight: float = 0.0,
+        topology_weight: float = 0.0,
+        topology_class_index: int = 1,
+        topology_iters: int = 10,
+        topology_on_aux: bool = True,
+        topology_downsample: int = 1,
     ) -> None:
         """Initialize the combined segmentation loss.
 
         Args:
             num_classes (int): Number of segmentation classes.
             ce_weight (float): Cross-entropy weight.
+            focal_weight (float): Focal-loss weight.
             dice_weight (float): Dice loss weight.
             aux_weight (float): Auxiliary loss weight.
             class_weights (Optional[List[float]]): Optional class weights.
             ignore_index (Optional[int]): Optional ignore index.
             label_smoothing (float): Cross-entropy label smoothing value.
-            use_focal (bool): Replace CE with focal loss when True.
+            use_focal (bool): Legacy toggle to replace CE with focal loss.
             focal_gamma (float): Focal focusing parameter.
             focal_alpha (Optional[float]): Optional focal alpha weight in [0, 1].
             boundary_weight (float): Weight for boundary BCE supervision.
+            skeleton_weight (float): Weight for skeleton BCE supervision.
+            topology_weight (float): Weight for soft-clDice topology supervision.
+            topology_class_index (int): Foreground class index for topology loss.
+            topology_iters (int): Soft skeletonization iteration count.
+            topology_on_aux (bool): Use aux logits/targets for topology by default.
+            topology_downsample (int): Downsample factor when topology_on_aux is false.
         """
 
         super().__init__()
-        self.ce_weight = ce_weight
+        self.ce_weight = float(ce_weight)
+        self.focal_weight = max(float(focal_weight), 0.0)
         self.dice_weight = dice_weight
         self.aux_weight = aux_weight
         self.ignore_index = ignore_index
@@ -187,7 +331,16 @@ class SegmentationLoss(nn.Module):
         self.focal_alpha = (
             None if focal_alpha is None else min(max(float(focal_alpha), 0.0), 1.0)
         )
+        if self.use_focal and self.focal_weight <= 0.0:
+            self.focal_weight = self.ce_weight
+            self.ce_weight = 0.0
         self.boundary_weight = max(float(boundary_weight), 0.0)
+        self.skeleton_weight = max(float(skeleton_weight), 0.0)
+        self.topology_weight = max(float(topology_weight), 0.0)
+        self.topology_class_index = max(0, int(topology_class_index))
+        self.topology_iters = max(1, int(topology_iters))
+        self.topology_on_aux = bool(topology_on_aux)
+        self.topology_downsample = max(1, int(topology_downsample))
         weight_tensor = None
         if class_weights is not None:
             weight_tensor = torch.tensor(class_weights, dtype=torch.float32)
@@ -253,6 +406,7 @@ class SegmentationLoss(nn.Module):
         edge_logits: Optional[torch.Tensor] = None,
         edge_targets: Optional[torch.Tensor] = None,
         edge_mask: Optional[torch.Tensor] = None,
+        skeleton_logits: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute the combined loss with optional auxiliary output.
 
@@ -264,6 +418,7 @@ class SegmentationLoss(nn.Module):
             edge_logits (Optional[torch.Tensor]): Boundary logits tensor.
             edge_targets (Optional[torch.Tensor]): Binary boundary targets.
             edge_mask (Optional[torch.Tensor]): Optional boundary valid mask.
+            skeleton_logits (Optional[torch.Tensor]): Skeleton logits tensor.
 
         Returns:
             torch.Tensor: Scalar loss tensor.
@@ -277,6 +432,7 @@ class SegmentationLoss(nn.Module):
             edge_logits=edge_logits,
             edge_targets=edge_targets,
             edge_mask=edge_mask,
+            skeleton_logits=skeleton_logits,
         )["loss_total"]
 
     def compute_components(
@@ -288,6 +444,7 @@ class SegmentationLoss(nn.Module):
         edge_logits: Optional[torch.Tensor] = None,
         edge_targets: Optional[torch.Tensor] = None,
         edge_mask: Optional[torch.Tensor] = None,
+        skeleton_logits: Optional[torch.Tensor] = None,
     ) -> dict[str, torch.Tensor]:
         """Compute weighted and unweighted loss components.
 
@@ -299,6 +456,7 @@ class SegmentationLoss(nn.Module):
             edge_logits (Optional[torch.Tensor]): Boundary logits tensor.
             edge_targets (Optional[torch.Tensor]): Binary boundary targets.
             edge_mask (Optional[torch.Tensor]): Optional boundary valid mask.
+            skeleton_logits (Optional[torch.Tensor]): Skeleton logits tensor.
 
         Returns:
             dict[str, torch.Tensor]: Loss components keyed by
@@ -313,20 +471,20 @@ class SegmentationLoss(nn.Module):
         aux_focal = zero
         aux_dice = zero
         edge_bce = zero
+        skeleton_bce = zero
+        topology_cldice = zero
 
-        if self.ce_weight:
-            if self.use_focal:
-                main_focal = self._focal_loss(logits, targets)
-            else:
-                main_ce = self._ce_loss(logits, targets)
+        if self.ce_weight > 0:
+            main_ce = self._ce_loss(logits, targets)
+        if self.focal_weight > 0:
+            main_focal = self._focal_loss(logits, targets)
         if self.dice_weight:
             main_dice = self.dice(logits, targets)
         if aux_logits is not None and aux_targets is not None and self.aux_weight > 0:
-            if self.ce_weight:
-                if self.use_focal:
-                    aux_focal = self._focal_loss(aux_logits, aux_targets)
-                else:
-                    aux_ce = self._ce_loss(aux_logits, aux_targets)
+            if self.ce_weight > 0:
+                aux_ce = self._ce_loss(aux_logits, aux_targets)
+            if self.focal_weight > 0:
+                aux_focal = self._focal_loss(aux_logits, aux_targets)
             if self.dice_weight:
                 aux_dice = self.dice(aux_logits, aux_targets)
         if (
@@ -345,14 +503,113 @@ class SegmentationLoss(nn.Module):
             else:
                 edge_bce = edge_map.mean()
 
-        weighted_main = self.ce_weight * (main_ce + main_focal) + self.dice_weight * (
-            main_dice
+        class_idx = min(self.topology_class_index, self.num_classes - 1)
+        if self.topology_weight > 0:
+            topology_logits = logits
+            topology_targets = targets
+            if (
+                self.topology_on_aux
+                and aux_logits is not None
+                and aux_targets is not None
+            ):
+                topology_logits = aux_logits
+                topology_targets = aux_targets
+
+            valid_mask = torch.ones_like(topology_targets, dtype=torch.bool)
+            if self.ignore_index is not None:
+                valid_mask = topology_targets != int(self.ignore_index)
+            safe_targets = torch.where(
+                valid_mask,
+                topology_targets.clamp(min=0, max=self.num_classes - 1),
+                torch.zeros_like(topology_targets),
+            )
+            target_fg = (safe_targets == class_idx).float().unsqueeze(1)
+            target_fg = target_fg * valid_mask.unsqueeze(1).float()
+
+            if topology_logits.shape[1] == 1:
+                pred_fg = torch.sigmoid(topology_logits)
+            else:
+                pred_fg = torch.softmax(topology_logits, dim=1)[
+                    :, class_idx : class_idx + 1
+                ]
+            pred_fg = pred_fg * valid_mask.unsqueeze(1).float()
+
+            if not self.topology_on_aux and self.topology_downsample > 1:
+                scale = 1.0 / float(self.topology_downsample)
+                pred_fg = F.interpolate(
+                    pred_fg,
+                    scale_factor=scale,
+                    mode="bilinear",
+                    align_corners=False,
+                    recompute_scale_factor=False,
+                )
+                target_fg = F.interpolate(
+                    target_fg,
+                    size=pred_fg.shape[-2:],
+                    mode="nearest",
+                )
+
+            topology_cldice = soft_cldice_loss(
+                pred_fg,
+                target_fg,
+                iters=self.topology_iters,
+            )
+
+        if skeleton_logits is not None and self.skeleton_weight > 0:
+            target_for_skeleton = targets
+            if target_for_skeleton.ndim == 2:
+                target_for_skeleton = target_for_skeleton.unsqueeze(0)
+            target_for_skeleton = (
+                F.interpolate(
+                    target_for_skeleton.unsqueeze(1).float(),
+                    size=skeleton_logits.shape[-2:],
+                    mode="nearest",
+                )
+                .squeeze(1)
+                .long()
+            )
+            valid_skel = torch.ones_like(target_for_skeleton, dtype=torch.bool)
+            if self.ignore_index is not None:
+                valid_skel = target_for_skeleton != int(self.ignore_index)
+            safe_skel = torch.where(
+                valid_skel,
+                target_for_skeleton.clamp(min=0, max=self.num_classes - 1),
+                torch.zeros_like(target_for_skeleton),
+            )
+            skel_fg = (safe_skel == class_idx).float().unsqueeze(1)
+            skel_fg = skel_fg * valid_skel.unsqueeze(1).float()
+            with torch.no_grad():
+                skeleton_target = soft_skeletonize(skel_fg, iters=self.topology_iters)
+            skel_bce_map = F.binary_cross_entropy_with_logits(
+                skeleton_logits,
+                skeleton_target,
+                reduction="none",
+            )
+            skel_mask = valid_skel.unsqueeze(1).float()
+            skeleton_bce = (skel_bce_map * skel_mask).sum() / skel_mask.sum().clamp_min(
+                1.0
+            )
+
+        weighted_main = (
+            self.ce_weight * main_ce
+            + self.focal_weight * main_focal
+            + self.dice_weight * main_dice
         )
         weighted_aux = self.aux_weight * (
-            self.ce_weight * (aux_ce + aux_focal) + self.dice_weight * aux_dice
+            self.ce_weight * aux_ce
+            + self.focal_weight * aux_focal
+            + self.dice_weight * aux_dice
         )
         weighted_edge = self.boundary_weight * edge_bce
-        total = weighted_main + weighted_aux + weighted_edge
+        weighted_skeleton = self.skeleton_weight * skeleton_bce
+        weighted_topology = self.topology_weight * topology_cldice
+        total = (
+            weighted_main
+            + weighted_aux
+            + weighted_edge
+            + weighted_skeleton
+            + weighted_topology
+        )
         return {
             "loss_total": total,
             "loss_main_ce": main_ce,
@@ -362,7 +619,11 @@ class SegmentationLoss(nn.Module):
             "loss_aux_focal": aux_focal,
             "loss_aux_dice": aux_dice,
             "loss_edge_bce": edge_bce,
+            "loss_skeleton_bce": skeleton_bce,
+            "loss_topology_cldice": topology_cldice,
             "loss_weighted_main": weighted_main,
             "loss_weighted_aux": weighted_aux,
             "loss_weighted_edge": weighted_edge,
+            "loss_weighted_skeleton": weighted_skeleton,
+            "loss_weighted_topology": weighted_topology,
         }

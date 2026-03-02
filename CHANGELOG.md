@@ -4,6 +4,59 @@
 - Every completed task must create a new version entry and move changes from Unreleased into that release.
 
 ## [Unreleased]
+### Changed
+- Add explanatory inline comments across `config_hpc.yml`, `config_local.yml`,
+  and `config.example.yml` so training/loss/topology/XAI options are easier to
+  understand without reading code.
+- Reorganize model config for readability by grouping topology-fusion controls
+  into `model.fusion`, `model.lora`, and `model.boundary_gate`, and update
+  head construction to accept both grouped keys and legacy flat keys
+  (`models/__init__.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Add `MODELS.md` with formula-level documentation for DINO hidden-state extraction,
+  layer-to-head mapping, and both classic/Nano FAPM modulation equations; link it
+  from architecture docs for discoverability (`MODELS.md`, `ARCHITECTURE.md`).
+- Add `unet_topo_fusion` head with learned DINO layer fusion, LoRA-style
+  projection adapters, boundary-gated refinement, and an auxiliary skeleton
+  stream, plus topology-aware loss terms (soft-clDice + skeleton BCE), new
+  model/loss config knobs, and MLflow traces for gate and layer-mix statistics
+  (`models/unet_topo_fusion.py`, `models/__init__.py`, `utils/losses.py`,
+  `pipeline/train_utils.py`, `pipeline/phases.py`, `config_*.yml`, `README.md`,
+  `ARCHITECTURE.md`, `MODELS.md`).
+- Fix `unet_topo_fusion` layer mixing to use joint multi-layer scoring (instead
+  of per-layer independent scoring), wire config ablation toggles
+  (`enable_layer_fusion`, `enable_lora`, `enable_boundary_gate`) into runtime
+  behavior, and add one-time patch-grid crop warnings plus aux-resolution
+  assertions to fail fast on feature/label misalignment
+  (`models/unet_topo_fusion.py`, `models/__init__.py`, `pipeline/train_utils.py`).
+- Improve `unet_topo_fusion` robustness by masking padded layer scores before
+  softmax, deriving aux-resolution checks from fused-feature grid semantics,
+  emitting gate stats as scalar floats for tracking backends, and exposing
+  `model.layer_fusion_hidden` to decouple mixer capacity from projection width
+  (`models/unet_topo_fusion.py`, `models/__init__.py`, `config_*.yml`,
+  `README.md`).
+- Tune training defaults across `config_hpc.yml`, `config_local.yml`, and
+  `config.example.yml` for boundary/topology stability by reducing Cutout
+  probability (`0.10`), disabling GridMask, lowering label smoothing
+  (`0.08`), and enabling gradual topology supervision
+  (`skeleton_weight=0.05`, `topology_weight=0.15`).
+- Add module-specific XAI diagnostics for compatible heads with per-epoch
+  metrics and optional sampled map panels: layer-fusion alpha argmax/entropy +
+  region bars, gate-vs-boundary ROC, boundary error reduction (pre/post gate),
+  LoRA update ratio maps/histograms, and topology skeleton/connectivity
+  summaries with trend plots under `plots/xai/module`
+  (`pipeline/module_xai.py`, `pipeline/phases.py`, `models/unet_topo_fusion.py`,
+  `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Reorganize training config for readability: move plot options under
+  `train.plots`, split losses into `train.loss.main/focal/boundary`, move
+  topology controls to `train.topology`, and add inline comments in all shipped
+  configs; parser now supports both new nested keys and legacy flat keys.
+  Also switch focal control to a weight-based setting (`focal.weight`) while
+  preserving legacy `use_focal` behavior for backward compatibility
+  (`pipeline/train_config.py`, `pipeline/phases.py`, `utils/losses.py`,
+  `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
+- Fix train-phase crash in module-XAI collection when a sampled item has no
+  plot payload (channel-tracking-only path) by making module sample/config
+  handling null-safe (`pipeline/module_xai.py`).
 
 ## [0.1.6] - 2026-02-17
 ### Changed
