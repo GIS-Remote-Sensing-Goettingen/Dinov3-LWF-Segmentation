@@ -22,6 +22,9 @@ MLflow-compatible artifacts for research workflows.
 - **Training config schema:** `train.plots` now groups all epoch/XAI plotting options,
   `train.loss` groups main/focal/boundary loss terms, and `train.topology` groups
   skeleton/clDice settings so class indices and weights are not mixed in one block.
+- **Model config schema:** topology-fusion controls are grouped under
+  `model.fusion`, `model.lora`, and `model.boundary_gate` (with legacy flat-key
+  compatibility for existing configs).
 - **Dataset validation policy:** `dataset.validation` defines finite checks and allowed label
   values for both dataloading and cache verification.
 - **Tile intake policy:** `dataset.tile_filter` can keep only tiles containing foreground labels

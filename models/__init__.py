@@ -22,6 +22,21 @@ from .UnetLite import DinoUNetLiteHead
 HeadBuilder = Callable[[int, int], SegmentationHead]
 
 
+def _subcfg(cfg: dict[str, Any], key: str) -> dict[str, Any]:
+    """
+    Return a nested model-config block or an empty mapping.
+
+    Args:
+        cfg (dict[str, Any]): Parent model config mapping.
+        key (str): Nested key to read.
+
+    Returns:
+        dict[str, Any]: Nested mapping when available, else ``{}``.
+    """
+    value = cfg.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
 def available_heads() -> Dict[str, HeadBuilder]:
     """
     Return the set of supported segmentation head builders.
@@ -82,35 +97,60 @@ def build_head(
         raise ValueError(f"Unknown head '{name}'. Choose from: {sorted(registry)}")
     if name == "unet_topo_fusion":
         cfg = model_cfg or {}
-        enable_layer_fusion = bool(cfg.get("enable_layer_fusion", True))
-        enable_lora = bool(cfg.get("enable_lora", True))
-        enable_boundary_gate = bool(cfg.get("enable_boundary_gate", True))
-        max_layers_for_fusion = int(cfg.get("max_layers_for_fusion", 6))
+        fusion_cfg = _subcfg(cfg, "fusion")
+        lora_cfg = _subcfg(cfg, "lora")
+        boundary_cfg = _subcfg(cfg, "boundary_gate")
+
+        # Prefer nested keys; keep legacy flat keys for backward compatibility.
+        enable_layer_fusion = bool(
+            fusion_cfg.get("enable", cfg.get("enable_layer_fusion", True))
+        )
+        max_layers_for_fusion = int(
+            fusion_cfg.get("max_layers", cfg.get("max_layers_for_fusion", 6))
+        )
         if not enable_layer_fusion:
             max_layers_for_fusion = 1
-        lora_alpha = float(cfg.get("lora_alpha", 16.0))
+
+        enable_lora = bool(lora_cfg.get("enable", cfg.get("enable_lora", True)))
+        lora_alpha = float(lora_cfg.get("alpha", cfg.get("lora_alpha", 16.0)))
         if not enable_lora:
             lora_alpha = 0.0
-        boundary_gate_scale = float(cfg.get("boundary_gate_scale", 0.1))
+
+        enable_boundary_gate = bool(
+            boundary_cfg.get("enable", cfg.get("enable_boundary_gate", True))
+        )
+        boundary_gate_scale = float(
+            boundary_cfg.get("scale", cfg.get("boundary_gate_scale", 0.1))
+        )
         if not enable_boundary_gate:
             boundary_gate_scale = 0.0
+        layer_fusion_hidden_raw = fusion_cfg.get(
+            "layer_hidden", cfg.get("layer_fusion_hidden")
+        )
+
         return DinoUNetTopoFusionHead(
             num_classes=num_classes,
             dino_channels=dino_channels,
-            fusion_hidden=int(cfg.get("fusion_hidden", 64)),
+            fusion_hidden=int(fusion_cfg.get("hidden", cfg.get("fusion_hidden", 64))),
             layer_fusion_hidden=(
                 None
-                if cfg.get("layer_fusion_hidden") is None
-                else int(cfg.get("layer_fusion_hidden"))
+                if layer_fusion_hidden_raw is None
+                else int(layer_fusion_hidden_raw)
             ),
-            lora_rank=int(cfg.get("lora_rank", 8)),
+            lora_rank=int(lora_cfg.get("rank", cfg.get("lora_rank", 8))),
             lora_alpha=lora_alpha,
-            lora_dropout=float(cfg.get("lora_dropout", 0.0)),
-            lora_freeze_base=bool(cfg.get("lora_freeze_base", True)),
+            lora_dropout=float(lora_cfg.get("dropout", cfg.get("lora_dropout", 0.0))),
+            lora_freeze_base=bool(
+                lora_cfg.get("freeze_base", cfg.get("lora_freeze_base", True))
+            ),
             boundary_gate_scale=boundary_gate_scale,
-            boundary_gate_clamp=bool(cfg.get("boundary_gate_clamp", True)),
+            boundary_gate_clamp=bool(
+                boundary_cfg.get("clamp", cfg.get("boundary_gate_clamp", True))
+            ),
             max_layers_for_fusion=max_layers_for_fusion,
-            layer_mix_maps_enable=bool(cfg.get("layer_mix_maps_enable", False)),
+            layer_mix_maps_enable=bool(
+                fusion_cfg.get("save_maps", cfg.get("layer_mix_maps_enable", False))
+            ),
         )
     builder = cast(Any, registry[name])
     return builder(num_classes=num_classes, dino_channels=dino_channels)

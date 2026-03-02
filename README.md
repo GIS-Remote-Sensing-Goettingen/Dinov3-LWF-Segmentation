@@ -98,15 +98,22 @@ model:
   head: unet_v2          # unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
   num_classes: 2
   dino_channels: 1024
-  fusion_hidden: 64
-  layer_fusion_hidden: 128
-  max_layers_for_fusion: 6
-  lora_rank: 8
-  lora_alpha: 16.0
-  lora_dropout: 0.0
-  lora_freeze_base: true
-  boundary_gate_scale: 0.1
-  boundary_gate_clamp: true
+  fusion:
+    enable: true
+    hidden: 64
+    layer_hidden: 128
+    max_layers: 6
+    save_maps: false
+  lora:
+    enable: true
+    rank: 8
+    alpha: 16.0
+    dropout: 0.0
+    freeze_base: true
+  boundary_gate:
+    enable: true
+    scale: 0.1
+    clamp: true
 
 prepare:
   enable: true
@@ -227,6 +234,7 @@ inference:
 ```
 
 Set `enable: true` for any section you want to run. The `paths` block provides base directories shared across phases, while individual sections can override them (e.g., use a different `processed_dir` for training vs. verification).
+Model options for topology-fusion heads are grouped under `model.fusion`, `model.lora`, and `model.boundary_gate`; legacy flat keys are still supported for backward compatibility.
 
 Inference input selection:
 - Set exactly one source: `inference.input_tif` or `inference.input_dir`.

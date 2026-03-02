@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 ### Changed
+- Add explanatory inline comments across `config_hpc.yml`, `config_local.yml`,
+  and `config.example.yml` so training/loss/topology/XAI options are easier to
+  understand without reading code.
+- Reorganize model config for readability by grouping topology-fusion controls
+  into `model.fusion`, `model.lora`, and `model.boundary_gate`, and update
+  head construction to accept both grouped keys and legacy flat keys
+  (`models/__init__.py`, `config_*.yml`, `README.md`, `ARCHITECTURE.md`).
 - Add `MODELS.md` with formula-level documentation for DINO hidden-state extraction,
   layer-to-head mapping, and both classic/Nano FAPM modulation equations; link it
   from architecture docs for discoverability (`MODELS.md`, `ARCHITECTURE.md`).

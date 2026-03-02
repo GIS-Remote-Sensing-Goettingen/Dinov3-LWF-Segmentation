@@ -1,4 +1,5 @@
 resources:
+  # Global reproducibility and CPU/GEMM behavior.
   seed: 1337
   omp_threads: 4
   matmul_precision: high
@@ -6,28 +7,35 @@ resources:
   dist_backend: nccl
 
 logging:
+  # Runtime logging output (per_run=true creates one log per run id).
   level: info
   timestamps: true
   file: logs/run.log
   per_run: true
 
 paths:
+  # Input imagery, GT labels, and cached tiles/features root.
   raw_images_dir: /path/to/imagery
   label_path: /path/to/labels.tif
   processed_dir: /path/to/cache
 
 dataset:
+  # If true, read/write precomputed DINO features instead of extracting on the fly.
   cache_features: false
+  # 0 means "all tiles"; >0 limits prepare/train tile count.
   max_tiles: 0
   tile_filter:
+    # Keep only tiles containing at least one foreground label.
     enabled: true
     mode: foreground_any
     foreground_labels: [1]
   augmentations:
+    # Geometric augmentations are feature-safe; image-only augs require raw image path.
     enable: true
     hflip: true
     vflip: true
     rotate90: true
+    # Keep false unless you intentionally allow image/feature augmentation mismatch.
     allow_feature_mismatch: false
     cutout:
       enable: true
@@ -52,9 +60,11 @@ dataset:
       saturation: 0.12
       hue: 0.04
   splits:
+    # Optional explicit split files; leave empty to use val_fraction sampling.
     train_list:
     val_list:
   validation:
+    # Dataset-level semantic checks for labels/features before training.
     enabled: true
     allowed_labels: [0, 1]
     ignore_index: 255
@@ -63,26 +73,40 @@ dataset:
     require_finite_images: true
 
 model:
+  # Frozen DINOv3-SAT backbone; selected transformer layers are fused by the head.
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
   head: unet_v2
   num_classes: 2
   dino_channels: 1024
-  enable_layer_fusion: true
-  enable_lora: true
-  enable_boundary_gate: true
-  fusion_hidden: 64
-  layer_fusion_hidden: 128
-  max_layers_for_fusion: 6
-  lora_rank: 8
-  lora_alpha: 16.0
-  lora_dropout: 0.0
-  lora_freeze_base: true
-  boundary_gate_scale: 0.1
-  boundary_gate_clamp: true
-  layer_mix_maps_enable: false
+  # Learned multi-layer fusion over selected DINO hidden states.
+  fusion:
+    enable: true
+    # Decoder width after per-layer projection.
+    hidden: 64
+    # Layer mixer MLP width (kept separate from projection width on purpose).
+    layer_hidden: 128
+    # Safety cap: mixer expects up to this many DINO layers (pads if fewer are provided).
+    max_layers: 6
+    # Save full spatial alpha maps only when needed (large artifacts).
+    save_maps: false
+  # LoRA-style low-rank adapters for feature projection.
+  lora:
+    enable: true
+    rank: 8
+    alpha: 16.0
+    dropout: 0.0
+    freeze_base: true
+  # Boundary-feature gating branch.
+  boundary_gate:
+    enable: true
+    # Gate multiplier = 1 + scale * sigmoid(gate).
+    scale: 0.1
+    # Clamp modulation to [1, 1 + scale] for stability.
+    clamp: true
 
 prepare:
+  # Offline tile/feature preparation phase.
   enable: true
   tile_size: 512
   device: cuda
@@ -90,10 +114,12 @@ prepare:
   workers: 8
 
 verify:
+  # Optional cache integrity/semantic verification phase.
   enable: true
   workers: 8
 
 train:
+  # Supervised segmentation training phase.
   enable: true
   device: cuda
   processed_dir: /path/to/cache
@@ -110,7 +136,7 @@ train:
   grad_accum_steps: 1
   compile: false
   ema_decay: 0.0
-  # Plot settings are grouped under one branch.
+  # Plotting and explainability outputs generated during validation epochs.
   plots:
     epoch:
       enable: true
@@ -120,19 +146,23 @@ train:
       seed_offset: 1000
       metric_class_index: 1
     xai:
+      # Global XAI panel controls.
       enable: true
       class_index: 1
       topk_channels: 5
       cam_layer_mode: last_requested_layer
       render_attn_rollout: true
       pca:
+        # PCA visualization of selected DINO feature layer.
         enable: true
         layer_mode: same_as_cam
       branch_importance:
+        # Gradient-based importance split: image branch vs DINO branch.
         enable: true
         class_index: 1
         max_samples: 4
       channel_tracking:
+        # Epoch-level influential-channel tracking and trend artifacts.
         enable: true
         max_samples: 64
         top_k_per_sample: 5
@@ -140,6 +170,7 @@ train:
         min_presence: 0.05
         save_json: true
       module:
+        # Module-specific XAI for compatible heads (e.g., unet_topo_fusion).
         enable: true
         every_n_epochs: 5
         max_samples: 8
@@ -151,30 +182,41 @@ train:
         enable_lora_ratio: true
         enable_topology_panels: true
   loss:
-    # Main segmentation terms.
+    # Main segmentation loss terms (applied to main + aux logits where configured).
     main:
+      # Cross-entropy term. Set 0.0 to disable CE contribution.
       ce_weight: 1.0
+      # Dice term for overlap optimization.
       dice_weight: 1.0
+      # Weight of aux head loss (deep supervision).
       aux_weight: 0.4
       label_smoothing: 0.08
     # Focal is controlled by weight (0.0 = disabled).
     focal:
       weight: 0.0
       gamma: 2.0
+      # Class-balancing alpha (null/empty uses implementation default behavior).
       alpha:
-    # Boundary supervision term.
+    # Optional boundary BCE supervision.
     boundary:
       weight: 0.1
       kernel_size: 3
-  # Topology and skeleton terms are grouped separately for clarity.
+  # Topology supervision terms (computed on aux/low-res by default for stability/cost).
   topology:
+    # BCE on auxiliary skeleton logits.
     skeleton_weight: 0.05
+    # Soft-clDice topology term weight.
     weight: 0.15
+    # Foreground class index for binary extraction in multiclass settings.
     class_index: 1
+    # Iterations for differentiable skeletonization operator.
     iters: 10
+    # Use auxiliary logits (H/8) for topology by default.
     on_aux: true
+    # Additional downsampling factor for topology targets/preds (1=no extra downsample).
     downsample: 1
   stability:
+    # Numerical-stability and fail-fast guards.
     amp:
       enabled: auto
       dtype: bf16
@@ -189,6 +231,7 @@ train:
     check_params_every_steps: 50
 
 inference:
+  # Inference/post-training prediction settings.
   enable: false
   device: cuda
   input_tif: /path/to/scene.tif
@@ -201,9 +244,11 @@ inference:
   tile_size: 512
   overlap: 0.25
   tta:
+    # Optional test-time augmentation.
     horizontal_flip: true
     vertical_flip: false
   explain:
+    # Inference-time explainability dashboard export.
     enable: true
     output_dir: plots
     class_index: 1
