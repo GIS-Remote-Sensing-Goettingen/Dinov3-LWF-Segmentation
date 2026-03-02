@@ -15,7 +15,10 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from models import available_heads, build_head  # noqa: E402
-from pipeline.train_config import parse_train_loss_config, parse_train_plot_config  # noqa: E402
+from pipeline.train_config import (  # noqa: E402
+    parse_train_loss_config,
+    parse_train_plot_config,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATHS = (
@@ -178,9 +181,9 @@ def test_core_model_values_are_viable() -> None:
         layers = model_cfg.get("layers", [])
         assert isinstance(layers, list), f"{path.name} model.layers must be a list."
         assert layers, f"{path.name} model.layers cannot be empty."
-        assert all(isinstance(x, int) for x in layers), (
-            f"{path.name} model.layers must contain only integers."
-        )
+        assert all(
+            isinstance(x, int) for x in layers
+        ), f"{path.name} model.layers must contain only integers."
         num_classes = int(model_cfg.get("num_classes", 0))
         dino_channels = int(model_cfg.get("dino_channels", 0))
         assert num_classes >= 2, f"{path.name} model.num_classes must be >= 2."

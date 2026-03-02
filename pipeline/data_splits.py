@@ -5,6 +5,8 @@ from __future__ import annotations
 import glob
 import os
 import random
+import re
+from collections import defaultdict
 from typing import Optional, Sized, cast
 
 from torch.utils.data import DataLoader
@@ -13,6 +15,16 @@ from torch.utils.data.distributed import DistributedSampler
 from utils import PrecomputedDataset, VerbosityLogger
 
 from .context import DistContext
+
+_TILE_SUFFIX_RE = re.compile(r"_y-?\d+_x-?\d+$")
+_AUGMENT_SUFFIXES = (
+    "_orig",
+    "_flip_lr",
+    "_flip_ud",
+    "_rot90",
+    "_rot180",
+    "_rot270",
+)
 
 
 def _file_stem(path: str) -> str:
@@ -30,6 +42,86 @@ def _file_stem(path: str) -> str:
     """
 
     return os.path.splitext(os.path.basename(path))[0]
+
+
+def _normalize_name_entry(entry: str) -> str:
+    """Normalize a split-list entry to the canonical file stem.
+
+    Args:
+        entry (str): Raw list entry (stem, filename, or path).
+
+    Returns:
+        str: Canonical stem value used for matching cached tiles.
+
+    Examples:
+        >>> _normalize_name_entry("tile_a.pt")
+        'tile_a'
+    """
+
+    value = entry.strip()
+    if not value:
+        return value
+    return _file_stem(value)
+
+
+def _source_group(path: str) -> str:
+    """Return a source-group key for a cached tile path.
+
+    The key removes tile-coordinate suffixes and common augmentation suffixes
+    so train/validation partitions can be checked for source-scene leakage.
+
+    Args:
+        path (str): Cached tile path.
+
+    Returns:
+        str: Source-scene group key.
+
+    Examples:
+        >>> _source_group("/tmp/scene_a_flip_lr_y0_x512.pt")
+        'scene_a'
+    """
+
+    stem = _file_stem(path)
+    stem = _TILE_SUFFIX_RE.sub("", stem)
+    for suffix in _AUGMENT_SUFFIXES:
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    return stem or _file_stem(path)
+
+
+def _assert_split_disjoint(train_files: list[str], val_files: list[str]) -> None:
+    """Fail fast when train/validation files or source groups overlap.
+
+    Args:
+        train_files (list[str]): Train split file paths.
+        val_files (list[str]): Validation split file paths.
+
+    Raises:
+        ValueError: If exact tile overlap or source-group overlap is detected.
+
+    Examples:
+        >>> _assert_split_disjoint(['/tmp/a_y0_x0.pt'], ['/tmp/b_y0_x0.pt'])
+    """
+
+    train_set = set(train_files)
+    val_set = set(val_files)
+    overlap_files = sorted(train_set & val_set)
+    if overlap_files:
+        sample = ", ".join(_file_stem(path) for path in overlap_files[:3])
+        raise ValueError(
+            "Train/validation split overlap detected for cached tiles: "
+            f"{sample}. Update split lists to be disjoint."
+        )
+    train_groups = {_source_group(path) for path in train_files}
+    val_groups = {_source_group(path) for path in val_files}
+    overlap_groups = sorted(train_groups & val_groups)
+    if overlap_groups:
+        sample = ", ".join(overlap_groups[:3])
+        raise ValueError(
+            "Train/validation source groups overlap (spatial leakage risk): "
+            f"{sample}. Use disjoint scenes for train and validation."
+        )
 
 
 def _read_name_list(path: str) -> list[str]:
@@ -110,23 +202,44 @@ def resolve_dataset_splits(
             )
             all_files = random.sample(all_files, k=max_tiles)
     if split_cfg.get("train_list"):
-        train_names = set(_read_name_list(split_cfg["train_list"]))
+        train_names = {
+            _normalize_name_entry(name)
+            for name in _read_name_list(split_cfg["train_list"])
+        }
         train_files = [f for f in all_files if _file_stem(f) in train_names]
         if split_cfg.get("val_list"):
-            val_names = set(_read_name_list(split_cfg["val_list"]))
+            val_names = {
+                _normalize_name_entry(name)
+                for name in _read_name_list(split_cfg["val_list"])
+            }
             val_files = [f for f in all_files if _file_stem(f) in val_names]
         else:
             val_files = [f for f in all_files if f not in train_files]
         if not train_files or not val_files:
             raise ValueError("Split lists produced empty train/val subsets.")
+        _assert_split_disjoint(train_files, val_files)
         return train_files, val_files
-    files = all_files.copy()
-    random.shuffle(files)
-    split_idx = max(1, int(len(files) * (1 - val_fraction)))
-    train_files = files[:split_idx]
-    val_files = files[split_idx:] or files[-1:]
+    group_to_files: dict[str, list[str]] = defaultdict(list)
+    for file_path in all_files:
+        group_to_files[_source_group(file_path)].append(file_path)
+    groups = sorted(group_to_files.keys())
+    if len(groups) < 2:
+        raise ValueError(
+            "At least two disjoint source groups are required to build leakage-safe "
+            "train/validation splits."
+        )
+    random.shuffle(groups)
+    split_idx = max(1, int(len(groups) * (1 - val_fraction)))
+    split_idx = min(split_idx, len(groups) - 1)
+    train_groups = groups[:split_idx]
+    val_groups = groups[split_idx:]
+    train_files = [path for group in train_groups for path in group_to_files[group]]
+    val_files = [path for group in val_groups for path in group_to_files[group]]
+    _assert_split_disjoint(train_files, val_files)
     logger.info(
-        f"Using random split with {len(train_files)} train and {len(val_files)} validation tiles."
+        "Using leakage-safe random split with "
+        f"{len(train_files)} train tiles ({len(train_groups)} source groups) and "
+        f"{len(val_files)} validation tiles ({len(val_groups)} source groups)."
     )
     return train_files, val_files
 

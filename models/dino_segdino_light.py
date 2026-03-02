@@ -19,6 +19,28 @@ from .base import SegmentationHead
 ActivationName = Literal["gelu", "relu"]
 
 
+def _group_count(channels: int, max_groups: int = 16) -> int:
+    """Return a valid GroupNorm group count dividing the channel size.
+
+    Args:
+        channels (int): Channel count.
+        max_groups (int): Upper bound for number of groups.
+
+    Returns:
+        int: Largest valid group count not exceeding ``max_groups``.
+
+    Examples:
+        >>> _group_count(32, max_groups=16)
+        16
+    """
+
+    upper = min(max(1, int(max_groups)), int(channels))
+    for groups in range(upper, 0, -1):
+        if channels % groups == 0:
+            return groups
+    return 1
+
+
 def _build_activation(name: ActivationName) -> nn.Module:
     """Create activation module.
 
@@ -77,25 +99,43 @@ class DinoSegDinoLightHead(SegmentationHead):
         super().__init__()
         self.expected_layers = max(1, int(num_layers))
         self.strict_layers = bool(strict_layers)
+        proj_dim_i = int(proj_dim)
+        norm_groups = _group_count(proj_dim_i, max_groups=16)
         self.proj = nn.ModuleList(
             [
-                nn.Conv2d(int(dino_channels), int(proj_dim), kernel_size=1, bias=False)
+                nn.Conv2d(int(dino_channels), proj_dim_i, kernel_size=1, bias=False)
                 for _ in range(self.expected_layers)
             ]
         )
+        self.proj_norm = nn.ModuleList(
+            [nn.GroupNorm(norm_groups, proj_dim_i) for _ in range(self.expected_layers)]
+        )
         fuse_layers: list[nn.Module] = [
             nn.Conv2d(
-                self.expected_layers * int(proj_dim),
-                int(proj_dim),
+                self.expected_layers * proj_dim_i,
+                proj_dim_i,
                 kernel_size=1,
                 bias=False,
             ),
+            nn.GroupNorm(norm_groups, proj_dim_i),
             _build_activation(activation),
         ]
         if float(dropout) > 0:
             fuse_layers.append(nn.Dropout2d(p=float(dropout)))
         self.fuse = nn.Sequential(*fuse_layers)
-        self.out = nn.Conv2d(int(proj_dim), int(num_classes), kernel_size=1, bias=True)
+        self.out = nn.Conv2d(proj_dim_i, int(num_classes), kernel_size=1, bias=True)
+        self._init_output_layer()
+
+    def _init_output_layer(self) -> None:
+        """Initialize output logits conservatively to avoid early saturation.
+
+        Returns:
+            None: Updates output-layer parameters in-place.
+        """
+
+        nn.init.zeros_(self.out.weight)
+        if self.out.bias is not None:
+            nn.init.zeros_(self.out.bias)
 
     def _select_features(self, features: list[torch.Tensor]) -> list[torch.Tensor]:
         """Select and validate feature maps.
@@ -139,7 +179,7 @@ class DinoSegDinoLightHead(SegmentationHead):
         target_h, target_w = selected[0].shape[-2:]
         projected: list[torch.Tensor] = []
         for idx, feat in enumerate(selected):
-            proj = self.proj[idx](feat)
+            proj = self.proj_norm[idx](self.proj[idx](feat))
             if proj.shape[-2:] != (target_h, target_w):
                 proj = F.interpolate(
                     proj,

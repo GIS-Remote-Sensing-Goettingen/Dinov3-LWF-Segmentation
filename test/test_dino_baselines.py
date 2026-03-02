@@ -107,6 +107,31 @@ def test_segdino_light_strict_layer_mismatch_raises() -> None:
         _ = model(image, bad_features)
 
 
+def test_segdino_light_initial_logits_are_conservative() -> None:
+    """Validate conservative initial logits for SegDINO-light.
+
+    The output classifier is initialized near zero to avoid early saturation.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    model = build_head(
+        "dino_segdino_light",
+        num_classes=2,
+        dino_channels=64,
+        model_cfg={
+            "layers": [5, 11, 17, 23],
+            "segdino_light": {"strict_layers": True},
+        },
+    )
+    image = torch.randn(1, 3, 64, 64)
+    features = [torch.randn(1, 64, 4, 4) for _ in range(4)]
+    logits = model(image, features)
+    assert float(logits.abs().max().item()) < 1e-6
+
+
 def test_existing_head_build_path_still_works() -> None:
     """Regression check for existing head build path.
 

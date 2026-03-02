@@ -88,7 +88,9 @@ from .train_utils import (
     extract_multiscale_features_batch,
     forward_with_optional_extras,
     move_features_to_device,
+    should_warn_high_logit,
     split_params_for_muon,
+    use_adamw_only_for_head,
 )
 from .utils import get_hook_option, get_model_config, resolve_path, unwrap_model
 
@@ -344,22 +346,34 @@ class TrainPhase(Phase):
             )
             for key, value in model_size_payload.items():
                 context.mlflow_logger.set_tag(key, str(value))
-        muon_params, adamw_params = split_params_for_muon(base_model)
-        optimizer = Muon(
-            muon_params,
-            lr=section.get("muon_lr", 0.02),
-            momentum=section.get("momentum", 0.95),
-            adamw_params=adamw_params,
-            adamw_lr=section.get("adamw_lr", 1e-3),
-            adamw_wd=section.get("adamw_wd", 0.01),
-            update_max_norm=section.get("optimizer_update_max_norm"),
-        )
+        head_name = str(model_cfg.get("head", ""))
+        if use_adamw_only_for_head(head_name):
+            optimizer = torch.optim.AdamW(
+                [param for param in base_model.parameters() if param.requires_grad],
+                lr=section.get("adamw_lr", 1e-3),
+                weight_decay=section.get("adamw_wd", 0.01),
+            )
+            scheduler_max_lr = section.get("adamw_lr", 1e-3)
+            context.logger.info("Using AdamW-only optimizer for head '%s'." % head_name)
+        else:
+            muon_params, adamw_params = split_params_for_muon(base_model)
+            optimizer = Muon(
+                muon_params,
+                lr=section.get("muon_lr", 0.02),
+                momentum=section.get("momentum", 0.95),
+                adamw_params=adamw_params,
+                adamw_lr=section.get("adamw_lr", 1e-3),
+                adamw_wd=section.get("adamw_wd", 0.01),
+                update_max_norm=section.get("optimizer_update_max_norm"),
+            )
+            scheduler_max_lr = section.get("muon_lr", 0.02)
+            context.logger.info("Using Muon+AdamW optimizer for head '%s'." % head_name)
         steps_per_epoch = math.ceil(
             len(train_loader) / max(1, section.get("grad_accum_steps", 1))
         )
         scheduler = OneCycleLR(
             optimizer,
-            max_lr=section.get("muon_lr", 0.02),
+            max_lr=scheduler_max_lr,
             epochs=section.get("epochs", 30),
             steps_per_epoch=steps_per_epoch,
         )
@@ -673,14 +687,14 @@ class TrainPhase(Phase):
                             epoch_health["max_abs_logit"],
                             batch_max_abs_logit,
                         )
-                        if (
-                            epoch_health["max_abs_logit"] > stability.max_abs_logit_warn
-                            and batch_idx % 10 == 0
+                        if batch_idx % 10 == 0 and should_warn_high_logit(
+                            batch_max_abs_logit, stability.max_abs_logit_warn
                         ):
                             context.logger.error(
                                 f"High logit magnitude detected at epoch {epoch + 1} "
                                 f"batch {batch_idx}: "
-                                f"max_abs_logit={epoch_health['max_abs_logit']:.2f}"
+                                f"batch_max_abs_logit={batch_max_abs_logit:.2f}, "
+                                f"epoch_max_abs_logit={epoch_health['max_abs_logit']:.2f}"
                             )
                         if not torch.isfinite(loss):
                             action = handle_nonfinite(

@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 ### Changed
+- Harden training stability and split integrity: `dino_dense_probe` and
+  `dino_segdino_light` now use an AdamW-only optimizer path by default in
+  training, high-logit warnings report batch-triggered events (with both batch
+  and epoch maxima), `dino_segdino_light` adds internal GroupNorm + conservative
+  output initialization to reduce early saturation, and dataset splitting now
+  hard-fails on train/val overlap while enforcing source-group disjoint splits
+  to prevent leakage (`pipeline/phases.py`, `pipeline/train_utils.py`,
+  `models/dino_segdino_light.py`, `pipeline/data_splits.py`,
+  `test/test_data_splits_leakage.py`, `test/test_train_utils_safety.py`,
+  `test/test_dino_baselines.py`).
 - Add config-integrity tests that verify shipped YAML profiles parse correctly,
   stay key-synchronized (`config.example.yml`, `config_hpc.yml`,
   `config_local.yml`), and remain viable for model/train parser wiring

@@ -29,6 +29,12 @@ MLflow-compatible artifacts for research workflows.
   values for both dataloading and cache verification.
 - **Tile intake policy:** `dataset.tile_filter` can keep only tiles containing foreground labels
   during prepare, reducing background-only training samples.
+- **Leakage-safe splitting:** train/validation partitioning now enforces both
+  tile-level and source-group disjointness (derived from cached tile stems),
+  including hard-fail checks for explicit split-list overlap.
+- **Baseline optimizer policy:** lightweight DINO baselines
+  (`dino_dense_probe`, `dino_segdino_light`) use an AdamW-only optimization
+  path by default, while heavier decoder heads keep the Muon+AdamW split path.
 
 ## Tracking & Artifacts
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.
