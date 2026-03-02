@@ -88,6 +88,7 @@ from .train_utils import (
     extract_multiscale_features_batch,
     forward_with_optional_extras,
     move_features_to_device,
+    resolve_lr_metrics,
     should_warn_high_logit,
     split_params_for_muon,
     use_adamw_only_for_head,
@@ -1531,6 +1532,10 @@ class TrainPhase(Phase):
                         flag_tensor = torch.tensor(1 if stop_flag else 0, device=device)
                         dist.broadcast(flag_tensor, src=0)
                         stop_flag = bool(flag_tensor.item())
+                    lr_value, lr_muon_value, lr_adamw_value = resolve_lr_metrics(
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                    )
                     epoch_metrics = {
                         "train_loss": avg_train_loss,
                         "val_loss": val_loss,
@@ -1540,9 +1545,9 @@ class TrainPhase(Phase):
                         "val_mdice": float(val_metrics["mdice"]),
                         "val_iou": float(val_metrics["miou"]),
                         "val_f1": float(val_metrics["mdice"]),
-                        "lr": scheduler.get_last_lr()[0],
-                        "lr_muon": scheduler.get_last_lr()[0],
-                        "lr_adamw": float(optimizer.param_groups[0]["adamw_lr"]),
+                        "lr": lr_value,
+                        "lr_muon": lr_muon_value,
+                        "lr_adamw": lr_adamw_value,
                         "nonfinite_batches": float(epoch_health["nonfinite_batches"]),
                         "skipped_optimizer_steps": float(
                             epoch_health["skipped_optimizer_steps"]

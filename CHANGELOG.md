@@ -15,6 +15,11 @@
   `models/dino_segdino_light.py`, `pipeline/data_splits.py`,
   `test/test_data_splits_leakage.py`, `test/test_train_utils_safety.py`,
   `test/test_dino_baselines.py`).
+- Fix training-phase crash for AdamW-only baseline heads by making LR metric
+  logging optimizer-type aware (safe `lr/lr_muon/lr_adamw` extraction for both
+  Muon and plain AdamW paths) and add regression coverage
+  (`pipeline/train_utils.py`, `pipeline/phases.py`,
+  `test/test_train_utils_safety.py`).
 - Add config-integrity tests that verify shipped YAML profiles parse correctly,
   stay key-synchronized (`config.example.yml`, `config_hpc.yml`,
   `config_local.yml`), and remain viable for model/train parser wiring

@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 
 from utils import SegmentationLoss, SegmentationMetrics, VerbosityLogger
 from utils.losses import LOSS_COMPONENT_KEYS, compute_boundary_targets
+from utils.optim import Muon
 
 from .context import StabilityConfig
 
@@ -385,6 +386,37 @@ def should_warn_high_logit(batch_max_abs_logit: float, threshold: float) -> bool
     return math.isfinite(batch_max_abs_logit) and (
         batch_max_abs_logit > float(threshold)
     )
+
+
+def resolve_lr_metrics(
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
+) -> tuple[float, float, float]:
+    """Resolve generic and component learning-rate metrics safely.
+
+    Args:
+        optimizer (torch.optim.Optimizer): Active optimizer instance.
+        scheduler (torch.optim.lr_scheduler._LRScheduler): Active scheduler.
+
+    Returns:
+        tuple[float, float, float]:
+        ``(lr, lr_muon, lr_adamw)`` metrics for logging.
+
+    Examples:
+        >>> p = torch.nn.Parameter(torch.ones(1))
+        >>> opt = torch.optim.AdamW([p], lr=1e-3)
+        >>> sch = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=1e-3, epochs=1, steps_per_epoch=1)
+        >>> lr, lr_muon, lr_adamw = resolve_lr_metrics(opt, sch)
+        >>> lr_muon == 0.0 and lr >= 0.0 and lr_adamw >= 0.0
+        True
+    """
+
+    lr = float(scheduler.get_last_lr()[0])
+    if isinstance(optimizer, Muon):
+        group0 = optimizer.param_groups[0]
+        return lr, lr, float(group0.get("adamw_lr", group0.get("lr", lr)))
+    group0 = optimizer.param_groups[0]
+    return lr, 0.0, float(group0.get("lr", lr))
 
 
 def build_autocast(
