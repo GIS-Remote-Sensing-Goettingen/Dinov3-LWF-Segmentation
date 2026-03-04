@@ -5,6 +5,51 @@
 
 ## [Unreleased]
 ### Changed
+- Harden inference checkpoint safety: inference now auto-selects the current
+  run's successful train artifact when available, aborts after same-run train
+  failures to avoid stale-weight inference, and enforces strict checkpoint/head
+  compatibility checks (missing/unexpected/shape mismatches) before loading;
+  also align HPC default inference checkpoint with the active head
+  (`pipeline/phases.py`, `config_hpc.yml`,
+  `test/test_inference_checkpoint_safety.py`).
+- Add a model-KB parameter snapshot table for all registered heads under
+  `MODELS.md` (total/trainable/frozen), computed with the standard binary
+  setup (`num_classes=2`, `dino_channels=1024`, `layers=[5,11,17,23]`) so
+  architecture capacity comparisons are documented in one place (`MODELS.md`).
+- Harden training stability and split integrity: `dino_dense_probe` and
+  `dino_segdino_light` now use an AdamW-only optimizer path by default in
+  training, high-logit warnings report batch-triggered events (with both batch
+  and epoch maxima), `dino_segdino_light` adds internal GroupNorm + conservative
+  output initialization to reduce early saturation, and dataset splitting now
+  hard-fails on train/val overlap while enforcing source-group disjoint splits
+  to prevent leakage (`pipeline/phases.py`, `pipeline/train_utils.py`,
+  `models/dino_segdino_light.py`, `pipeline/data_splits.py`,
+  `test/test_data_splits_leakage.py`, `test/test_train_utils_safety.py`,
+  `test/test_dino_baselines.py`).
+- Fix training-phase crash for AdamW-only baseline heads by making LR metric
+  logging optimizer-type aware (safe `lr/lr_muon/lr_adamw` extraction for both
+  Muon and plain AdamW paths) and add regression coverage
+  (`pipeline/train_utils.py`, `pipeline/phases.py`,
+  `test/test_train_utils_safety.py`).
+- Add config-integrity tests that verify shipped YAML profiles parse correctly,
+  stay key-synchronized (`config.example.yml`, `config_hpc.yml`,
+  `config_local.yml`), and remain viable for model/train parser wiring
+  (`test/test_config_integrity.py`).
+- Synchronize config schema surface across `config.example.yml`,
+  `config_hpc.yml`, and `config_local.yml` by adding missing distributed
+  resource keys (`resources.distributed`, `resources.dist_backend`) to the
+  HPC/local configs for maintainability and parity.
+- Add two lightweight DINOv3 baseline heads under `models/`: `dino_dense_probe`
+  (dense linear probe on last-layer tokens) and `dino_segdino_light`
+  (SegDINO-style multi-layer light fusion), wire them into the model registry,
+  and add strict configured-layer count checks for the SegDINO baseline
+  (`models/dino_dense_probe.py`, `models/dino_segdino_light.py`,
+  `models/__init__.py`, `test/test_dino_baselines.py`).
+- Add grouped model config knobs for the new baselines
+  (`model.dense_probe.*`, `model.segdino_light.*`) in shipped configs
+  (`config_*.yml`).
+- Add `scripts/export_metrics_csv.py` to convert `artifacts/metrics.jsonl` into
+  thesis-ready CSV tables.
 - Add explanatory inline comments across `config_hpc.yml`, `config_local.yml`,
   and `config.example.yml` so training/loss/topology/XAI options are easier to
   understand without reading code.

@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, cast
 
 from .base import SegmentationHead
+from .dino_dense_probe import DinoDenseProbeHead
+from .dino_segdino_light import DinoSegDinoLightHead
 from .maskformer import DinoMaskFormerHead
 from .unet import DinoUNetHead
 from .unet_lite_plus import DinoUNetLitePlusHead
@@ -45,6 +47,8 @@ def available_heads() -> Dict[str, HeadBuilder]:
         Dict[str, HeadBuilder]: Mapping of head names to builders.
 
     >>> sorted(available_heads().keys()) == [
+    ...     "dino_dense_probe",
+    ...     "dino_segdino_light",
     ...     "maskformer",
     ...     "unet",
     ...     "unet_lite",
@@ -58,6 +62,8 @@ def available_heads() -> Dict[str, HeadBuilder]:
     """
 
     return {
+        "dino_dense_probe": DinoDenseProbeHead,
+        "dino_segdino_light": DinoSegDinoLightHead,
         "unet": DinoUNetHead,
         "unet_v2": DinoUNetV2Head,
         "maskformer": DinoMaskFormerHead,
@@ -95,8 +101,29 @@ def build_head(
     registry = available_heads()
     if name not in registry:
         raise ValueError(f"Unknown head '{name}'. Choose from: {sorted(registry)}")
+    cfg = model_cfg or {}
+    if name == "dino_dense_probe":
+        dense_cfg = _subcfg(cfg, "dense_probe")
+        return DinoDenseProbeHead(
+            num_classes=num_classes,
+            dino_channels=dino_channels,
+            norm_type=str(dense_cfg.get("norm_type", "batchnorm")).strip().lower(),
+            groupnorm_groups=int(dense_cfg.get("groupnorm_groups", 32)),
+        )
+    if name == "dino_segdino_light":
+        seg_cfg = _subcfg(cfg, "segdino_light")
+        layers = cfg.get("layers", [])
+        layer_count = len(layers) if isinstance(layers, list) and layers else 1
+        return DinoSegDinoLightHead(
+            num_classes=num_classes,
+            dino_channels=dino_channels,
+            num_layers=int(layer_count),
+            proj_dim=int(seg_cfg.get("proj_dim", 128)),
+            activation=str(seg_cfg.get("activation", "gelu")).strip().lower(),
+            dropout=float(seg_cfg.get("dropout", 0.0)),
+            strict_layers=bool(seg_cfg.get("strict_layers", True)),
+        )
     if name == "unet_topo_fusion":
-        cfg = model_cfg or {}
         fusion_cfg = _subcfg(cfg, "fusion")
         lora_cfg = _subcfg(cfg, "lora")
         boundary_cfg = _subcfg(cfg, "boundary_gate")

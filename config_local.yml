@@ -3,6 +3,10 @@ resources:
   seed: 1337
   omp_threads: 4
   matmul_precision: high
+  # Enable DistributedDataParallel when launching with torchrun.
+  distributed: false
+  # Backend used for distributed process groups.
+  dist_backend: nccl
 
 logging:
   # Runtime logging output (per_run=true creates one log per run id).
@@ -74,9 +78,22 @@ model:
   # Frozen DINOv3-SAT backbone; selected transformer layers are fused by the head.
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_lite
+  head: unet_lite # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
   num_classes: 2
   dino_channels: 1024
+  # Dense linear probe baseline options.
+  dense_probe:
+    # batchnorm | syncbn | groupnorm | none
+    norm_type: batchnorm
+    groupnorm_groups: 32
+  # SegDINO-style multi-layer lightweight head options.
+  segdino_light:
+    proj_dim: 128
+    # gelu | relu
+    activation: gelu
+    dropout: 0.0
+    # If true, require feature count == len(model.layers).
+    strict_layers: true
   # Learned multi-layer fusion over selected DINO hidden states.
   fusion:
     enable: true

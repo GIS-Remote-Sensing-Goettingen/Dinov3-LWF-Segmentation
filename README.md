@@ -95,9 +95,17 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_v2          # unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
+  head: unet_v2          # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
   num_classes: 2
   dino_channels: 1024
+  dense_probe:
+    norm_type: batchnorm # batchnorm | syncbn | groupnorm | none
+    groupnorm_groups: 32
+  segdino_light:
+    proj_dim: 128
+    activation: gelu      # gelu | relu
+    dropout: 0.0
+    strict_layers: true
   fusion:
     enable: true
     hidden: 64
@@ -258,6 +266,8 @@ The `model.head` key selects one of the decoders registered under `models/`:
 
 | Head        | File             | Highlights                                                        |
 |-------------|------------------|-------------------------------------------------------------------|
+| `dino_dense_probe` | `models/dino_dense_probe.py` | Dense linear-probe baseline on last-layer DINO tokens (`norm -> 1x1 conv -> upsample`). |
+| `dino_segdino_light` | `models/dino_segdino_light.py` | SegDINO-style lightweight multi-layer fusion head (`per-layer 1x1 -> align -> concat -> fuse`). |
 | `unet`      | `models/unet.py` | Baseline DinoUNet with stacked UpBlocks and raw-image skip.       |
 | `unet_v2`   | `models/unet_v2.py` | Adds Spatial Prior Module + Fidelity-Aware projections + deep supervision. |
 | `unet_lite` | `models/UnetLite.py` | Lightweight DinoUNet variant with reduced channels for faster training/inference. |
@@ -277,6 +287,7 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 - `utils/optim.py` contains the Muon optimizer (matrix-aware momentum with orthogonalization), AdamW handling, and a configurable EarlyStopping helper that works for min/max metrics.
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
+- `scripts/export_metrics_csv.py` converts `artifacts/metrics.jsonl` into a flat CSV for thesis tables/plots.
 
 - **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, configurable CE/focal + Dice (+ optional boundary BCE/skeleton BCE/soft-clDice topology) losses, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), per-layer DINO connection importance trends, Lite+ gate importance, per-epoch branch-importance trendlines (`branch_importance_trends.png`), per-epoch DINO-layer trendlines (`dino_layer_importance_trends.png`), per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries), and module-specific diagnostics under `plots/xai/module/` (layer-fusion argmax/entropy + region bars, gate boundary ROC panels, boundary error-reduction maps, LoRA ratio maps/histograms, and topology skeleton overlays with trend plots).
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
@@ -301,6 +312,8 @@ PYTHONPATH=. python - <<'PY'
 import doctest, importlib
 for mod in [
     "models.base",
+    "models.dino_dense_probe",
+    "models.dino_segdino_light",
     "models.unet",
     "models.unet_v2",
     "models.unet_topo_fusion",

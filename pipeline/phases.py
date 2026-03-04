@@ -44,6 +44,11 @@ from .constants import (
 )
 from .context import InferenceError, PhaseOutcome, RunContext, TrainingError
 from .data_splits import create_dataloaders, dataset_size
+from .inference_checkpoint import (
+    extract_checkpoint_state_dict,
+    resolve_inference_checkpoint,
+    validate_checkpoint_compatibility,
+)
 from .inference_utils import (
     build_dashboard,
     build_tta_transforms,
@@ -88,18 +93,16 @@ from .train_utils import (
     extract_multiscale_features_batch,
     forward_with_optional_extras,
     move_features_to_device,
+    resolve_lr_metrics,
+    should_warn_high_logit,
     split_params_for_muon,
+    use_adamw_only_for_head,
 )
 from .utils import get_hook_option, get_model_config, resolve_path, unwrap_model
 
 
 class PreparePhase(Phase):
-    """Phase for tiling data and caching DINO features.
-
-    Examples:
-        >>> PreparePhase().name
-        'prepare'
-    """
+    """Phase for tiling data and caching DINO features."""
 
     name = "prepare"
     config_key = "prepare"
@@ -166,12 +169,7 @@ class PreparePhase(Phase):
 
 
 class VerifyPhase(Phase):
-    """Phase for verifying cached tile integrity.
-
-    Examples:
-        >>> VerifyPhase().name
-        'verify'
-    """
+    """Phase for verifying cached tile integrity."""
 
     name = "verify"
     config_key = "verify"
@@ -222,12 +220,7 @@ class VerifyPhase(Phase):
 
 
 class TrainPhase(Phase):
-    """Phase for training the segmentation head.
-
-    Examples:
-        >>> TrainPhase().name
-        'train'
-    """
+    """Phase for training the segmentation head."""
 
     name = "train"
     config_key = "train"
@@ -344,22 +337,34 @@ class TrainPhase(Phase):
             )
             for key, value in model_size_payload.items():
                 context.mlflow_logger.set_tag(key, str(value))
-        muon_params, adamw_params = split_params_for_muon(base_model)
-        optimizer = Muon(
-            muon_params,
-            lr=section.get("muon_lr", 0.02),
-            momentum=section.get("momentum", 0.95),
-            adamw_params=adamw_params,
-            adamw_lr=section.get("adamw_lr", 1e-3),
-            adamw_wd=section.get("adamw_wd", 0.01),
-            update_max_norm=section.get("optimizer_update_max_norm"),
-        )
+        head_name = str(model_cfg.get("head", ""))
+        if use_adamw_only_for_head(head_name):
+            optimizer = torch.optim.AdamW(
+                [param for param in base_model.parameters() if param.requires_grad],
+                lr=section.get("adamw_lr", 1e-3),
+                weight_decay=section.get("adamw_wd", 0.01),
+            )
+            scheduler_max_lr = section.get("adamw_lr", 1e-3)
+            context.logger.info("Using AdamW-only optimizer for head '%s'." % head_name)
+        else:
+            muon_params, adamw_params = split_params_for_muon(base_model)
+            optimizer = Muon(
+                muon_params,
+                lr=section.get("muon_lr", 0.02),
+                momentum=section.get("momentum", 0.95),
+                adamw_params=adamw_params,
+                adamw_lr=section.get("adamw_lr", 1e-3),
+                adamw_wd=section.get("adamw_wd", 0.01),
+                update_max_norm=section.get("optimizer_update_max_norm"),
+            )
+            scheduler_max_lr = section.get("muon_lr", 0.02)
+            context.logger.info("Using Muon+AdamW optimizer for head '%s'." % head_name)
         steps_per_epoch = math.ceil(
             len(train_loader) / max(1, section.get("grad_accum_steps", 1))
         )
         scheduler = OneCycleLR(
             optimizer,
-            max_lr=section.get("muon_lr", 0.02),
+            max_lr=scheduler_max_lr,
             epochs=section.get("epochs", 30),
             steps_per_epoch=steps_per_epoch,
         )
@@ -673,14 +678,14 @@ class TrainPhase(Phase):
                             epoch_health["max_abs_logit"],
                             batch_max_abs_logit,
                         )
-                        if (
-                            epoch_health["max_abs_logit"] > stability.max_abs_logit_warn
-                            and batch_idx % 10 == 0
+                        if batch_idx % 10 == 0 and should_warn_high_logit(
+                            batch_max_abs_logit, stability.max_abs_logit_warn
                         ):
                             context.logger.error(
                                 f"High logit magnitude detected at epoch {epoch + 1} "
                                 f"batch {batch_idx}: "
-                                f"max_abs_logit={epoch_health['max_abs_logit']:.2f}"
+                                f"batch_max_abs_logit={batch_max_abs_logit:.2f}, "
+                                f"epoch_max_abs_logit={epoch_health['max_abs_logit']:.2f}"
                             )
                         if not torch.isfinite(loss):
                             action = handle_nonfinite(
@@ -1517,6 +1522,10 @@ class TrainPhase(Phase):
                         flag_tensor = torch.tensor(1 if stop_flag else 0, device=device)
                         dist.broadcast(flag_tensor, src=0)
                         stop_flag = bool(flag_tensor.item())
+                    lr_value, lr_muon_value, lr_adamw_value = resolve_lr_metrics(
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                    )
                     epoch_metrics = {
                         "train_loss": avg_train_loss,
                         "val_loss": val_loss,
@@ -1526,9 +1535,9 @@ class TrainPhase(Phase):
                         "val_mdice": float(val_metrics["mdice"]),
                         "val_iou": float(val_metrics["miou"]),
                         "val_f1": float(val_metrics["mdice"]),
-                        "lr": scheduler.get_last_lr()[0],
-                        "lr_muon": scheduler.get_last_lr()[0],
-                        "lr_adamw": float(optimizer.param_groups[0]["adamw_lr"]),
+                        "lr": lr_value,
+                        "lr_muon": lr_muon_value,
+                        "lr_adamw": lr_adamw_value,
                         "nonfinite_batches": float(epoch_health["nonfinite_batches"]),
                         "skipped_optimizer_steps": float(
                             epoch_health["skipped_optimizer_steps"]
@@ -1601,12 +1610,7 @@ class TrainPhase(Phase):
 
 
 class InferencePhase(Phase):
-    """Phase for sliding-window inference.
-
-    Examples:
-        >>> InferencePhase().name
-        'inference'
-    """
+    """Phase for sliding-window inference."""
 
     name = "inference"
     config_key = "inference"
@@ -1665,10 +1669,20 @@ class InferencePhase(Phase):
             dino_channels=model_cfg["dino_channels"],
             model_cfg=context.config.get("model", {}),
         ).to(device)
-        checkpoint = infer_cfg["checkpoint"]
-        context.logger.info(f"Loading checkpoint {checkpoint}")
-        state_dict = torch.load(checkpoint, map_location=device)
-        head.load_state_dict(state_dict, strict=False)
+        checkpoint, checkpoint_source = resolve_inference_checkpoint(context, infer_cfg)
+        context.logger.info(
+            "Loading inference checkpoint %s (source=%s, head=%s, num_classes=%s, strict=true)"
+            % (
+                checkpoint,
+                checkpoint_source,
+                model_cfg["head"],
+                model_cfg["num_classes"],
+            )
+        )
+        loaded_checkpoint = torch.load(checkpoint, map_location=device)
+        state_dict = extract_checkpoint_state_dict(loaded_checkpoint)
+        validate_checkpoint_compatibility(head, state_dict)
+        head.load_state_dict(state_dict, strict=True)
         head.eval()
         input_dir = infer_cfg.get("input_dir")
         input_tif = infer_cfg.get("input_tif")
