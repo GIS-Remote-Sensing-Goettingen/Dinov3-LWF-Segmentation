@@ -255,7 +255,7 @@ inference:
   output_dir: test/
   output_suffix: _pred.tif
   glob: "*.tif"
-  checkpoint: weights/unet_topo_fusion_best.pth
+  checkpoint: weights/dino_dense_probe_best.pth
   tile_size: 1024
   overlap: 0.25
   tta:

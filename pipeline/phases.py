@@ -44,6 +44,11 @@ from .constants import (
 )
 from .context import InferenceError, PhaseOutcome, RunContext, TrainingError
 from .data_splits import create_dataloaders, dataset_size
+from .inference_checkpoint import (
+    extract_checkpoint_state_dict,
+    resolve_inference_checkpoint,
+    validate_checkpoint_compatibility,
+)
 from .inference_utils import (
     build_dashboard,
     build_tta_transforms,
@@ -97,12 +102,7 @@ from .utils import get_hook_option, get_model_config, resolve_path, unwrap_model
 
 
 class PreparePhase(Phase):
-    """Phase for tiling data and caching DINO features.
-
-    Examples:
-        >>> PreparePhase().name
-        'prepare'
-    """
+    """Phase for tiling data and caching DINO features."""
 
     name = "prepare"
     config_key = "prepare"
@@ -169,12 +169,7 @@ class PreparePhase(Phase):
 
 
 class VerifyPhase(Phase):
-    """Phase for verifying cached tile integrity.
-
-    Examples:
-        >>> VerifyPhase().name
-        'verify'
-    """
+    """Phase for verifying cached tile integrity."""
 
     name = "verify"
     config_key = "verify"
@@ -225,12 +220,7 @@ class VerifyPhase(Phase):
 
 
 class TrainPhase(Phase):
-    """Phase for training the segmentation head.
-
-    Examples:
-        >>> TrainPhase().name
-        'train'
-    """
+    """Phase for training the segmentation head."""
 
     name = "train"
     config_key = "train"
@@ -1620,12 +1610,7 @@ class TrainPhase(Phase):
 
 
 class InferencePhase(Phase):
-    """Phase for sliding-window inference.
-
-    Examples:
-        >>> InferencePhase().name
-        'inference'
-    """
+    """Phase for sliding-window inference."""
 
     name = "inference"
     config_key = "inference"
@@ -1684,10 +1669,20 @@ class InferencePhase(Phase):
             dino_channels=model_cfg["dino_channels"],
             model_cfg=context.config.get("model", {}),
         ).to(device)
-        checkpoint = infer_cfg["checkpoint"]
-        context.logger.info(f"Loading checkpoint {checkpoint}")
-        state_dict = torch.load(checkpoint, map_location=device)
-        head.load_state_dict(state_dict, strict=False)
+        checkpoint, checkpoint_source = resolve_inference_checkpoint(context, infer_cfg)
+        context.logger.info(
+            "Loading inference checkpoint %s (source=%s, head=%s, num_classes=%s, strict=true)"
+            % (
+                checkpoint,
+                checkpoint_source,
+                model_cfg["head"],
+                model_cfg["num_classes"],
+            )
+        )
+        loaded_checkpoint = torch.load(checkpoint, map_location=device)
+        state_dict = extract_checkpoint_state_dict(loaded_checkpoint)
+        validate_checkpoint_compatibility(head, state_dict)
+        head.load_state_dict(state_dict, strict=True)
         head.eval()
         input_dir = infer_cfg.get("input_dir")
         input_tif = infer_cfg.get("input_tif")

@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Harden inference checkpoint safety: inference now auto-selects the current
+  run's successful train artifact when available, aborts after same-run train
+  failures to avoid stale-weight inference, and enforces strict checkpoint/head
+  compatibility checks (missing/unexpected/shape mismatches) before loading;
+  also align HPC default inference checkpoint with the active head
+  (`pipeline/phases.py`, `config_hpc.yml`,
+  `test/test_inference_checkpoint_safety.py`).
+- Add a model-KB parameter snapshot table for all registered heads under
+  `MODELS.md` (total/trainable/frozen), computed with the standard binary
+  setup (`num_classes=2`, `dino_channels=1024`, `layers=[5,11,17,23]`) so
+  architecture capacity comparisons are documented in one place (`MODELS.md`).
 - Harden training stability and split integrity: `dino_dense_probe` and
   `dino_segdino_light` now use an AdamW-only optimizer path by default in
   training, high-logit warnings report batch-triggered events (with both batch

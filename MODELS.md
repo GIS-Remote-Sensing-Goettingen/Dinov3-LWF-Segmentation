@@ -147,7 +147,29 @@ model:
   head: unet_nano_fapm
 ```
 
-## 5) `unet_topo_fusion` formulas
+## 5) Head parameter counts (KB snapshot)
+
+Counts below were computed from the current registry (`models.available_heads`)
+using:
+- `num_classes = 2`
+- `dino_channels = 1024`
+- `model.layers = [5, 11, 17, 23]`
+- current default head options from `models/__init__.py` and `config*.yml`
+
+| head | total params | trainable params | frozen params |
+| --- | ---: | ---: | ---: |
+| `dino_dense_probe` | 4,098 | 4,098 | 0 |
+| `dino_segdino_light` | 591,362 | 591,362 | 0 |
+| `maskformer` | 4,768,512 | 4,768,512 | 0 |
+| `unet` | 13,512,994 | 13,512,994 | 0 |
+| `unet_lite` | 778,500 | 778,500 | 0 |
+| `unet_lite_plus` | 921,189 | 921,189 | 0 |
+| `unet_nano` | 530,132 | 530,132 | 0 |
+| `unet_nano_fapm` | 761,893 | 761,893 | 0 |
+| `unet_topo_fusion` | 600,317 | 534,781 | 65,536 |
+| `unet_v2` | 9,142,308 | 9,142,308 | 0 |
+
+## 6) `unet_topo_fusion` formulas
 
 Code path:
 - `models/unet_topo_fusion.py`
