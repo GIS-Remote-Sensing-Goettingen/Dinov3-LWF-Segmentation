@@ -1,0 +1,417 @@
+"""Inference phase implementation."""
+
+from __future__ import annotations
+
+import glob
+import math
+import os
+import traceback
+from contextlib import nullcontext
+
+import numpy as np
+import rasterio
+import torch
+import torch.nn.functional as F
+from rasterio.windows import Window
+from transformers import AutoImageProcessor, AutoModel
+
+from models import build_head
+from utils import TimedBlock, extract_multiscale_features
+
+from ..constants import DEFAULT_DEVICE
+from ..context import InferenceError, PhaseOutcome, RunContext
+from ..inference_checkpoint import (
+    extract_checkpoint_state_dict,
+    resolve_inference_checkpoint,
+    validate_checkpoint_compatibility,
+)
+from ..inference_utils import (
+    build_dashboard,
+    build_tta_transforms,
+    compute_attention_maps,
+    compute_feature_pca_rgb,
+    compute_gradcam_map,
+    compute_xai_maps,
+    overlay_heatmap,
+    upsample_map,
+    upsample_rgb_map,
+)
+from ..phase_runner import Phase
+from ..plotting import resolve_cam_layer
+from ..utils import get_model_config
+
+
+class InferencePhase(Phase):
+    """Phase for sliding-window inference."""
+
+    name = "inference"
+    config_key = "inference"
+
+    def is_enabled(self, context: RunContext) -> bool:
+        """Return True when inference should execute on this rank.
+
+        Args:
+            context (RunContext): Active run context.
+
+        Returns:
+            bool: True when inference should run.
+        """
+
+        if not context.dist_ctx.is_main:
+            return False
+        infer_cfg = context.config.get("inference", context.config.get("infer", {}))
+        return bool(infer_cfg and infer_cfg.get("enable", False))
+
+    def execute(self, context: RunContext) -> PhaseOutcome:
+        """Run sliding-window inference over a large raster.
+
+        Args:
+            context (RunContext): Active run context.
+
+        Returns:
+            PhaseOutcome: Metrics and artifacts from the phase.
+
+        Raises:
+            InferenceError: If inference fails unexpectedly.
+        """
+
+        try:
+            return self._infer(context)
+        except Exception as exc:
+            raise InferenceError(str(exc)) from exc
+
+    def _infer(self, context: RunContext) -> PhaseOutcome:
+        """Internal inference implementation.
+
+        Args:
+            context (RunContext): Active run context.
+
+        Returns:
+            PhaseOutcome: Metrics and artifacts from the phase.
+        """
+
+        infer_cfg = context.config.get("inference", context.config.get("infer", {}))
+        model_cfg = get_model_config(context.config)
+        device = torch.device(infer_cfg.get("device", DEFAULT_DEVICE))
+        processor = AutoImageProcessor.from_pretrained(model_cfg["backbone"])
+        backbone = AutoModel.from_pretrained(model_cfg["backbone"]).eval().to(device)
+        head = build_head(
+            model_cfg["head"],
+            num_classes=model_cfg["num_classes"],
+            dino_channels=model_cfg["dino_channels"],
+            model_cfg=context.config.get("model", {}),
+        ).to(device)
+        checkpoint, checkpoint_source = resolve_inference_checkpoint(context, infer_cfg)
+        context.logger.info(
+            "Loading inference checkpoint %s (source=%s, head=%s, num_classes=%s, strict=true)"
+            % (
+                checkpoint,
+                checkpoint_source,
+                model_cfg["head"],
+                model_cfg["num_classes"],
+            )
+        )
+        loaded_checkpoint = torch.load(checkpoint, map_location=device)
+        state_dict = extract_checkpoint_state_dict(loaded_checkpoint)
+        validate_checkpoint_compatibility(head, state_dict)
+        head.load_state_dict(state_dict, strict=True)
+        head.eval()
+        input_dir = infer_cfg.get("input_dir")
+        input_tif = infer_cfg.get("input_tif")
+        output_dir = infer_cfg.get("output_dir")
+        output_tif = infer_cfg.get("output_tif")
+        tile_size = infer_cfg.get("tile_size", 512)
+        ps = 14 if "vitl14" in model_cfg["backbone"] else 16
+        overlap_cfg = infer_cfg.get("overlap", 0.0)
+        overlap_px = (
+            int(tile_size * overlap_cfg) if overlap_cfg < 1 else int(overlap_cfg)
+        )
+        stride = max(1, tile_size - overlap_px)
+        tta_transforms = build_tta_transforms(infer_cfg.get("tta", {}))
+        autocast = torch.cuda.amp.autocast() if device.type == "cuda" else nullcontext()
+        explain_cfg = infer_cfg.get("explain", {})
+        explain_enabled = bool(explain_cfg.get("enable", False))
+        plots_dir = explain_cfg.get("output_dir")
+        if explain_enabled and context.mlflow_logger is not None:
+            plots_dir = str(context.mlflow_logger.artifacts_dir / "plots" / "inference")
+        class_index = int(explain_cfg.get("class_index", 1))
+        layout = explain_cfg.get("dashboard_layout", "4x3")
+        explain_pca_enable = bool(explain_cfg.get("pca_enable", True))
+        explain_pca_layer_mode = str(
+            explain_cfg.get("pca_layer_mode", "last_requested_layer")
+        )
+        explain_pca_layer = resolve_cam_layer(
+            model_cfg["layers"],
+            explain_pca_layer_mode,
+        )
+        plot_every_n = explain_cfg.get("plot_every_n")
+        output_suffix = infer_cfg.get("output_suffix", "_pred.tif")
+        glob_pattern = infer_cfg.get("glob", "*.tif")
+
+        def _infer_one_tif(
+            input_tif_path: str,
+            output_tif_path: str,
+            plot_prefix: str,
+        ) -> dict[str, float]:
+            """Run tiled inference for a single input raster.
+
+            Args:
+                input_tif_path (str): Source raster path.
+                output_tif_path (str): Destination prediction path.
+                plot_prefix (str): Prefix for explainability dashboard filenames.
+
+            Returns:
+                dict[str, float]: Per-file metrics with `tiles_total`.
+            """
+
+            with rasterio.open(input_tif_path) as src:
+                profile = src.profile.copy()
+                height, width = src.height, src.width
+                channels = src.count
+            if channels != 3:
+                raise InferenceError(
+                    f"Expected 3-band imagery: {os.path.basename(input_tif_path)}"
+                )
+            prob_accum = np.zeros(
+                (model_cfg["num_classes"], height, width), dtype=np.float32
+            )
+            count_accum = np.zeros((height, width), dtype=np.float32)
+            total_tiles = math.ceil(height / stride) * math.ceil(width / stride)
+            context.logger.info(
+                f"Running inference on {total_tiles} tiles with stride {stride}."
+            )
+            local_plot_every_n = plot_every_n
+            if explain_enabled:
+                assert plots_dir is not None
+                os.makedirs(plots_dir, exist_ok=True)
+                if local_plot_every_n is None:
+                    local_plot_every_n = 10 if total_tiles > 50 else 1
+            tile_counter = 0
+            phase_label = f"Inference phase ({os.path.basename(input_tif_path)})"
+            with (
+                rasterio.open(input_tif_path) as src,
+                TimedBlock(context.logger, phase_label),
+            ):
+                for y in range(0, height, stride):
+                    for x in range(0, width, stride):
+                        tile_counter += 1
+                        y_max = min(y + tile_size, height)
+                        x_max = min(x + tile_size, width)
+                        window = Window.from_slices((y, y_max), (x, x_max))
+                        img_tile = src.read(window=window, boundless=True)
+                        img_tile = np.transpose(img_tile, (1, 2, 0))
+                        if np.max(img_tile) == 0:
+                            continue
+                        img_tile_raw = img_tile
+                        orig_h, orig_w = img_tile.shape[:2]
+                        pad_h = max(0, tile_size - orig_h)
+                        pad_w = max(0, tile_size - orig_w)
+                        if pad_h or pad_w:
+                            img_tile = np.pad(
+                                img_tile,
+                                ((0, pad_h), (0, pad_w), (0, 0)),
+                                mode="reflect",
+                            )
+                        tile_probs = np.zeros(
+                            (model_cfg["num_classes"], orig_h, orig_w),
+                            dtype=np.float32,
+                        )
+                        pca_feat = None
+                        for transform in tta_transforms:
+                            aug_img = transform.apply(img_tile)
+                            img_tile_norm = (aug_img.astype(np.float32) / 255.0).astype(
+                                np.float32
+                            )
+                            img_t = (
+                                torch.from_numpy(img_tile_norm)
+                                .permute(2, 0, 1)
+                                .unsqueeze(0)
+                                .to(device)
+                            )
+                            feats = extract_multiscale_features(
+                                aug_img.astype(np.float32),
+                                backbone,
+                                processor,
+                                device,
+                                model_cfg["layers"],
+                                ps=ps,
+                            )
+                            feats_batched = [f.to(device).unsqueeze(0) for f in feats]
+                            if (
+                                explain_enabled
+                                and explain_pca_enable
+                                and transform.name == "none"
+                            ):
+                                selected_idx = len(feats_batched) - 1
+                                if (
+                                    explain_pca_layer is not None
+                                    and explain_pca_layer in model_cfg["layers"]
+                                ):
+                                    selected_idx = model_cfg["layers"].index(
+                                        int(explain_pca_layer)
+                                    )
+                                pca_feat = feats_batched[selected_idx]
+                            with torch.no_grad(), autocast:
+                                logits = head(img_t, feats_batched)
+                                logits = transform.invert_logits(logits)
+                                if logits.shape[-2:] != img_t.shape[-2:]:
+                                    logits = F.interpolate(
+                                        logits,
+                                        size=img_t.shape[-2:],
+                                        mode="bilinear",
+                                        align_corners=False,
+                                    )
+                                probs = (
+                                    torch.softmax(logits, dim=1)
+                                    .squeeze(0)
+                                    .detach()
+                                    .cpu()
+                                    .numpy()
+                                )
+                            probs = probs[:, :orig_h, :orig_w]
+                            tile_probs += probs
+                        tile_probs /= len(tta_transforms)
+                        if (
+                            explain_enabled
+                            and local_plot_every_n
+                            and tile_counter % local_plot_every_n == 0
+                        ):
+                            try:
+                                rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
+                                attn_cls, attn_rollout, had_attn = (
+                                    compute_attention_maps(
+                                        img_tile_raw.astype(np.float32),
+                                        backbone,
+                                        processor,
+                                        device,
+                                        ps,
+                                        logger=context.logger,
+                                    )
+                                )
+                                if not had_attn:
+                                    context.logger.info(
+                                        "Using Grad-CAM fallback for tile y=%s x=%s."
+                                        % (y, x)
+                                    )
+                                    gradcam = compute_gradcam_map(
+                                        img_tile_raw.astype(np.float32),
+                                        backbone,
+                                        head,
+                                        processor,
+                                        device,
+                                        model_cfg["layers"],
+                                        ps,
+                                        class_index,
+                                        logger=context.logger,
+                                    )
+                                    attn_cls = gradcam
+                                    attn_rollout = gradcam
+                                attn_cls = upsample_map(attn_cls, orig_h, orig_w)
+                                attn_rollout = upsample_map(
+                                    attn_rollout, orig_h, orig_w
+                                )
+                                conf, ent, class_prob = compute_xai_maps(
+                                    tile_probs, class_index
+                                )
+                                pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
+                                overlay_pred = overlay_heatmap(
+                                    rgb,
+                                    pred_tile.astype(np.float32)
+                                    / max(1, model_cfg["num_classes"] - 1),
+                                )
+                                overlay_attn = overlay_heatmap(rgb, attn_cls)
+                                pca_rgb = None
+                                if explain_pca_enable and pca_feat is not None:
+                                    pca_rgb = upsample_rgb_map(
+                                        compute_feature_pca_rgb(pca_feat),
+                                        orig_h,
+                                        orig_w,
+                                    )
+                                plot_path = os.path.join(
+                                    plots_dir,
+                                    f"{plot_prefix}_tile_y{y}_x{x}_dashboard.png",
+                                )
+                                build_dashboard(
+                                    plot_path,
+                                    rgb,
+                                    pred_tile,
+                                    conf,
+                                    ent,
+                                    class_prob,
+                                    attn_cls,
+                                    attn_rollout,
+                                    overlay_pred,
+                                    overlay_attn,
+                                    pca_rgb=pca_rgb,
+                                    layout=layout,
+                                )
+                            except Exception:
+                                context.logger.error(
+                                    "XAI plotting failed for tile y=%s x=%s\n%s"
+                                    % (y, x, traceback.format_exc())
+                                )
+                        prob_accum[:, y:y_max, x:x_max] += tile_probs
+                        count_accum[y:y_max, x:x_max] += 1
+                        if tile_counter % 50 == 0 or tile_counter == total_tiles:
+                            context.logger.info(
+                                f"Inference progress: {tile_counter}/{total_tiles} tiles."
+                            )
+                            context.hook_manager.on_inference_tile(
+                                context,
+                                self.name,
+                                tile_counter,
+                                total_tiles,
+                            )
+            count_accum[count_accum == 0] = 1
+            prob_accum /= count_accum
+            pred_full = prob_accum.argmax(axis=0).astype(np.uint8)
+            profile.update(dtype=rasterio.uint8, count=1, nodata=0)
+            os.makedirs(os.path.dirname(output_tif_path) or ".", exist_ok=True)
+            with rasterio.open(output_tif_path, "w", **profile) as dst:
+                dst.write(pred_full, 1)
+            context.logger.info(f"Saved prediction to {output_tif_path}")
+            return {"tiles_total": float(total_tiles)}
+
+        if input_dir and input_tif:
+            raise InferenceError(
+                "Set only one input source: either inference.input_tif or "
+                "inference.input_dir."
+            )
+        if input_dir:
+            if not output_dir:
+                raise InferenceError("output_dir is required when input_dir is set")
+            os.makedirs(output_dir, exist_ok=True)
+            if explain_enabled:
+                plots_dir = plots_dir or os.path.join(output_dir, "plots")
+                os.makedirs(plots_dir, exist_ok=True)
+            tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
+            if not tile_files:
+                raise InferenceError(f"No input files found in {input_dir}")
+            total_tiles = 0.0
+            for idx, tile_path in enumerate(tile_files, start=1):
+                base = os.path.splitext(os.path.basename(tile_path))[0]
+                context.logger.info(
+                    "Running file inference %s/%s: %s" % (idx, len(tile_files), base)
+                )
+                out_path = os.path.join(output_dir, f"{base}{output_suffix}")
+                file_metrics = _infer_one_tif(tile_path, out_path, plot_prefix=base)
+                total_tiles += float(file_metrics.get("tiles_total", 0.0))
+            metrics = {
+                "files_total": float(len(tile_files)),
+                "tiles_total": total_tiles,
+            }
+            artifacts = {"output_dir": output_dir, "checkpoint": checkpoint}
+            return PhaseOutcome(metrics=metrics, artifacts=artifacts)
+        if not input_tif:
+            raise InferenceError(
+                "Either inference.input_tif or inference.input_dir must be set."
+            )
+        if not output_tif:
+            raise InferenceError("output_tif is required when input_tif is set")
+        if explain_enabled:
+            plots_dir = plots_dir or os.path.join(os.path.dirname(output_tif), "plots")
+            os.makedirs(plots_dir, exist_ok=True)
+        single_prefix = os.path.splitext(os.path.basename(input_tif))[0]
+        metrics = _infer_one_tif(input_tif, output_tif, plot_prefix=single_prefix)
+        artifacts = {"output_tif": output_tif, "checkpoint": checkpoint}
+        return PhaseOutcome(metrics=metrics, artifacts=artifacts)

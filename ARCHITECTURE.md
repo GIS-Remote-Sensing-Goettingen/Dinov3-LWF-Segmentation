@@ -7,8 +7,14 @@ MLflow-compatible artifacts for research workflows.
 ## Folder Structure
 - `main.py`: Thin CLI entry point for running the pipeline.
 - `pipeline/`: Phase runner, hooks, processors, and tracking utilities.
+  Concrete phases are grouped in the `pipeline/phases/` package
+  (`prepare.py`, `verify.py`, `train.py`, `inference.py`) with helper modules
+  (`train_batches.py`, `train_xai.py`). Module-XAI internals are grouped under
+  `pipeline/xai/`.
 - `models/`: Segmentation heads (U-Net variants, MaskFormer-style head).
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
+  Data internals are grouped under the `utils/data/` package (`core.py`,
+  `pipeline.py`) with `utils/data/__init__.py` as the public data facade.
 - `config.py`: YAML configuration loader.
 - `MODELS.md`: Formula-level notes on DINO layer extraction and FAPM projections.
 
@@ -17,6 +23,9 @@ MLflow-compatible artifacts for research workflows.
 - **PhaseRunner:** Executes phases in order and coordinates hooks/processors.
 - **Hooks:** Lifecycle callbacks (run/phase/epoch/batch/tile) for extensibility.
 - **Processors:** Pre/post phase modules for snapshotting and summaries.
+- **Train loop decomposition:** `TrainPhase` orchestrates setup/checkpointing,
+  while `phase_train_batches.py` handles per-batch optimization and
+  `phase_train_xai.py` handles epoch validation/XAI artifact aggregation.
 - **Stability policy:** `train.stability` controls AMP mode/dtype, fp32 loss, gradient clipping,
   non-finite handling, and checkpoint safety gates.
 - **Training config schema:** `train.plots` now groups all epoch/XAI plotting options,

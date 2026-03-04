@@ -38,8 +38,10 @@ def extract_checkpoint_state_dict(loaded_object: Any) -> dict[str, torch.Tensor]
             return cast(dict[str, torch.Tensor], loaded_object)
         for key in ("state_dict", "model_state_dict", "model"):
             candidate = loaded_object.get(key)
-            if isinstance(candidate, dict) and candidate and all(
-                isinstance(value, torch.Tensor) for value in candidate.values()
+            if (
+                isinstance(candidate, dict)
+                and candidate
+                and all(isinstance(value, torch.Tensor) for value in candidate.values())
             ):
                 return cast(dict[str, torch.Tensor], candidate)
     raise InferenceError(

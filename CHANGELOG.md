@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 ### Changed
+- Refactor oversized pipeline modules into focused components to keep
+  maintainability limits enforceable: split monolithic phase implementations
+  into dedicated packages: `pipeline/phases/` (phase logic),
+  `pipeline/xai/` (module-XAI internals), and `utils/data/`
+  (data core/pipeline internals), and remove transitional thin wrapper modules
+  (`pipeline/phase_*.py`, `pipeline/module_xai*.py`, `utils/data_core.py`,
+  `utils/data_pipeline.py`, `utils/data.py`) to reduce file clutter.
 - Harden inference checkpoint safety: inference now auto-selects the current
   run's successful train artifact when available, aborts after same-run train
   failures to avoid stale-weight inference, and enforces strict checkpoint/head
