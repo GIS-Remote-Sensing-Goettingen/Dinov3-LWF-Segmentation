@@ -96,3 +96,6 @@ MLflow-compatible artifacts for research workflows.
 4. Run inference (optional)
    Both `input_tif` and `input_dir` modes use the same sliding-window tiled inference
    and merge path to keep behavior consistent and memory-bounded on large inputs.
+   Scene outputs now use center-weighted overlap blending, emit one compact
+   explainability figure per input image, and can append foreground polygons
+   into a cumulative `EPSG:4326` shapefile.

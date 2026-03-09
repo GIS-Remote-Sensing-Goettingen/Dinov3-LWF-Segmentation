@@ -229,6 +229,8 @@ inference:
   checkpoint: weights/unet_v2_best.pth
   tile_size: 512
   overlap: 0.25
+  merge:
+    mode: center_weighted
   tta:
     horizontal_flip: true
     vertical_flip: false
@@ -236,9 +238,15 @@ inference:
     enable: true
     output_dir: plots  # fallback only when MLflow logging is disabled
     class_index: 1
-    dashboard_layout: "4x3"
-    pca_enable: true
-    pca_layer_mode: last_requested_layer
+    dashboard_layout: "2x2"
+    pred_overlay_color: [120, 190, 255]
+    pred_overlay_alpha: 0.28
+    tile_debug_enable: false
+  vector:
+    enable: false
+    target_epsg: 4326
+    append: true
+    foreground_class: 1
 ```
 
 Set `enable: true` for any section you want to run. The `paths` block provides base directories shared across phases, while individual sections can override them (e.g., use a different `processed_dir` for training vs. verification).
@@ -247,6 +255,8 @@ Model options for topology-fusion heads are grouped under `model.fusion`, `model
 Inference input selection:
 - Set exactly one source: `inference.input_tif` or `inference.input_dir`.
 - `input_dir` now runs each file through the same sliding-window tiled inference + merge path used by `input_tif`, then writes outputs to `output_dir`.
+- Inference explainability now writes one scene-level figure per input image by default: RGB, light-blue prediction overlay, Grad-CAM, and class probability.
+- `inference.vector` appends all scene-level foreground predictions into one cumulative shapefile in `EPSG:4326` under the run artifact tree (`artifacts/vectors/inference/predictions_4326.shp`).
 
 ## Logging & Timing
 
@@ -334,13 +344,13 @@ PY
 
 - PyTorch (CUDA build recommended)
 - `transformers`
-- Geospatial stack: `rasterio`, `tifffile`, `shapely`
+- Geospatial stack: `rasterio`, `tifffile`, `shapely`, `fiona`
 - Misc: `numpy`, `tqdm`, `PyYAML`
 
 Install via:
 
 ```bash
-pip install torch torchvision transformers rasterio tifffile shapely tqdm pyyaml
+pip install torch torchvision transformers rasterio tifffile shapely fiona tqdm pyyaml
 ```
 
 ## Notes

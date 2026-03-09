@@ -1,7 +1,8 @@
-"""Helpers for inference and test-time augmentation."""
+"""Helpers for inference outputs, explainability, and test-time augmentation."""
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import numpy as np
@@ -104,6 +105,64 @@ def normalize_map(values: np.ndarray) -> np.ndarray:
     if vmax <= vmin:
         return np.zeros_like(values, dtype=np.float32)
     return ((values - vmin) / (vmax - vmin)).astype(np.float32)
+
+
+def build_blend_weight_mask(
+    height: int,
+    width: int,
+    mode: str = "center_weighted",
+    min_weight: float = 0.05,
+) -> np.ndarray:
+    """Build a spatial blend mask for tiled inference merging.
+
+    Args:
+        height (int): Tile height.
+        width (int): Tile width.
+        mode (str): Blend mode (`center_weighted` or `uniform`).
+        min_weight (float): Lower bound used to avoid zero-weight borders.
+
+    Returns:
+        np.ndarray: Blend mask with shape `(height, width)`.
+
+    Examples:
+        >>> mask = build_blend_weight_mask(3, 3)
+        >>> float(mask[1, 1]) > float(mask[0, 0])
+        True
+        >>> build_blend_weight_mask(2, 2, mode="uniform").tolist()
+        [[1.0, 1.0], [1.0, 1.0]]
+    """
+
+    height = max(1, int(height))
+    width = max(1, int(width))
+    if mode == "uniform":
+        return np.ones((height, width), dtype=np.float32)
+    if mode != "center_weighted":
+        raise ValueError(f"Unsupported blend mode: {mode}")
+
+    min_weight = float(np.clip(min_weight, 0.0, 1.0))
+
+    def _axis_weights(length: int) -> np.ndarray:
+        """Build one-dimensional center-emphasized weights.
+
+        Args:
+            length (int): Number of pixels along one spatial axis.
+
+        Returns:
+            np.ndarray: One-dimensional blend weights.
+        """
+
+        if length <= 1:
+            return np.ones((length,), dtype=np.float32)
+        coords = np.linspace(-1.0, 1.0, num=length, dtype=np.float32)
+        weights = 0.5 * (1.0 + np.cos(np.pi * coords))
+        weights = min_weight + (1.0 - min_weight) * weights
+        return weights.astype(np.float32)
+
+    mask = np.outer(_axis_weights(height), _axis_weights(width)).astype(np.float32)
+    max_value = float(mask.max())
+    if max_value <= 0.0:
+        return np.ones((height, width), dtype=np.float32)
+    return (mask / max_value).astype(np.float32)
 
 
 def upsample_map(values: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
@@ -836,56 +895,37 @@ def compute_gradcam_with_topk_channels(
 def build_dashboard(
     output_path: str,
     rgb: np.ndarray,
-    pred: np.ndarray,
-    confidence: np.ndarray,
-    entropy: np.ndarray,
-    class_prob: np.ndarray,
-    attn_cls: np.ndarray,
-    attn_rollout: np.ndarray,
     overlay_pred: np.ndarray,
-    overlay_attn: np.ndarray,
-    pca_rgb: np.ndarray | None = None,
-    layout: str = "4x3",
+    gradcam_overlay: np.ndarray,
+    class_prob: np.ndarray,
+    layout: str = "2x2",
 ) -> None:
-    """Create a dashboard plot with multiple subplots.
+    """Create a compact scene-level inference dashboard.
 
     Args:
         output_path (str): PNG output path.
         rgb (np.ndarray): RGB image.
-        pred (np.ndarray): Prediction mask.
-        confidence (np.ndarray): Confidence map.
-        entropy (np.ndarray): Entropy map.
+        overlay_pred (np.ndarray): RGB image with prediction overlay.
+        gradcam_overlay (np.ndarray): RGB image with Grad-CAM overlay.
         class_prob (np.ndarray): Class probability map.
-        attn_cls (np.ndarray): CLS attention map.
-        attn_rollout (np.ndarray): Rollout attention map.
-        overlay_pred (np.ndarray): RGB + prediction overlay.
-        overlay_attn (np.ndarray): RGB + attention overlay.
-        pca_rgb (np.ndarray | None): Optional PCA RGB map.
-        layout (str): Layout string, defaults to 4x3.
+        layout (str): Layout string, defaults to `2x2`.
+
+    Examples:
+        >>> callable(build_dashboard)
+        True
     """
 
     import matplotlib.pyplot as plt
 
-    rows, cols = 4, 3
-    if layout == "3x3":
-        rows, cols = 3, 3
+    rows, cols = 2, 2
+    if layout == "1x4":
+        rows, cols = 1, 4
     panels = [
         ("RGB", rgb, None),
-        ("Prediction", pred, "tab20"),
-        ("Confidence", confidence, "magma"),
-        ("Entropy", entropy, "magma"),
-        ("Class Prob", class_prob, "magma"),
-        ("Attn CLS", attn_cls, "viridis"),
-        ("Attn Rollout", attn_rollout, "viridis"),
+        ("Prediction Overlay", overlay_pred, None),
+        ("Grad-CAM", gradcam_overlay, None),
+        ("Class Probability", class_prob, "magma"),
     ]
-    if pca_rgb is not None:
-        panels.append(("DINO PCA (PC1-3)", np.clip(pca_rgb, 0.0, 1.0), None))
-    panels.extend(
-        [
-            ("Overlay Pred", overlay_pred, None),
-            ("Overlay Attn", overlay_attn, None),
-        ]
-    )
     required_slots = len(panels)
     if required_slots > rows * cols:
         cols = int(np.ceil(required_slots / max(1, rows)))
@@ -930,6 +970,44 @@ def compute_xai_maps(
     return normalize_map(confidence), normalize_map(entropy), normalize_map(class_prob)
 
 
+def overlay_binary_mask(
+    rgb: np.ndarray,
+    mask: np.ndarray,
+    color: tuple[int, int, int] = (120, 190, 255),
+    alpha: float = 0.28,
+) -> np.ndarray:
+    """Overlay a binary mask onto an RGB image.
+
+    Args:
+        rgb (np.ndarray): RGB image (H, W, 3).
+        mask (np.ndarray): Binary or label mask.
+        color (tuple[int, int, int]): Overlay RGB color.
+        alpha (float): Overlay alpha.
+
+    Returns:
+        np.ndarray: Overlay image.
+
+    Examples:
+        >>> rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+        >>> mask = np.array([[0, 1], [0, 0]], dtype=np.uint8)
+        >>> out = overlay_binary_mask(rgb, mask, color=(100, 150, 200), alpha=0.5)
+        >>> out[0, 1].tolist()
+        [50, 75, 100]
+    """
+
+    rgb_uint8 = np.clip(np.asarray(rgb), 0, 255).astype(np.uint8)
+    mask_bool = np.asarray(mask) > 0
+    if not mask_bool.any():
+        return rgb_uint8.copy()
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    color_arr = np.asarray(color, dtype=np.float32).reshape(1, 1, 3)
+    overlay = rgb_uint8.astype(np.float32).copy()
+    overlay[mask_bool] = (1.0 - alpha) * overlay[mask_bool] + alpha * color_arr.reshape(
+        3
+    )
+    return np.clip(overlay, 0, 255).astype(np.uint8)
+
+
 def overlay_heatmap(
     rgb: np.ndarray,
     heatmap: np.ndarray,
@@ -955,3 +1033,119 @@ def overlay_heatmap(
     overlay = (1 - alpha) * rgb_float + alpha * colored
     overlay = np.clip(overlay * 255.0, 0, 255).astype(np.uint8)
     return overlay
+
+
+def extract_prediction_features(
+    pred_mask: np.ndarray,
+    transform: Any,
+    source_crs: Any,
+    source_id: str,
+    run_id: str,
+    foreground_class: int = 1,
+    target_epsg: int = 4326,
+) -> list[dict[str, Any]]:
+    """Polygonize a foreground prediction mask and reproject it to EPSG:4326.
+
+    Args:
+        pred_mask (np.ndarray): Predicted class raster.
+        transform (Any): Raster affine transform.
+        source_crs (Any): Source raster CRS.
+        source_id (str): Source scene identifier.
+        run_id (str): Run identifier stored on each feature.
+        foreground_class (int): Foreground class value to polygonize.
+        target_epsg (int): Target EPSG code.
+
+    Returns:
+        list[dict[str, Any]]: Fiona-style features ready for writing.
+
+    Examples:
+        >>> callable(extract_prediction_features)
+        True
+    """
+
+    import rasterio
+    from rasterio.features import shapes
+    from rasterio.warp import transform_geom
+
+    source_crs_obj = None
+    if source_crs is not None:
+        source_crs_obj = rasterio.crs.CRS.from_user_input(source_crs)
+    if source_crs_obj is None:
+        raise ValueError("Source raster CRS is required for vector export.")
+    target_crs = rasterio.crs.CRS.from_epsg(int(target_epsg))
+
+    pred_arr = np.asarray(pred_mask, dtype=np.uint8)
+    foreground_value = int(foreground_class)
+    foreground_mask = pred_arr == foreground_value
+    if not foreground_mask.any():
+        return []
+
+    features: list[dict[str, Any]] = []
+    for geometry, value in shapes(pred_arr, mask=foreground_mask, transform=transform):
+        if int(value) != foreground_value:
+            continue
+        reproj_geometry = transform_geom(
+            source_crs_obj,
+            target_crs,
+            geometry,
+            antimeridian_cutting=True,
+            precision=6,
+        )
+        features.append(
+            {
+                "geometry": reproj_geometry,
+                "properties": {
+                    "source_id": str(source_id)[:80],
+                    "class_id": foreground_value,
+                    "run_id": str(run_id)[:80],
+                },
+            }
+        )
+    return features
+
+
+def append_prediction_shapefile(
+    output_path: str,
+    features: list[dict[str, Any]],
+    target_epsg: int = 4326,
+    append: bool = True,
+) -> None:
+    """Append prediction features to a shapefile dataset.
+
+    Args:
+        output_path (str): Destination `.shp` path.
+        features (list[dict[str, Any]]): Fiona-style features.
+        target_epsg (int): Target CRS EPSG code.
+        append (bool): Whether to append to an existing shapefile.
+
+    Examples:
+        >>> callable(append_prediction_shapefile)
+        True
+    """
+
+    if not features:
+        return
+
+    import fiona
+    import rasterio
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    schema = {
+        "geometry": "Polygon",
+        "properties": {
+            "source_id": "str:80",
+            "class_id": "int",
+            "run_id": "str:80",
+        },
+    }
+    mode = "a" if append and os.path.exists(output_path) else "w"
+    target_crs = rasterio.crs.CRS.from_epsg(int(target_epsg))
+    with fiona.open(
+        output_path,
+        mode=mode,
+        driver="ESRI Shapefile",
+        schema=schema,
+        crs_wkt=target_crs.to_wkt(),
+    ) as sink:
+        for feature in features:
+            sink.write(feature)

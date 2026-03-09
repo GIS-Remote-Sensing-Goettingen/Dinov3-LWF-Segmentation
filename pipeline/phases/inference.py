@@ -26,18 +26,19 @@ from ..inference_checkpoint import (
     validate_checkpoint_compatibility,
 )
 from ..inference_utils import (
+    append_prediction_shapefile,
+    build_blend_weight_mask,
     build_dashboard,
     build_tta_transforms,
-    compute_attention_maps,
-    compute_feature_pca_rgb,
     compute_gradcam_map,
     compute_xai_maps,
+    extract_prediction_features,
+    normalize_map,
+    overlay_binary_mask,
     overlay_heatmap,
     upsample_map,
-    upsample_rgb_map,
 )
 from ..phase_runner import Phase
-from ..plotting import resolve_cam_layer
 from ..utils import get_model_config
 
 
@@ -135,16 +136,21 @@ class InferencePhase(Phase):
         if explain_enabled and context.mlflow_logger is not None:
             plots_dir = str(context.mlflow_logger.artifacts_dir / "plots" / "inference")
         class_index = int(explain_cfg.get("class_index", 1))
-        layout = explain_cfg.get("dashboard_layout", "4x3")
-        explain_pca_enable = bool(explain_cfg.get("pca_enable", True))
-        explain_pca_layer_mode = str(
-            explain_cfg.get("pca_layer_mode", "last_requested_layer")
-        )
-        explain_pca_layer = resolve_cam_layer(
-            model_cfg["layers"],
-            explain_pca_layer_mode,
-        )
+        layout = explain_cfg.get("dashboard_layout", "2x2")
         plot_every_n = explain_cfg.get("plot_every_n")
+        tile_debug_enable = bool(explain_cfg.get("tile_debug_enable", False))
+        overlay_color = tuple(
+            int(value)
+            for value in explain_cfg.get("pred_overlay_color", [120, 190, 255])
+        )
+        overlay_alpha = float(explain_cfg.get("pred_overlay_alpha", 0.28))
+        merge_cfg = infer_cfg.get("merge", {})
+        merge_mode = str(merge_cfg.get("mode", "center_weighted"))
+        vector_cfg = infer_cfg.get("vector", {})
+        vector_enabled = bool(vector_cfg.get("enable", False))
+        vector_target_epsg = int(vector_cfg.get("target_epsg", 4326))
+        vector_append = bool(vector_cfg.get("append", True))
+        foreground_class = int(vector_cfg.get("foreground_class", class_index))
         output_suffix = infer_cfg.get("output_suffix", "_pred.tif")
         glob_pattern = infer_cfg.get("glob", "*.tif")
 
@@ -152,6 +158,7 @@ class InferencePhase(Phase):
             input_tif_path: str,
             output_tif_path: str,
             plot_prefix: str,
+            vector_output_path: str | None = None,
         ) -> dict[str, float]:
             """Run tiled inference for a single input raster.
 
@@ -159,6 +166,7 @@ class InferencePhase(Phase):
                 input_tif_path (str): Source raster path.
                 output_tif_path (str): Destination prediction path.
                 plot_prefix (str): Prefix for explainability dashboard filenames.
+                vector_output_path (str | None): Shared shapefile output path.
 
             Returns:
                 dict[str, float]: Per-file metrics with `tiles_total`.
@@ -168,6 +176,8 @@ class InferencePhase(Phase):
                 profile = src.profile.copy()
                 height, width = src.height, src.width
                 channels = src.count
+                source_transform = src.transform
+                source_crs = src.crs
             if channels != 3:
                 raise InferenceError(
                     f"Expected 3-band imagery: {os.path.basename(input_tif_path)}"
@@ -175,7 +185,9 @@ class InferencePhase(Phase):
             prob_accum = np.zeros(
                 (model_cfg["num_classes"], height, width), dtype=np.float32
             )
-            count_accum = np.zeros((height, width), dtype=np.float32)
+            weight_accum = np.zeros((height, width), dtype=np.float32)
+            gradcam_accum = np.zeros((height, width), dtype=np.float32)
+            weight_cache: dict[tuple[int, int], np.ndarray] = {}
             total_tiles = math.ceil(height / stride) * math.ceil(width / stride)
             context.logger.info(
                 f"Running inference on {total_tiles} tiles with stride {stride}."
@@ -216,7 +228,6 @@ class InferencePhase(Phase):
                             (model_cfg["num_classes"], orig_h, orig_w),
                             dtype=np.float32,
                         )
-                        pca_feat = None
                         for transform in tta_transforms:
                             aug_img = transform.apply(img_tile)
                             img_tile_norm = (aug_img.astype(np.float32) / 255.0).astype(
@@ -237,20 +248,6 @@ class InferencePhase(Phase):
                                 ps=ps,
                             )
                             feats_batched = [f.to(device).unsqueeze(0) for f in feats]
-                            if (
-                                explain_enabled
-                                and explain_pca_enable
-                                and transform.name == "none"
-                            ):
-                                selected_idx = len(feats_batched) - 1
-                                if (
-                                    explain_pca_layer is not None
-                                    and explain_pca_layer in model_cfg["layers"]
-                                ):
-                                    selected_idx = model_cfg["layers"].index(
-                                        int(explain_pca_layer)
-                                    )
-                                pca_feat = feats_batched[selected_idx]
                             with torch.no_grad(), autocast:
                                 logits = head(img_t, feats_batched)
                                 logits = transform.invert_logits(logits)
@@ -271,78 +268,66 @@ class InferencePhase(Phase):
                             probs = probs[:, :orig_h, :orig_w]
                             tile_probs += probs
                         tile_probs /= len(tta_transforms)
+                        gradcam_tile = None
+                        if explain_enabled:
+                            gradcam_tile = upsample_map(
+                                compute_gradcam_map(
+                                    img_tile_raw.astype(np.float32),
+                                    backbone,
+                                    head,
+                                    processor,
+                                    device,
+                                    model_cfg["layers"],
+                                    ps,
+                                    class_index,
+                                    logger=context.logger,
+                                ),
+                                orig_h,
+                                orig_w,
+                            )
+                        blend_key = (orig_h, orig_w)
+                        blend_mask = weight_cache.get(blend_key)
+                        if blend_mask is None:
+                            blend_mask = build_blend_weight_mask(
+                                orig_h,
+                                orig_w,
+                                mode=merge_mode,
+                            )
+                            weight_cache[blend_key] = blend_mask
                         if (
                             explain_enabled
+                            and tile_debug_enable
                             and local_plot_every_n
                             and tile_counter % local_plot_every_n == 0
                         ):
                             try:
                                 rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
-                                attn_cls, attn_rollout, had_attn = (
-                                    compute_attention_maps(
-                                        img_tile_raw.astype(np.float32),
-                                        backbone,
-                                        processor,
-                                        device,
-                                        ps,
-                                        logger=context.logger,
-                                    )
-                                )
-                                if not had_attn:
-                                    context.logger.info(
-                                        "Using Grad-CAM fallback for tile y=%s x=%s."
-                                        % (y, x)
-                                    )
-                                    gradcam = compute_gradcam_map(
-                                        img_tile_raw.astype(np.float32),
-                                        backbone,
-                                        head,
-                                        processor,
-                                        device,
-                                        model_cfg["layers"],
-                                        ps,
-                                        class_index,
-                                        logger=context.logger,
-                                    )
-                                    attn_cls = gradcam
-                                    attn_rollout = gradcam
-                                attn_cls = upsample_map(attn_cls, orig_h, orig_w)
-                                attn_rollout = upsample_map(
-                                    attn_rollout, orig_h, orig_w
-                                )
-                                conf, ent, class_prob = compute_xai_maps(
+                                _, _, class_prob = compute_xai_maps(
                                     tile_probs, class_index
                                 )
                                 pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
-                                overlay_pred = overlay_heatmap(
+                                overlay_pred = overlay_binary_mask(
                                     rgb,
-                                    pred_tile.astype(np.float32)
-                                    / max(1, model_cfg["num_classes"] - 1),
+                                    pred_tile == foreground_class,
+                                    color=overlay_color,
+                                    alpha=overlay_alpha,
                                 )
-                                overlay_attn = overlay_heatmap(rgb, attn_cls)
-                                pca_rgb = None
-                                if explain_pca_enable and pca_feat is not None:
-                                    pca_rgb = upsample_rgb_map(
-                                        compute_feature_pca_rgb(pca_feat),
-                                        orig_h,
-                                        orig_w,
-                                    )
+                                gradcam_overlay = overlay_heatmap(
+                                    rgb,
+                                    np.asarray(gradcam_tile, dtype=np.float32),
+                                    cmap="magma",
+                                    alpha=0.45,
+                                )
                                 plot_path = os.path.join(
                                     plots_dir,
-                                    f"{plot_prefix}_tile_y{y}_x{x}_dashboard.png",
+                                    f"{plot_prefix}_tile_y{y}_x{x}_compact.png",
                                 )
                                 build_dashboard(
                                     plot_path,
                                     rgb,
-                                    pred_tile,
-                                    conf,
-                                    ent,
-                                    class_prob,
-                                    attn_cls,
-                                    attn_rollout,
                                     overlay_pred,
-                                    overlay_attn,
-                                    pca_rgb=pca_rgb,
+                                    gradcam_overlay,
+                                    class_prob,
                                     layout=layout,
                                 )
                             except Exception:
@@ -350,8 +335,12 @@ class InferencePhase(Phase):
                                     "XAI plotting failed for tile y=%s x=%s\n%s"
                                     % (y, x, traceback.format_exc())
                                 )
-                        prob_accum[:, y:y_max, x:x_max] += tile_probs
-                        count_accum[y:y_max, x:x_max] += 1
+                        prob_accum[:, y:y_max, x:x_max] += (
+                            tile_probs * blend_mask[None, ...]
+                        )
+                        weight_accum[y:y_max, x:x_max] += blend_mask
+                        if explain_enabled and gradcam_tile is not None:
+                            gradcam_accum[y:y_max, x:x_max] += gradcam_tile * blend_mask
                         if tile_counter % 50 == 0 or tile_counter == total_tiles:
                             context.logger.info(
                                 f"Inference progress: {tile_counter}/{total_tiles} tiles."
@@ -362,15 +351,71 @@ class InferencePhase(Phase):
                                 tile_counter,
                                 total_tiles,
                             )
-            count_accum[count_accum == 0] = 1
-            prob_accum /= count_accum
+                scene_rgb = None
+                if explain_enabled:
+                    scene_rgb = np.transpose(src.read([1, 2, 3]), (1, 2, 0))
+            weight_accum[weight_accum == 0] = 1
+            prob_accum /= weight_accum[None, ...]
             pred_full = prob_accum.argmax(axis=0).astype(np.uint8)
             profile.update(dtype=rasterio.uint8, count=1, nodata=0)
             os.makedirs(os.path.dirname(output_tif_path) or ".", exist_ok=True)
             with rasterio.open(output_tif_path, "w", **profile) as dst:
                 dst.write(pred_full, 1)
             context.logger.info(f"Saved prediction to {output_tif_path}")
-            return {"tiles_total": float(total_tiles)}
+            scene_metrics = {"tiles_total": float(total_tiles)}
+            if explain_enabled and scene_rgb is not None:
+                try:
+                    gradcam_scene = normalize_map(gradcam_accum / weight_accum)
+                    _, _, class_prob_scene = compute_xai_maps(prob_accum, class_index)
+                    scene_rgb_uint8 = np.clip(scene_rgb, 0, 255).astype(np.uint8)
+                    overlay_pred = overlay_binary_mask(
+                        scene_rgb_uint8,
+                        pred_full == foreground_class,
+                        color=overlay_color,
+                        alpha=overlay_alpha,
+                    )
+                    gradcam_overlay = overlay_heatmap(
+                        scene_rgb_uint8,
+                        gradcam_scene,
+                        cmap="magma",
+                        alpha=0.45,
+                    )
+                    plot_path = os.path.join(
+                        plots_dir,
+                        f"{plot_prefix}_scene_dashboard.png",
+                    )
+                    build_dashboard(
+                        plot_path,
+                        scene_rgb_uint8,
+                        overlay_pred,
+                        gradcam_overlay,
+                        class_prob_scene,
+                        layout=layout,
+                    )
+                    scene_metrics["scene_plot"] = 1.0
+                except Exception:
+                    context.logger.error(
+                        "Scene XAI plotting failed for %s\n%s"
+                        % (plot_prefix, traceback.format_exc())
+                    )
+            if vector_enabled and vector_output_path is not None:
+                features = extract_prediction_features(
+                    pred_full,
+                    source_transform,
+                    source_crs,
+                    source_id=plot_prefix,
+                    run_id=context.run_id,
+                    foreground_class=foreground_class,
+                    target_epsg=vector_target_epsg,
+                )
+                append_prediction_shapefile(
+                    vector_output_path,
+                    features,
+                    target_epsg=vector_target_epsg,
+                    append=vector_append,
+                )
+                scene_metrics["vector_features"] = float(len(features))
+            return scene_metrics
 
         if input_dir and input_tif:
             raise InferenceError(
@@ -384,23 +429,44 @@ class InferencePhase(Phase):
             if explain_enabled:
                 plots_dir = plots_dir or os.path.join(output_dir, "plots")
                 os.makedirs(plots_dir, exist_ok=True)
+            vector_output_path = None
+            if vector_enabled:
+                vector_output_path = str(
+                    context.run_dir
+                    / "artifacts"
+                    / "vectors"
+                    / "inference"
+                    / "predictions_4326.shp"
+                )
             tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
             if not tile_files:
                 raise InferenceError(f"No input files found in {input_dir}")
             total_tiles = 0.0
+            total_vector_features = 0.0
             for idx, tile_path in enumerate(tile_files, start=1):
                 base = os.path.splitext(os.path.basename(tile_path))[0]
                 context.logger.info(
                     "Running file inference %s/%s: %s" % (idx, len(tile_files), base)
                 )
                 out_path = os.path.join(output_dir, f"{base}{output_suffix}")
-                file_metrics = _infer_one_tif(tile_path, out_path, plot_prefix=base)
+                file_metrics = _infer_one_tif(
+                    tile_path,
+                    out_path,
+                    plot_prefix=base,
+                    vector_output_path=vector_output_path,
+                )
                 total_tiles += float(file_metrics.get("tiles_total", 0.0))
+                total_vector_features += float(file_metrics.get("vector_features", 0.0))
             metrics = {
                 "files_total": float(len(tile_files)),
                 "tiles_total": total_tiles,
+                "vector_features": total_vector_features,
             }
             artifacts = {"output_dir": output_dir, "checkpoint": checkpoint}
+            if explain_enabled and plots_dir is not None:
+                artifacts["plots_dir"] = plots_dir
+            if vector_enabled and vector_output_path is not None:
+                artifacts["vector_output"] = vector_output_path
             return PhaseOutcome(metrics=metrics, artifacts=artifacts)
         if not input_tif:
             raise InferenceError(
@@ -411,7 +477,25 @@ class InferencePhase(Phase):
         if explain_enabled:
             plots_dir = plots_dir or os.path.join(os.path.dirname(output_tif), "plots")
             os.makedirs(plots_dir, exist_ok=True)
+        vector_output_path = None
+        if vector_enabled:
+            vector_output_path = str(
+                context.run_dir
+                / "artifacts"
+                / "vectors"
+                / "inference"
+                / "predictions_4326.shp"
+            )
         single_prefix = os.path.splitext(os.path.basename(input_tif))[0]
-        metrics = _infer_one_tif(input_tif, output_tif, plot_prefix=single_prefix)
+        metrics = _infer_one_tif(
+            input_tif,
+            output_tif,
+            plot_prefix=single_prefix,
+            vector_output_path=vector_output_path,
+        )
         artifacts = {"output_tif": output_tif, "checkpoint": checkpoint}
+        if explain_enabled and plots_dir is not None:
+            artifacts["plots_dir"] = plots_dir
+        if vector_enabled and vector_output_path is not None:
+            artifacts["vector_output"] = vector_output_path
         return PhaseOutcome(metrics=metrics, artifacts=artifacts)

@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 ### Changed
+- Rework inference outputs to use one scene-level explainability figure per
+  input image (light-blue prediction overlay, Grad-CAM, class-probability
+  panel), switch overlap merging to center-weighted probability blending, and
+  add cumulative foreground-mask shapefile export reprojected to `EPSG:4326`
+  with append-per-scene behavior
+  (`pipeline/phases/inference.py`, `pipeline/inference_utils.py`,
+  `config_*.yml`, `README.md`, `ARCHITECTURE.md`,
+  `test/test_inference_outputs.py`).
 - Refactor oversized pipeline modules into focused components to keep
   maintainability limits enforceable: split monolithic phase implementations
   into dedicated packages: `pipeline/phases/` (phase logic),
