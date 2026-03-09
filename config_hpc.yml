@@ -78,7 +78,7 @@ model:
   # Frozen DINOv3-SAT backbone; selected transformer layers are fused by the head.
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: dino_dense_probe # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
+  head: unet_nano_fapm # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
   num_classes: 2
   dino_channels: 1024
   # Dense linear probe baseline options.
@@ -140,7 +140,7 @@ train:
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
   weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/
   batch_size: 3
-  epochs: 40
+  epochs: 20
   muon_lr: 0.02
   adamw_lr: 0.001
   adamw_wd: 0.05
@@ -255,7 +255,7 @@ inference:
   output_dir: test/
   output_suffix: _pred.tif
   glob: "*.tif"
-  checkpoint: weights/dino_dense_probe_best.pth
+  checkpoint:
   tile_size: 1024
   overlap: 0.25
   merge:
