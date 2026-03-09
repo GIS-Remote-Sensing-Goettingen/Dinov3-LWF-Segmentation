@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 ### Changed
+- Add 5%-interval training progress logs with epoch counts and ETA so long HPC
+  runs expose coarse-grained status in plain logs
+  (`pipeline/phases/train.py`).
 - Rework inference outputs to use one scene-level explainability figure per
   input image (light-blue prediction overlay, Grad-CAM, class-probability
   panel), switch overlap merging to center-weighted probability blending, and

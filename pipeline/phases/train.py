@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from typing import Any, cast
 
 import torch
@@ -367,7 +368,10 @@ class TrainPhase(Phase):
         final_val_loss = 0.0
 
         with TimedBlock(context.logger, "Training phase"):
+            train_phase_start = time.time()
+            next_progress_pct = 5
             for epoch in range(epochs):
+                epoch_started_at = time.time()
                 context.hook_manager.on_epoch_start(context, self.name, epoch + 1)
                 if train_sampler is not None:
                     train_sampler.set_epoch(epoch)
@@ -472,6 +476,31 @@ class TrainPhase(Phase):
                         f"Epoch {epoch + 1} | Train Loss: {avg_train_loss:.4f} | "
                         f"Val Loss: {val_loss:.4f} | Val mIoU: {val_metrics['miou']:.4f}"
                     )
+                    epoch_duration = time.time() - epoch_started_at
+                    elapsed_total = time.time() - train_phase_start
+                    completed_epochs = epoch + 1
+                    avg_completed_epoch_duration = elapsed_total / float(
+                        completed_epochs
+                    )
+                    remaining_epochs = max(0, epochs - completed_epochs)
+                    epoch_eta = avg_completed_epoch_duration * float(remaining_epochs)
+                    completed_pct = int(
+                        math.floor((100.0 * completed_epochs) / float(max(1, epochs)))
+                    )
+                    while (
+                        completed_pct >= next_progress_pct and next_progress_pct <= 100
+                    ):
+                        context.logger.info(
+                            "Training progress %s%% | epoch %s/%s | last epoch %.1fs | ETA %.1fs"
+                            % (
+                                next_progress_pct,
+                                completed_epochs,
+                                epochs,
+                                epoch_duration,
+                                epoch_eta,
+                            )
+                        )
+                        next_progress_pct += 5
                     epoch_health["param_nonfinite_count"] = float(
                         count_nonfinite_parameters(eval_model)
                     )
