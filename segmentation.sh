@@ -5,7 +5,7 @@
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=8
 #SBATCH --partition=scc-gpu
-#SBATCH -G H100:2
+#SBATCH -G 2
 
 set -euo pipefail
 
