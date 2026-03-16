@@ -21,7 +21,7 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 
 : "${VECTOR_PATH:=${REPO_ROOT}/crf/union.shp}"
 : "${REFERENCE_PATH:=/user/davide.mattioli/u20330/planet_labels_2022.tif}"
-: "${OUTPUT_PATH:=${REPO_ROOT}/crf/new_labels.tif}"
+: "${OUTPUT_PATH:=${REPO_ROOT}/crf/new_labels_union.tif}"
 : "${REFERENCE_GLOB:=*.tif}"
 : "${VECTOR_GLOB:=*.shp}"
 : "${VECTOR_CRS:=EPSG:25832}"
