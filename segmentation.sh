@@ -13,7 +13,7 @@ module load miniforge3 gcc cuda
 # Activate env (allow override)
 source activate "${SEGEDGE_CONDA_ENV:-/mnt/vast-standard/home/davide.mattioli/u20330/all}"
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 cd "${REPO_ROOT}"
 
 export HF_HUB_OFFLINE=1
@@ -37,6 +37,21 @@ ALLOCATED_GPUS="$(detect_allocated_gpus)"
 GPUS_PER_NODE="${GPUS_PER_NODE:-${ALLOCATED_GPUS}}"
 CONFIG_PATH="${CONFIG_PATH:-configs/config_hpc.yml}"
 MASTER_PORT="${MASTER_PORT:-29500}"
+MAIN_PATH="${REPO_ROOT}/main.py"
+
+if [[ ! -f "${MAIN_PATH}" ]]; then
+  echo "Could not find main.py at ${MAIN_PATH}." >&2
+  exit 1
+fi
+
+if [[ "${CONFIG_PATH}" != /* ]]; then
+  CONFIG_PATH="${REPO_ROOT}/${CONFIG_PATH}"
+fi
+
+if [[ ! -f "${CONFIG_PATH}" ]]; then
+  echo "Could not find config file at ${CONFIG_PATH}." >&2
+  exit 1
+fi
 
 if [[ "${GPUS_PER_NODE}" -gt "${ALLOCATED_GPUS}" ]]; then
   echo "Requested GPUS_PER_NODE=${GPUS_PER_NODE} but only ${ALLOCATED_GPUS} GPUs are visible." >&2
@@ -47,15 +62,22 @@ fi
 nvidia-smi || true
 echo "repo_root=${REPO_ROOT}"
 echo "config_path=${CONFIG_PATH}"
+echo "main_path=${MAIN_PATH}"
 echo "allocated_gpus=${ALLOCATED_GPUS}"
 echo "gpus_per_node=${GPUS_PER_NODE}"
 echo "master_port=${MASTER_PORT}"
 python --version
-python -m torch.utils.collect_env
+python - <<'PY'
+import torch
+
+print(f"torch={torch.__version__}")
+print(f"cuda_available={torch.cuda.is_available()}")
+print(f"cuda_device_count={torch.cuda.device_count()}")
+PY
 
 torchrun \
   --standalone \
   --nnodes=1 \
   --nproc_per_node="${GPUS_PER_NODE}" \
   --master_port="${MASTER_PORT}" \
-  ./main.py "${CONFIG_PATH}"
+  "${MAIN_PATH}" "${CONFIG_PATH}"

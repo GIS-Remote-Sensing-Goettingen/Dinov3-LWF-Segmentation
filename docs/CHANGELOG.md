@@ -9,7 +9,9 @@
   training through
   `torchrun`, make the GPU count/config path overridable via environment
   variables, and align `configs/config_hpc.yml` with distributed training by
-  default while fixing the cluster label path
+  default while fixing the cluster label path; also resolve the repo root and
+  config path from `SLURM_SUBMIT_DIR`/absolute paths so `torchrun` works from
+  Slurm's spool directory
   (`segmentation.sh`, `configs/config_hpc.yml`, `README.md`).
 - Add `scripts/rasterize_vector_labels.py` to convert polygon label sources
   such as `crf/union.shp` into binary GeoTIFF masks aligned to one reference
