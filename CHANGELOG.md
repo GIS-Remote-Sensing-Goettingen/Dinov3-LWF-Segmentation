@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 ### Changed
+- Add `scripts/rasterize_vector_labels.py` to convert polygon label sources
+  such as `crf/union.shp` into binary GeoTIFF masks aligned to one reference
+  TIFF or a directory of reference TIFFs, with regression coverage for naming
+  and rasterization behavior (`scripts/rasterize_vector_labels.py`,
+  `test/test_rasterize_vector_labels.py`, `ARCHITECTURE.md`).
 - Add 5%-interval training progress logs with epoch counts and ETA so long HPC
   runs expose coarse-grained status in plain logs
   (`pipeline/phases/train.py`).

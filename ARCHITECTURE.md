@@ -12,6 +12,9 @@ MLflow-compatible artifacts for research workflows.
   (`train_batches.py`, `train_xai.py`). Module-XAI internals are grouped under
   `pipeline/xai/`.
 - `models/`: Segmentation heads (U-Net variants, MaskFormer-style head).
+- `scripts/`: Small one-off utilities for repository workflows and data
+  conversions (for example metrics export or rasterizing vector labels onto
+  reference TIFF grids).
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
   Data internals are grouped under the `utils/data/` package (`core.py`,
   `pipeline.py`) with `utils/data/__init__.py` as the public data facade.
