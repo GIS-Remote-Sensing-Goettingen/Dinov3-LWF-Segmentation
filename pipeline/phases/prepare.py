@@ -40,13 +40,21 @@ class PreparePhase(Phase):
         dataset_cfg = context.config.get("dataset", {})
         model_cfg = get_model_config(context.config)
         img_dir = resolve_path(
-            context.config, section, "img_dir", DEFAULT_RAW_IMAGES_DIR
+            context.config,
+            section,
+            "raw_images_dir",
+            DEFAULT_RAW_IMAGES_DIR,
+            legacy_keys=("img_dir",),
         )
         label_path = resolve_path(
             context.config, section, "label_path", DEFAULT_LABEL_PATH
         )
         output_dir = resolve_path(
-            context.config, section, "output_dir", DEFAULT_PROCESSED_DIR
+            context.config,
+            section,
+            "processed_dir",
+            DEFAULT_PROCESSED_DIR,
+            legacy_keys=("output_dir",),
         )
         device = torch.device(section.get("device", DEFAULT_DEVICE))
         if context.dist_ctx.enabled:

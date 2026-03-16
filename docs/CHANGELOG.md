@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 ### Changed
+- Unify prepare path resolution with the documented config schema so the shared
+  `paths.raw_images_dir`, `paths.label_path`, and `paths.processed_dir` keys are
+  now the single source of truth in the shipped YAML profiles, while legacy
+  `img_dir` / `output_dir` aliases remain supported in code for backward
+  compatibility
+  (`pipeline/phases/prepare.py`, `pipeline/utils.py`,
+  `configs/config.example.yml`, `configs/config_local.yml`,
+  `configs/config_hpc.yml`, `test/test_config_integrity.py`).
 - Rewrite the shipped YAML profiles so every user-facing config entry now has a
   direct explanatory comment, with especially explicit cache/label/processed-dir
   semantics to make prepare-vs-train behavior easier to navigate; also update

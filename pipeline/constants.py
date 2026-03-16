@@ -9,15 +9,11 @@ import os
 
 import torch
 
-DEFAULT_RAW_IMAGES_DIR = (
-    ""
-)
+DEFAULT_RAW_IMAGES_DIR = ""
 DEFAULT_LABEL_PATH = (
     "/run/media/mak/Partition of 1TB disk/SH_dataset/planet_labels_2022.tif"
 )
-DEFAULT_PROCESSED_DIR = (
-    ""
-)
+DEFAULT_PROCESSED_DIR = ""
 DEFAULT_MODEL_NAME = "facebook/dinov3-vitl16-pretrain-sat493m"
 DEFAULT_LAYERS = [5, 11, 17, 23]
 DEFAULT_HEAD = "unet"

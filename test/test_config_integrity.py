@@ -19,6 +19,7 @@ from pipeline.train_config import (  # noqa: E402
     parse_train_loss_config,
     parse_train_plot_config,
 )
+from pipeline.utils import resolve_path  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATHS = (
@@ -188,3 +189,77 @@ def test_core_model_values_are_viable() -> None:
         dino_channels = int(model_cfg.get("dino_channels", 0))
         assert num_classes >= 2, f"{path.name} model.num_classes must be >= 2."
         assert dino_channels > 0, f"{path.name} model.dino_channels must be > 0."
+
+
+def test_resolve_path_prefers_documented_prepare_keys() -> None:
+    """Ensure path resolution honors the documented shared path keys first.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    cfg = {
+        "paths": {
+            "raw_images_dir": "/data/new-images",
+            "processed_dir": "/data/new-cache",
+            "img_dir": "/data/legacy-images",
+            "output_dir": "/data/legacy-cache",
+        }
+    }
+    section = {}
+
+    assert (
+        resolve_path(
+            cfg,
+            section,
+            "raw_images_dir",
+            "/fallback/images",
+            legacy_keys=("img_dir",),
+        )
+        == "/data/new-images"
+    )
+    assert (
+        resolve_path(
+            cfg,
+            section,
+            "processed_dir",
+            "/fallback/cache",
+            legacy_keys=("output_dir",),
+        )
+        == "/data/new-cache"
+    )
+
+
+def test_resolve_path_accepts_legacy_prepare_aliases() -> None:
+    """Keep legacy prepare aliases working when the new keys are absent.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    cfg = {
+        "paths": {"img_dir": "/data/legacy-images", "output_dir": "/data/legacy-cache"}
+    }
+
+    assert (
+        resolve_path(
+            cfg,
+            {},
+            "raw_images_dir",
+            "/fallback/images",
+            legacy_keys=("img_dir",),
+        )
+        == "/data/legacy-images"
+    )
+    assert (
+        resolve_path(
+            cfg,
+            {},
+            "processed_dir",
+            "/fallback/cache",
+            legacy_keys=("output_dir",),
+        )
+        == "/data/legacy-cache"
+    )

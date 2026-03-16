@@ -183,7 +183,13 @@ def section_enabled(config: dict, name: str) -> bool:
     return bool(section.get("enable", False))
 
 
-def resolve_path(config: dict, section: dict, key: str, fallback: str) -> str:
+def resolve_path(
+    config: dict,
+    section: dict,
+    key: str,
+    fallback: str,
+    legacy_keys: tuple[str, ...] = (),
+) -> str:
     """Resolve a path from a section, falling back to global paths or defaults.
 
     Args:
@@ -191,6 +197,8 @@ def resolve_path(config: dict, section: dict, key: str, fallback: str) -> str:
         section (dict): Phase-specific section.
         key (str): Configuration key to resolve.
         fallback (str): Fallback path.
+        legacy_keys (tuple[str, ...]): Optional backward-compatible aliases
+            checked after `key`.
 
     Returns:
         str: Resolved path string.
@@ -199,10 +207,23 @@ def resolve_path(config: dict, section: dict, key: str, fallback: str) -> str:
         >>> cfg = {"paths": {"processed_dir": "/tmp/proc"}}
         >>> resolve_path(cfg, {"processed_dir": "/custom"}, "processed_dir", "/default")
         '/custom'
+        >>> cfg = {"paths": {"raw_images_dir": "/tmp/imgs"}}
+        >>> resolve_path(cfg, {}, "raw_images_dir", "/default", ("img_dir",))
+        '/tmp/imgs'
+        >>> cfg = {"paths": {"img_dir": "/tmp/legacy"}}
+        >>> resolve_path(cfg, {}, "raw_images_dir", "/default", ("img_dir",))
+        '/tmp/legacy'
     """
 
     paths_cfg = config.get("paths", {})
-    return section.get(key) or paths_cfg.get(key) or fallback
+    direct = section.get(key) or paths_cfg.get(key)
+    if direct:
+        return direct
+    for legacy_key in legacy_keys:
+        legacy_value = section.get(legacy_key) or paths_cfg.get(legacy_key)
+        if legacy_value:
+            return legacy_value
+    return fallback
 
 
 def get_model_config(config: dict) -> dict[str, Any]:
