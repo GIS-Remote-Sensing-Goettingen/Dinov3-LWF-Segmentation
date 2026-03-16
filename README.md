@@ -29,6 +29,23 @@ This repository provides a research-grade segmentation pipeline that keeps a fro
 
 The YAML file drives everything. Each section mirrors a phase and shares defaults if a specific value is missing.
 
+The shipped profiles under `configs/` are now the primary reference: every
+user-facing key is commented inline, including blank values and override
+behavior.
+
+Important cache semantics:
+- `dataset.cache_features` and `prepare.cache_features` control whether cached
+  `.pt` tiles include precomputed DINO features. They do not disable tile
+  caching itself.
+- `paths.label_path` is read during `prepare` when tiles are built. Training
+  usually reads cached `.pt` tiles from `processed_dir`, not the label TIFF
+  directly.
+- If you change `label_path`, `dataset.tile_filter`, or tile size settings, use
+  a fresh `processed_dir` or delete the old cached tiles before rerunning
+  `prepare`.
+- `paths.processed_dir` is the shared default cache root; `train.processed_dir`
+  and other phase-local `processed_dir` keys override it for that phase only.
+
 Repository layout:
 - `configs/` contains the shipped example/local/HPC YAML profiles.
 - `docs/` contains architecture notes, changelog, model notes, and style guidance.

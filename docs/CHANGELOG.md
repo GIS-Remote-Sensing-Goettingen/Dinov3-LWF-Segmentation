@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 ### Changed
+- Rewrite the shipped YAML profiles so every user-facing config entry now has a
+  direct explanatory comment, with especially explicit cache/label/processed-dir
+  semantics to make prepare-vs-train behavior easier to navigate; also update
+  the README config reference to mirror the clarified cache rules
+  (`configs/config.example.yml`, `configs/config_local.yml`,
+  `configs/config_hpc.yml`, `README.md`).
 - Fix distributed training for auxiliary-output heads by routing train-time
   forwards through a normalized adapter that preserves aux/boundary/skeleton
   payloads under DDP, adds a clear aux-required runtime guard, and restores
