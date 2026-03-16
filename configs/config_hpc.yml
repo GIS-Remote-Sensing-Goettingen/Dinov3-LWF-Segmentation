@@ -18,14 +18,14 @@ logging:
 paths:
   # Input imagery, GT labels, and cached tiles/features root.
   raw_images_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_1/
-  label_path: /user/davide.mattioli/u20330/crf/new_labels.tif
+  label_path: user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/new_labels.tif
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
 
 dataset:
   # If true, read/write precomputed DINO features instead of extracting on the fly.
   cache_features: false
   # 0 means "all tiles"; >0 limits prepare/train tile count.
-  max_tiles: 2000
+  max_tiles: 20000
   tile_filter:
     # Keep only tiles containing at least one foreground label.
     enabled: true
