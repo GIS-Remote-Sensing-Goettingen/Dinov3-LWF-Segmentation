@@ -6,6 +6,9 @@ MLflow-compatible artifacts for research workflows.
 
 ## Folder Structure
 - `main.py`: Thin CLI entry point for running the pipeline.
+- `configs/`: Shipped YAML profiles for example, local, and HPC runs.
+- `docs/`: Supplemental documentation such as architecture notes, changelog,
+  model notes, and style guidance.
 - `pipeline/`: Phase runner, hooks, processors, and tracking utilities.
   Concrete phases are grouped in the `pipeline/phases/` package
   (`prepare.py`, `verify.py`, `train.py`, `inference.py`) with helper modules
@@ -19,7 +22,8 @@ MLflow-compatible artifacts for research workflows.
   Data internals are grouped under the `utils/data/` package (`core.py`,
   `pipeline.py`) with `utils/data/__init__.py` as the public data facade.
 - `config.py`: YAML configuration loader.
-- `MODELS.md`: Formula-level notes on DINO layer extraction and FAPM projections.
+- `docs/MODELS.md`: Formula-level notes on DINO layer extraction and FAPM
+  projections.
 
 ## Phase Orchestration
 - **Phase base class:** Standardizes enable checks, timing, and error handling.

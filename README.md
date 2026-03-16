@@ -6,7 +6,7 @@ This repository provides a research-grade segmentation pipeline that keeps a fro
 
 1. **Copy the example config** and tailor it to your environment:
    ```bash
-   cp config.example.yml config.yml
+   cp configs/config.example.yml config.yml
    ```
    Update the paths (raw imagery, labels, cache directory), toggle phases (`prepare`, `verify`, `train`, `inference`), and adjust hyperparameters or decoder selection under the `model` section.
 
@@ -18,13 +18,18 @@ This repository provides a research-grade segmentation pipeline that keeps a fro
    ```bash
    torchrun --standalone --nproc_per_node=4 main.py config.yml
    ```
-   Only rank 0 prints logs and runs inference; validation metrics are computed on rank 0 and broadcast to the others. If no argument is provided the script checks the first CLI argument, then `$DINOV3SEG_CONFIG`, and finally searches upward for `config.yml`.
+   Only rank 0 prints logs and runs inference; validation metrics are computed on rank 0 and broadcast to the others. If no argument is provided the script checks the first CLI argument, then `$DINOV3SEG_CONFIG`, and finally searches upward for `configs/config_hpc.yml`.
 
 3. **Observe logs**: The logger honors three verbosity levels (`error`, `info`, `debug`), can print timestamps, and optionally mirrors output to a log file. Configure it via the `logging` block.
 
 ## Configuration Reference
 
 The YAML file drives everything. Each section mirrors a phase and shares defaults if a specific value is missing.
+
+Repository layout:
+- `configs/` contains the shipped example/local/HPC YAML profiles.
+- `docs/` contains architecture notes, changelog, model notes, and style guidance.
+- `README.md` stays at the repository root as the entry point.
 
 ```yaml
 resources:
