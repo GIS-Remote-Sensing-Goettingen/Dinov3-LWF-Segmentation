@@ -4,7 +4,7 @@ resources:
   omp_threads: 4
   matmul_precision: high
   # Enable DistributedDataParallel when launching with torchrun.
-  distributed: false
+  distributed: true
   # Backend used for distributed process groups.
   dist_backend: nccl
 
@@ -18,7 +18,7 @@ logging:
 paths:
   # Input imagery, GT labels, and cached tiles/features root.
   raw_images_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_1/
-  label_path: user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/new_labels.tif
+  label_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/new_labels.tif
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
 
 dataset:

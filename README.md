@@ -18,6 +18,9 @@ This repository provides a research-grade segmentation pipeline that keeps a fro
    ```bash
    torchrun --standalone --nproc_per_node=4 main.py config.yml
    ```
+   On Slurm, `segmentation.sh` now defaults to a single-node 2-GPU `torchrun`
+   launch against `configs/config_hpc.yml`; override `GPUS_PER_NODE` or
+   `CONFIG_PATH` at submit time when needed.
    Only rank 0 prints logs and runs inference; validation metrics are computed on rank 0 and broadcast to the others. If no argument is provided the script checks the first CLI argument, then `$DINOV3SEG_CONFIG`, and finally searches upward for `configs/config_hpc.yml`.
 
 3. **Observe logs**: The logger honors three verbosity levels (`error`, `info`, `debug`), can print timestamps, and optionally mirrors output to a log file. Configure it via the `logging` block.
@@ -272,6 +275,8 @@ Inference input selection:
 ## Distributed Training
 
 - Set `resources.distributed: true` in the config and launch via `torchrun --standalone --nproc_per_node=<gpus> main.py config.yml`.
+- `segmentation.sh` requests 2 GPUs by default and launches `torchrun` with the
+  visible GPU count unless `GPUS_PER_NODE` is overridden.
 - Training uses `DistributedDataParallel` with `DistributedSampler`; rank 0 handles logging, validation loops, checkpointing, and inference while other ranks stay silent and focus on SGD.
 - Validation metrics (loss, mIoU) and early-stopping signals are broadcast to every rank so they can exit cleanly at the same epoch. Inference automatically runs only on rank 0 to avoid duplicate outputs.
 
