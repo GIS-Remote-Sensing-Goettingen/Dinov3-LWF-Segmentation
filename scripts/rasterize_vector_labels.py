@@ -65,8 +65,8 @@ def derive_output_path(reference_path: Path, output_path: Path) -> Path:
     """Return the label TIFF path for a reference raster.
 
     When `output_path` is a directory, this function derives a label filename
-    from the reference stem. `_pred` and `_image` suffixes are normalized to
-    `_labels`.
+    from the reference stem. Prediction/image suffixes are normalized to
+    `_labels`, while an existing `_labels` suffix is preserved.
 
     Args:
         reference_path (Path): Source raster used as the alignment grid.
@@ -79,6 +79,9 @@ def derive_output_path(reference_path: Path, output_path: Path) -> Path:
         >>> ref = Path("dop20_596000_5973000_1km_20cm_pred.tif")
         >>> derive_output_path(ref, Path("labels")).name
         'dop20_596000_5973000_1km_20cm_labels.tif'
+        >>> ref = Path("dop20_592000_5975000_1km_20cm_labels.tif")
+        >>> derive_output_path(ref, Path("labels")).name
+        'dop20_592000_5975000_1km_20cm_labels.tif'
         >>> derive_output_path(Path("scene.tif"), Path("labels")).name
         'scene_labels.tif'
     """
@@ -86,7 +89,7 @@ def derive_output_path(reference_path: Path, output_path: Path) -> Path:
     if output_path.suffix.lower() in {".tif", ".tiff"}:
         return output_path
     stem = reference_path.stem
-    for suffix in ("_pred", "_image", "_img"):
+    for suffix in ("_pred", "_image", "_img", "_labels"):
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
             break

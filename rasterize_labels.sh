@@ -20,9 +20,9 @@ export HF_HUB_OFFLINE=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 
 : "${VECTOR_PATH:=${REPO_ROOT}/crf/union.shp}"
-: "${REFERENCE_PATH:=${REPO_ROOT}/test}"
-: "${OUTPUT_PATH:=${REPO_ROOT}/test/new_labels}"
-: "${REFERENCE_GLOB:=*_labels.tif}"
+: "${REFERENCE_PATH:=/user/davide.mattioli/u20330/planet_labels_2022.tif}"
+: "${OUTPUT_PATH:=${REPO_ROOT}/crf/new_labels.tif}"
+: "${REFERENCE_GLOB:=*.tif}"
 : "${VECTOR_CRS:=EPSG:25832}"
 : "${WINDOW_SIZE:=0}"
 : "${STREAM_THRESHOLD_PIXELS:=50000000}"

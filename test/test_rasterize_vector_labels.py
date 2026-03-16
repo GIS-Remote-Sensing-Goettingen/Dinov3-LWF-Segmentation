@@ -81,6 +81,18 @@ def test_derive_output_path_replaces_prediction_suffix() -> None:
     assert output.name == "dop20_596000_5973000_1km_20cm_labels.tif"
 
 
+def test_derive_output_path_preserves_existing_labels_suffix() -> None:
+    """Existing label stems should not get a duplicate `_labels` suffix.
+
+    This keeps replacement outputs aligned with the current scene naming
+    convention when old label TIFFs are used as references.
+    """
+
+    ref = Path("dop20_592000_5975000_1km_20cm_labels.tif")
+    output = derive_output_path(ref, Path("labels"))
+    assert output.name == "dop20_592000_5975000_1km_20cm_labels.tif"
+
+
 def test_rasterize_reference_labels_burns_binary_mask(tmp_path: Path) -> None:
     """Rasterization should align polygon coverage to the reference grid.
 

@@ -201,6 +201,14 @@ def upsample_rgb_map(values: np.ndarray, target_h: int, target_w: int) -> np.nda
 
     Returns:
         np.ndarray: Upsampled RGB map in [0, 1].
+
+    Examples:
+        >>> rgb = np.array([[[1.0, 0.0, 0.5]]], dtype=np.float32)
+        >>> up = upsample_rgb_map(rgb, 2, 2)
+        >>> up.shape
+        (2, 2, 3)
+        >>> up[0, 0].tolist()
+        [1.0, 0.0, 0.5]
     """
 
     values = np.asarray(values, dtype=np.float32)

@@ -10,8 +10,9 @@
   TIFF or a directory of reference TIFFs, including auto-windowed
   low-memory rasterization for large references, CLI progress logging, and
   optional threaded window concurrency, plus a Slurm wrapper defaulting to the
-  cluster repo path under `/user/davide.mattioli/u20330/Dinov3-LWF-Segmentation`,
-  with regression coverage for naming and rasterization behavior
+  cluster repo path under `/user/davide.mattioli/u20330/Dinov3-LWF-Segmentation`
+  and the single-raster `planet_labels_2022.tif -> crf/new_labels.tif`
+  workflow by default, with regression coverage for naming and rasterization behavior
   (`scripts/rasterize_vector_labels.py`,
   `test/test_rasterize_vector_labels.py`, `rasterize_labels.sh`,
   `ARCHITECTURE.md`).
