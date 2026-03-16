@@ -18,14 +18,14 @@ logging:
 paths:
   # Input imagery, GT labels, and cached tiles/features root.
   raw_images_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_1/
-  label_path: /user/davide.mattioli/u20330/planet_labels_2022.tif
+  label_path: user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/new_labels.tif
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
 
 dataset:
   # If true, read/write precomputed DINO features instead of extracting on the fly.
   cache_features: false
   # 0 means "all tiles"; >0 limits prepare/train tile count.
-  max_tiles: 2000
+  max_tiles: 5000
   tile_filter:
     # Keep only tiles containing at least one foreground label.
     enabled: true
@@ -78,7 +78,7 @@ model:
   # Frozen DINOv3-SAT backbone; selected transformer layers are fused by the head.
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: dino_dense_probe # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
+  head: unet_nano_fapm # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
   num_classes: 2
   dino_channels: 1024
   # Dense linear probe baseline options.
@@ -140,7 +140,7 @@ train:
   processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_1
   weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/
   batch_size: 3
-  epochs: 40
+  epochs: 20
   muon_lr: 0.02
   adamw_lr: 0.001
   adamw_wd: 0.05
@@ -255,18 +255,29 @@ inference:
   output_dir: test/
   output_suffix: _pred.tif
   glob: "*.tif"
-  checkpoint: weights/dino_dense_probe_best.pth
+  checkpoint:
   tile_size: 1024
   overlap: 0.25
+  merge:
+    # How overlapping tile predictions are blended back into the full scene.
+    mode: center_weighted
   tta:
     # Optional test-time augmentation.
     horizontal_flip: false
     vertical_flip: false
   explain:
-    # Inference-time explainability dashboard export.
+    # Inference-time unified scene dashboard export.
     enable: true
     output_dir: plots
     class_index: 1
-    dashboard_layout: "4x3"
-    pca_enable: true
-    pca_layer_mode: last_requested_layer
+    dashboard_layout: "2x2"
+    pred_overlay_color: [120, 190, 255]
+    pred_overlay_alpha: 0.28
+    tile_debug_enable: false
+    plot_every_n: 10
+  vector:
+    # Optional cumulative foreground-mask shapefile export in EPSG:4326.
+    enable: true
+    target_epsg: 4326
+    append: true
+    foreground_class: 1

@@ -6,7 +6,7 @@ This repository provides a research-grade segmentation pipeline that keeps a fro
 
 1. **Copy the example config** and tailor it to your environment:
    ```bash
-   cp config.example.yml config.yml
+   cp configs/config.example.yml config.yml
    ```
    Update the paths (raw imagery, labels, cache directory), toggle phases (`prepare`, `verify`, `train`, `inference`), and adjust hyperparameters or decoder selection under the `model` section.
 
@@ -18,13 +18,18 @@ This repository provides a research-grade segmentation pipeline that keeps a fro
    ```bash
    torchrun --standalone --nproc_per_node=4 main.py config.yml
    ```
-   Only rank 0 prints logs and runs inference; validation metrics are computed on rank 0 and broadcast to the others. If no argument is provided the script checks the first CLI argument, then `$DINOV3SEG_CONFIG`, and finally searches upward for `config.yml`.
+   Only rank 0 prints logs and runs inference; validation metrics are computed on rank 0 and broadcast to the others. If no argument is provided the script checks the first CLI argument, then `$DINOV3SEG_CONFIG`, and finally searches upward for `configs/config_hpc.yml`.
 
 3. **Observe logs**: The logger honors three verbosity levels (`error`, `info`, `debug`), can print timestamps, and optionally mirrors output to a log file. Configure it via the `logging` block.
 
 ## Configuration Reference
 
 The YAML file drives everything. Each section mirrors a phase and shares defaults if a specific value is missing.
+
+Repository layout:
+- `configs/` contains the shipped example/local/HPC YAML profiles.
+- `docs/` contains architecture notes, changelog, model notes, and style guidance.
+- `README.md` stays at the repository root as the entry point.
 
 ```yaml
 resources:
@@ -229,6 +234,8 @@ inference:
   checkpoint: weights/unet_v2_best.pth
   tile_size: 512
   overlap: 0.25
+  merge:
+    mode: center_weighted
   tta:
     horizontal_flip: true
     vertical_flip: false
@@ -236,9 +243,15 @@ inference:
     enable: true
     output_dir: plots  # fallback only when MLflow logging is disabled
     class_index: 1
-    dashboard_layout: "4x3"
-    pca_enable: true
-    pca_layer_mode: last_requested_layer
+    dashboard_layout: "2x2"
+    pred_overlay_color: [120, 190, 255]
+    pred_overlay_alpha: 0.28
+    tile_debug_enable: false
+  vector:
+    enable: false
+    target_epsg: 4326
+    append: true
+    foreground_class: 1
 ```
 
 Set `enable: true` for any section you want to run. The `paths` block provides base directories shared across phases, while individual sections can override them (e.g., use a different `processed_dir` for training vs. verification).
@@ -247,6 +260,8 @@ Model options for topology-fusion heads are grouped under `model.fusion`, `model
 Inference input selection:
 - Set exactly one source: `inference.input_tif` or `inference.input_dir`.
 - `input_dir` now runs each file through the same sliding-window tiled inference + merge path used by `input_tif`, then writes outputs to `output_dir`.
+- Inference explainability now writes one scene-level figure per input image by default: RGB, light-blue prediction overlay, Grad-CAM, and class probability.
+- `inference.vector` appends all scene-level foreground predictions into one cumulative shapefile in `EPSG:4326` under the run artifact tree (`artifacts/vectors/inference/predictions_4326.shp`).
 
 ## Logging & Timing
 
@@ -334,13 +349,13 @@ PY
 
 - PyTorch (CUDA build recommended)
 - `transformers`
-- Geospatial stack: `rasterio`, `tifffile`, `shapely`
+- Geospatial stack: `rasterio`, `tifffile`, `shapely`, `fiona`
 - Misc: `numpy`, `tqdm`, `PyYAML`
 
 Install via:
 
 ```bash
-pip install torch torchvision transformers rasterio tifffile shapely tqdm pyyaml
+pip install torch torchvision transformers rasterio tifffile shapely fiona tqdm pyyaml
 ```
 
 ## Notes

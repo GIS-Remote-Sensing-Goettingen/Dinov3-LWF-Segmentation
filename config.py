@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 import yaml
 
-DEFAULT_CONFIG_PATH = "config_hpc.yml"
+DEFAULT_CONFIG_PATH = "configs/config_hpc.yml"
 CONFIG_ENV_VAR = "DINOV3SEG_CONFIG"
 
 
@@ -73,6 +73,7 @@ def load_config(path: str | None = None) -> Dict[str, Any]:
     >>> import tempfile, os
     >>> tmpdir = tempfile.mkdtemp()
     >>> cfg_path = Path(tmpdir) / DEFAULT_CONFIG_PATH
+    >>> _ = cfg_path.parent.mkdir(parents=True, exist_ok=True)
     >>> _ = cfg_path.write_text("logging:\\n  level: error\\n")
     >>> cwd = os.getcwd()
     >>> prev = os.environ.pop(CONFIG_ENV_VAR, None)

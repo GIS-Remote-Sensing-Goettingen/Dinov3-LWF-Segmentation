@@ -6,17 +6,33 @@ MLflow-compatible artifacts for research workflows.
 
 ## Folder Structure
 - `main.py`: Thin CLI entry point for running the pipeline.
+- `configs/`: Shipped YAML profiles for example, local, and HPC runs.
+- `docs/`: Supplemental documentation such as architecture notes, changelog,
+  model notes, and style guidance.
 - `pipeline/`: Phase runner, hooks, processors, and tracking utilities.
+  Concrete phases are grouped in the `pipeline/phases/` package
+  (`prepare.py`, `verify.py`, `train.py`, `inference.py`) with helper modules
+  (`train_batches.py`, `train_xai.py`). Module-XAI internals are grouped under
+  `pipeline/xai/`.
 - `models/`: Segmentation heads (U-Net variants, MaskFormer-style head).
+- `scripts/`: Small one-off utilities for repository workflows and data
+  conversions (for example metrics export or rasterizing vector labels onto
+  reference TIFF grids).
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
+  Data internals are grouped under the `utils/data/` package (`core.py`,
+  `pipeline.py`) with `utils/data/__init__.py` as the public data facade.
 - `config.py`: YAML configuration loader.
-- `MODELS.md`: Formula-level notes on DINO layer extraction and FAPM projections.
+- `docs/MODELS.md`: Formula-level notes on DINO layer extraction and FAPM
+  projections.
 
 ## Phase Orchestration
 - **Phase base class:** Standardizes enable checks, timing, and error handling.
 - **PhaseRunner:** Executes phases in order and coordinates hooks/processors.
 - **Hooks:** Lifecycle callbacks (run/phase/epoch/batch/tile) for extensibility.
 - **Processors:** Pre/post phase modules for snapshotting and summaries.
+- **Train loop decomposition:** `TrainPhase` orchestrates setup/checkpointing,
+  while `phase_train_batches.py` handles per-batch optimization and
+  `phase_train_xai.py` handles epoch validation/XAI artifact aggregation.
 - **Stability policy:** `train.stability` controls AMP mode/dtype, fp32 loss, gradient clipping,
   non-finite handling, and checkpoint safety gates.
 - **Training config schema:** `train.plots` now groups all epoch/XAI plotting options,
@@ -87,3 +103,6 @@ MLflow-compatible artifacts for research workflows.
 4. Run inference (optional)
    Both `input_tif` and `input_dir` modes use the same sliding-window tiled inference
    and merge path to keep behavior consistent and memory-bounded on large inputs.
+   Scene outputs now use center-weighted overlap blending, emit one compact
+   explainability figure per input image, and can append foreground polygons
+   into a cumulative `EPSG:4326` shapefile.

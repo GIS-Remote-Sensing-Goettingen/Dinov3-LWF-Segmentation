@@ -747,6 +747,14 @@ def resolve_cam_layer(layers: list[int], mode: str) -> int | None:
 
     Returns:
         int | None: Selected layer index, or None when no layers are configured.
+
+    Examples:
+        >>> resolve_cam_layer([5, 11, 17, 23], "first_requested_layer")
+        5
+        >>> resolve_cam_layer([5, 11, 17, 23], "last_requested_layer")
+        23
+        >>> resolve_cam_layer([], "last_requested_layer") is None
+        True
     """
 
     if not layers:
@@ -773,6 +781,14 @@ def compute_tile_iou_f1(
 
     Returns:
         tuple[float, float]: IoU and F1 values for the selected class.
+
+    Examples:
+        >>> pred = np.array([[0, 1], [1, 0]], dtype=np.uint8)
+        >>> gt = np.array([[0, 1], [0, 0]], dtype=np.uint8)
+        >>> compute_tile_iou_f1(pred, gt)
+        (0.5, 0.6666666666666666)
+        >>> compute_tile_iou_f1(pred, np.full((2, 2), 255), ignore_index=255)
+        (0.0, 0.0)
     """
 
     pred = pred_mask.astype(np.int64)

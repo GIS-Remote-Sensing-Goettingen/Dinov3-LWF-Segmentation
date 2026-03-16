@@ -258,15 +258,26 @@ inference:
   checkpoint: /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/weights/unet_lite_best.pth
   tile_size: 512
   overlap: 0.25
+  merge:
+    # How overlapping tile predictions are blended back into the full scene.
+    mode: center_weighted
   tta:
     # Optional test-time augmentation.
     horizontal_flip: true
     vertical_flip: false
   explain:
-    # Inference-time explainability dashboard export.
+    # Inference-time unified scene dashboard export.
     enable: true
     output_dir: plots
     class_index: 1
-    dashboard_layout: "4x3"
-    pca_enable: true
-    pca_layer_mode: last_requested_layer
+    dashboard_layout: "2x2"
+    pred_overlay_color: [120, 190, 255]
+    pred_overlay_alpha: 0.28
+    tile_debug_enable: false
+    plot_every_n: 10
+  vector:
+    # Optional cumulative foreground-mask shapefile export in EPSG:4326.
+    enable: true
+    target_epsg: 4326
+    append: true
+    foreground_class: 1

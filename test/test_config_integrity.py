@@ -22,9 +22,9 @@ from pipeline.train_config import (  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATHS = (
-    REPO_ROOT / "config.example.yml",
-    REPO_ROOT / "config_hpc.yml",
-    REPO_ROOT / "config_local.yml",
+    REPO_ROOT / "configs" / "config.example.yml",
+    REPO_ROOT / "configs" / "config_hpc.yml",
+    REPO_ROOT / "configs" / "config_local.yml",
 )
 
 
