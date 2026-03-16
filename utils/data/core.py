@@ -9,6 +9,7 @@ import glob
 import json
 import os
 import random
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence
 
@@ -161,6 +162,40 @@ def _tile_passes_label_filter(
         if np.any(label_int == int(cls)):
             return True
     return False
+
+
+def _write_tile_payload_atomic(payload: dict[str, Any], save_path: str) -> bool:
+    """Write one cached tile atomically without clobbering an existing tile.
+
+    Args:
+        payload (dict[str, Any]): Tile payload to persist.
+        save_path (str): Final `.pt` path.
+
+    Returns:
+        bool: ``True`` when the tile was written, ``False`` when another writer
+        already created the destination.
+
+    Examples:
+        >>> import tempfile
+        >>> tmpdir = tempfile.mkdtemp()
+        >>> path = os.path.join(tmpdir, "tile.pt")
+        >>> _write_tile_payload_atomic({"x": torch.tensor([1])}, path)
+        True
+        >>> _write_tile_payload_atomic({"x": torch.tensor([2])}, path)
+        False
+    """
+
+    temp_path = f"{save_path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        torch.save(payload, temp_path)
+        try:
+            os.link(temp_path, save_path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def _sanitize_label_tensor(
@@ -745,9 +780,20 @@ def process_image_tiles_no_features(
         return {"status": "stopped", "tiles_written": 0, "skipped_no_foreground": 0}
     try:
         full_img = imread(img_path)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error_type": "image_read_error",
+            "error": str(exc),
+        }
+    try:
         full_label = subset_label_to_image_bounds(img_path, label_path)
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return {
+            "status": "error",
+            "error_type": "label_alignment_error",
+            "error": str(exc),
+        }
     h, w, _ = full_img.shape
     tiles_written = 0
     skipped_no_foreground = 0
@@ -803,9 +849,16 @@ def process_image_tiles_no_features(
                 "features": [],
                 "label": lbl_crop,
             }
-            temp_path = save_path + ".tmp"
-            torch.save(payload, temp_path)
-            os.rename(temp_path, save_path)
+            try:
+                wrote_tile = _write_tile_payload_atomic(payload, save_path)
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "error_type": "tile_write_error",
+                    "error": str(exc),
+                }
+            if not wrote_tile:
+                continue
             tiles_written += 1
     return {
         "status": "ok",

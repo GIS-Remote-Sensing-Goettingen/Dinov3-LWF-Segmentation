@@ -5,6 +5,25 @@
 
 ## [Unreleased]
 ### Changed
+- Extend `scripts/rasterize_vector_labels.py` with a
+  `--resolution-factor` option so label GeoTIFFs can be generated on a
+  denser pixel grid while preserving the reference CRS and geographic extent,
+  and add recursive shapefile-directory processing with parallel per-shape TIFF
+  outputs plus a merged final TIFF, with regression coverage for scaled
+  transforms, bounds preservation, higher-resolution windowed parity, and
+  nested shapefile batch merging; also expose the new vector-glob,
+  vector-worker, and resolution-factor controls through the Slurm wrapper
+  (`scripts/rasterize_vector_labels.py`, `rasterize_labels.sh`,
+  `test/test_rasterize_vector_labels.py`).
+- Fix distributed prepare correctness by making tile generation a main-rank-only
+  phase under DDP, broadcasting the rank-0 outcome to other ranks, hardening
+  cache writes with unique atomic temp files, and replacing misleading
+  "corrupted image" rename-race logs with read/label/write-specific diagnostics;
+  also make the CLI report failed phase summaries instead of always logging a
+  success footer
+  (`pipeline/phases/prepare.py`, `pipeline/utils.py`, `utils/data/core.py`,
+  `utils/data/pipeline.py`, `main.py`, `test/test_prepare_runtime.py`,
+  `docs/ARCHITECTURE.md`).
 - Unify prepare path resolution with the documented config schema so the shared
   `paths.raw_images_dir`, `paths.label_path`, and `paths.processed_dir` keys are
   now the single source of truth in the shipped YAML profiles, while legacy

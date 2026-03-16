@@ -27,6 +27,7 @@ from .core import (
     _normalize_tile_filter_cfg,
     _sanitize_label_tensor,
     _tile_passes_label_filter,
+    _write_tile_payload_atomic,
     extract_multiscale_features,
     process_image_tiles_no_features,
     subset_label_to_image_bounds,
@@ -397,7 +398,7 @@ def prepare_data_tiles(
                         result = future.result()
                     except Exception as exc:
                         errors += 1
-                        _log_debug(f"Skipping corrupted image {basename}: {exc}")
+                        _log_debug(f"Prepare worker failed for {basename}: {exc}")
                         continue
                     skipped_no_foreground += int(result.get("skipped_no_foreground", 0))
                     status = result.get("status")
@@ -416,9 +417,24 @@ def prepare_data_tiles(
                         continue
                     if status in {"error"}:
                         errors += 1
-                        _log_debug(
-                            f"Skipping corrupted image {basename}: {result.get('error')}."
-                        )
+                        error_type = str(result.get("error_type", "prepare_error"))
+                        error_text = str(result.get("error", "unknown prepare error"))
+                        if error_type == "image_read_error":
+                            _log_debug(
+                                f"Skipping unreadable image {basename}: {error_text}"
+                            )
+                        elif error_type == "label_alignment_error":
+                            _log_debug(
+                                "Skipping label alignment failure for %s: %s"
+                                % (basename, error_text)
+                            )
+                        elif error_type == "tile_write_error":
+                            _log_debug(
+                                "Stopping prepare for %s due to tile write error: %s"
+                                % (basename, error_text)
+                            )
+                        else:
+                            _log_debug(f"Prepare failed for {basename}: {error_text}")
                         continue
                     elapsed = time.time() - start_time
                     eta = _format_eta(
@@ -483,9 +499,13 @@ def prepare_data_tiles(
         gc.collect()
         try:
             full_img = imread(img_path)
+        except Exception as exc:
+            _log_debug(f"Skipping unreadable image {basename}: {exc}")
+            continue
+        try:
             full_label = subset_label_to_image_bounds(img_path, label_path)
-        except Exception:
-            _log_debug(f"Skipping corrupted image {basename}.")
+        except Exception as exc:
+            _log_debug(f"Skipping label alignment failure for {basename}: {exc}")
             continue
         H, W, _ = full_img.shape
         skipped_no_foreground = 0
@@ -517,7 +537,6 @@ def prepare_data_tiles(
                 if np.isnan(img_crop).any():
                     img_crop = np.nan_to_num(img_crop)
                     _log_debug(f"NaNs detected and replaced for tile {tile_name}")
-                temp_path: str | None = None
                 try:
                     feats = []
                     if cache_features:
@@ -534,9 +553,11 @@ def prepare_data_tiles(
                         "features": [f.cpu() for f in feats] if feats else [],
                         "label": lbl_crop,
                     }
-                    temp_path = save_path + ".tmp"
-                    torch.save(payload, temp_path)
-                    os.rename(temp_path, save_path)
+                    wrote_tile = _write_tile_payload_atomic(payload, save_path)
+                    if not wrote_tile:
+                        del feats, payload, img_crop, lbl_crop
+                        _log_debug(f"Tile already exists after race: {tile_name}")
+                        continue
                     del feats, payload, img_crop, lbl_crop
                     tiles_written += 1
                 except RuntimeError as e:
@@ -544,8 +565,6 @@ def prepare_data_tiles(
                         del img_crop
                         torch.cuda.empty_cache()
                         gc.collect()
-                        if temp_path and os.path.exists(temp_path):
-                            os.remove(temp_path)
                         continue
                     raise e
         if tile_filter["enabled"] and skipped_no_foreground > 0:

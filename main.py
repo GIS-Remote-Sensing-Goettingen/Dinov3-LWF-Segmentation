@@ -53,11 +53,15 @@ def main(config_path: str | None = None) -> None:
     runner = PhaseRunner(phases=phases, processors=processors)
     results = runner.run(context)
     status = "FINISHED"
-    if any(result.status == "failed" for result in results):
+    failed_phases = [result.name for result in results if result.status == "failed"]
+    if failed_phases:
         status = "FAILED"
     if context.mlflow_logger:
         context.mlflow_logger.close(status)
-    logger.info("All enabled phases completed.")
+    if failed_phases:
+        logger.error("Run finished with failed phases: %s" % ", ".join(failed_phases))
+    else:
+        logger.info("All enabled phases completed successfully.")
     cleanup_distributed(dist_ctx)
 
 

@@ -58,6 +58,11 @@ MLflow-compatible artifacts for research workflows.
   a small normalized adapter before DDP so custom aux/boundary/skeleton outputs
   remain visible to the loss code even when the wrapper only exposes
   `forward()`.
+- **Distributed prepare policy:** when `resources.distributed` is enabled,
+  `PreparePhase` runs tiling/cache writes only on rank 0, then broadcasts the
+  resulting metrics/artifacts or failure to the other ranks before later phases
+  continue. Cached tile writes use unique temp files plus an atomic final claim
+  so concurrent jobs do not misclassify rename races as corrupted imagery.
 
 ## Tracking & Artifacts
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.

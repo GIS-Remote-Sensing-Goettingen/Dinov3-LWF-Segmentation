@@ -93,6 +93,29 @@ def cleanup_distributed(ctx: DistContext) -> None:
         dist.destroy_process_group()
 
 
+def broadcast_main_object(ctx: DistContext, payload: Any) -> Any:
+    """Broadcast a Python object from rank 0 to all ranks.
+
+    Args:
+        ctx (DistContext): Distributed context.
+        payload (Any): Object to broadcast from rank 0.
+
+    Returns:
+        Any: The object received from rank 0, or the input when distributed
+            mode is disabled.
+
+    Examples:
+        >>> broadcast_main_object(DistContext(), {"ok": True})["ok"]
+        True
+    """
+
+    if not ctx.enabled:
+        return payload
+    obj_list = [payload if ctx.is_main else None]
+    dist.broadcast_object_list(obj_list, src=0)
+    return obj_list[0]
+
+
 def apply_resource_config(config: dict) -> None:
     """Apply thread, seed, and precision settings from the config.
 

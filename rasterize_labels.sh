@@ -3,7 +3,7 @@
 #SBATCH --output=rasterize_labels_%j.out
 #SBATCH --error=rasterize_labels_%j.err
 #SBATCH --mem=128G
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --partition=scc-gpu
 #SBATCH -G A100:1
 
@@ -23,10 +23,13 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 : "${REFERENCE_PATH:=/user/davide.mattioli/u20330/planet_labels_2022.tif}"
 : "${OUTPUT_PATH:=${REPO_ROOT}/crf/new_labels.tif}"
 : "${REFERENCE_GLOB:=*.tif}"
+: "${VECTOR_GLOB:=*.shp}"
 : "${VECTOR_CRS:=EPSG:25832}"
 : "${WINDOW_SIZE:=0}"
 : "${STREAM_THRESHOLD_PIXELS:=50000000}"
 : "${WORKERS:=${SLURM_CPUS_PER_TASK:-1}}"
+: "${VECTOR_WORKERS:=4}"
+: "${RESOLUTION_FACTOR:=4}"
 : "${LOG_LEVEL:=INFO}"
 : "${OVERWRITE:=0}"
 
@@ -36,10 +39,13 @@ echo "vector_path=${VECTOR_PATH}"
 echo "reference_path=${REFERENCE_PATH}"
 echo "output_path=${OUTPUT_PATH}"
 echo "reference_glob=${REFERENCE_GLOB}"
+echo "vector_glob=${VECTOR_GLOB}"
 echo "vector_crs=${VECTOR_CRS}"
 echo "window_size=${WINDOW_SIZE}"
 echo "stream_threshold_pixels=${STREAM_THRESHOLD_PIXELS}"
 echo "workers=${WORKERS}"
+echo "vector_workers=${VECTOR_WORKERS}"
+echo "resolution_factor=${RESOLUTION_FACTOR}"
 echo "log_level=${LOG_LEVEL}"
 echo "overwrite=${OVERWRITE}"
 
@@ -59,9 +65,12 @@ cmd=(
   "${REFERENCE_PATH}"
   "${OUTPUT_PATH}"
   --glob "${REFERENCE_GLOB}"
+  --vector-glob "${VECTOR_GLOB}"
   --vector-crs "${VECTOR_CRS}"
   --stream-threshold-pixels "${STREAM_THRESHOLD_PIXELS}"
   --workers "${WORKERS}"
+  --vector-workers "${VECTOR_WORKERS}"
+  --resolution-factor "${RESOLUTION_FACTOR}"
   --log-level "${LOG_LEVEL}"
 )
 

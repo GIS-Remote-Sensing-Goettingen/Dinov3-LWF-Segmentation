@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import logging
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Iterator
 
 import fiona
 import numpy as np
 import rasterio
+from affine import Affine
 from rasterio.crs import CRS
 from rasterio.features import rasterize
 from rasterio.warp import transform_bounds, transform_geom
@@ -61,6 +63,45 @@ def collect_reference_paths(reference_path: Path, glob_pattern: str) -> list[Pat
     )
 
 
+def collect_vector_paths(vector_path: Path, glob_pattern: str) -> list[Path]:
+    """Return one or more vector label paths.
+
+    When `vector_path` is a directory, shapefiles are discovered recursively so
+    nested label folders can be rasterized in one batch.
+
+    Args:
+        vector_path (Path): Vector label path or directory of vector files.
+        glob_pattern (str): Recursive glob applied when `vector_path` is a
+            directory.
+
+    Returns:
+        list[Path]: Sorted vector paths.
+
+    Raises:
+        FileNotFoundError: If no matching vector files are found.
+
+    Examples:
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as d:
+        ...     root = Path(d)
+        ...     nested = root / "nested"
+        ...     nested.mkdir()
+        ...     shp = nested / "scene.shp"
+        ...     _ = shp.write_bytes(b"")
+        ...     [p.name for p in collect_vector_paths(root, "*.shp")]
+        ['scene.shp']
+    """
+
+    if vector_path.is_file():
+        return [vector_path]
+    matches = sorted(path for path in vector_path.rglob(glob_pattern) if path.is_file())
+    if matches:
+        return matches
+    raise FileNotFoundError(
+        f"no vector label files found under {vector_path} with glob {glob_pattern!r}"
+    )
+
+
 def derive_output_path(reference_path: Path, output_path: Path) -> Path:
     """Return the label TIFF path for a reference raster.
 
@@ -94,6 +135,34 @@ def derive_output_path(reference_path: Path, output_path: Path) -> Path:
             stem = stem[: -len(suffix)]
             break
     return output_path / f"{stem}_labels.tif"
+
+
+def derive_vector_output_path(
+    merged_output_path: Path,
+    vector_path: Path,
+    vector_root: Path,
+) -> Path:
+    """Return the per-vector raster output path under the merged output folder.
+
+    Args:
+        merged_output_path (Path): Final merged TIFF path.
+        vector_path (Path): Source vector file path.
+        vector_root (Path): Root directory used for recursive discovery.
+
+    Returns:
+        Path: Per-vector TIFF path inside the sibling `_parts` folder.
+
+    Examples:
+        >>> merged = Path("labels/scene_labels.tif")
+        >>> root = Path("vectors")
+        >>> shp = root / "nested" / "part.shp"
+        >>> derive_vector_output_path(merged, shp, root).as_posix()
+        'labels/scene_labels_parts/nested/part_labels.tif'
+    """
+
+    relative_path = vector_path.relative_to(vector_root)
+    parts_root = merged_output_path.parent / f"{merged_output_path.stem}_parts"
+    return parts_root / relative_path.parent / f"{vector_path.stem}_labels.tif"
 
 
 def _normalize_crs(crs_value: str | CRS | dict[str, str] | None) -> CRS | None:
@@ -233,6 +302,9 @@ def _build_output_profile(
     dtype: str,
     fill_value: int,
     compress: str,
+    width: int | None = None,
+    height: int | None = None,
+    transform: Affine | None = None,
 ) -> dict[str, object]:
     """Build the output GeoTIFF profile for rasterized labels.
 
@@ -241,6 +313,9 @@ def _build_output_profile(
         dtype (str): Output raster dtype.
         fill_value (int): Background fill value.
         compress (str): GeoTIFF compression codec.
+        width (int | None): Optional output raster width in pixels.
+        height (int | None): Optional output raster height in pixels.
+        transform (Affine | None): Optional output affine transform.
 
     Returns:
         dict[str, object]: Profile used to create the output label raster.
@@ -254,7 +329,36 @@ def _build_output_profile(
         nodata=fill_value,
         compress=compress,
     )
+    if width is not None:
+        profile["width"] = int(width)
+    if height is not None:
+        profile["height"] = int(height)
+    if transform is not None:
+        profile["transform"] = transform
     return profile
+
+
+def _resolve_output_grid(
+    reference: rasterio.DatasetReader,
+    resolution_factor: int,
+) -> tuple[tuple[int, int], Affine]:
+    """Return the raster shape and transform for the output label grid.
+
+    Args:
+        reference (rasterio.DatasetReader): Reference raster dataset.
+        resolution_factor (int): Integer multiplier for raster density.
+
+    Returns:
+        tuple[tuple[int, int], Affine]: Output shape as `(height, width)` and
+        output transform preserving the reference extent.
+    """
+
+    factor = int(resolution_factor)
+    if factor < 1:
+        raise ValueError("resolution_factor must be >= 1")
+    output_shape = (int(reference.height) * factor, int(reference.width) * factor)
+    output_transform = reference.transform * Affine.scale(1 / factor, 1 / factor)
+    return output_shape, output_transform
 
 
 def _rasterize_full_reference(
@@ -267,6 +371,8 @@ def _rasterize_full_reference(
     dtype: str,
     all_touched: bool,
     compress: str,
+    output_shape: tuple[int, int],
+    output_transform: Affine,
 ) -> int:
     """Rasterize one full reference raster in a single pass.
 
@@ -280,6 +386,8 @@ def _rasterize_full_reference(
         dtype (str): Output raster dtype.
         all_touched (bool): Whether to burn every touched pixel.
         compress (str): GeoTIFF compression codec.
+        output_shape (tuple[int, int]): Output raster shape `(height, width)`.
+        output_transform (Affine): Output affine transform.
 
     Returns:
         int: Number of intersecting vector features.
@@ -300,8 +408,8 @@ def _rasterize_full_reference(
     )
     label_array = rasterize(
         shapes=shapes,
-        out_shape=reference.shape,
-        transform=reference.transform,
+        out_shape=output_shape,
+        transform=output_transform,
         fill=fill_value,
         dtype=dtype,
         all_touched=all_touched,
@@ -310,7 +418,15 @@ def _rasterize_full_reference(
     with rasterio.open(
         output_path,
         "w",
-        **_build_output_profile(reference, dtype, fill_value, compress),
+        **_build_output_profile(
+            reference,
+            dtype,
+            fill_value,
+            compress,
+            width=output_shape[1],
+            height=output_shape[0],
+            transform=output_transform,
+        ),
     ) as dst:
         dst.write(label_array, 1)
     LOGGER.info(
@@ -334,6 +450,8 @@ def _rasterize_windowed_reference(
     window_size: int,
     vector_path: Path,
     workers: int,
+    output_shape: tuple[int, int],
+    output_transform: Affine,
 ) -> int:
     """Rasterize a reference raster incrementally by windows.
 
@@ -353,6 +471,8 @@ def _rasterize_windowed_reference(
         window_size (int): Window edge length in pixels.
         vector_path (Path): Vector label path used by worker threads.
         workers (int): Number of worker threads for window rasterization.
+        output_shape (tuple[int, int]): Output raster shape `(height, width)`.
+        output_transform (Affine): Output affine transform.
 
     Returns:
         int: Number of unique intersecting vector features.
@@ -360,8 +480,9 @@ def _rasterize_windowed_reference(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     seen_feature_ids: set[str] = set()
-    total_windows = ((reference.height + window_size - 1) // window_size) * (
-        (reference.width + window_size - 1) // window_size
+    output_height, output_width = output_shape
+    total_windows = ((output_height + window_size - 1) // window_size) * (
+        (output_width + window_size - 1) // window_size
     )
     progress_step = max(1, total_windows // 20)
     LOGGER.info(
@@ -375,14 +496,22 @@ def _rasterize_windowed_reference(
     with rasterio.open(
         output_path,
         "w",
-        **_build_output_profile(reference, dtype, fill_value, compress),
+        **_build_output_profile(
+            reference,
+            dtype,
+            fill_value,
+            compress,
+            width=output_width,
+            height=output_height,
+            transform=output_transform,
+        ),
     ) as dst:
         if workers <= 1:
             for index, window in enumerate(
-                _iter_windows(reference.height, reference.width, window_size),
+                _iter_windows(output_height, output_width, window_size),
                 start=1,
             ):
-                bounds = window_bounds(window, reference.transform)
+                bounds = window_bounds(window, output_transform)
                 shapes, _ = _iter_burn_shapes(
                     src=src,
                     reference_bounds=bounds,
@@ -394,7 +523,7 @@ def _rasterize_windowed_reference(
                 window_array = rasterize(
                     shapes=shapes,
                     out_shape=(int(window.height), int(window.width)),
-                    transform=window_transform(window, reference.transform),
+                    transform=window_transform(window, output_transform),
                     fill=fill_value,
                     dtype=dtype,
                     all_touched=all_touched,
@@ -410,9 +539,7 @@ def _rasterize_windowed_reference(
                     )
         else:
             LOGGER.info("Using %d worker threads for window rasterization", workers)
-            windows_iter = iter(
-                _iter_windows(reference.height, reference.width, window_size)
-            )
+            windows_iter = iter(_iter_windows(output_height, output_width, window_size))
             completed = 0
             max_inflight = max(workers * 2, 1)
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -433,7 +560,7 @@ def _rasterize_windowed_reference(
                         _rasterize_window_task,
                         vector_path=vector_path,
                         window=next_window,
-                        reference_transform=reference.transform,
+                        output_transform=output_transform,
                         reference_crs=reference.crs,
                         vector_crs=vector_crs,
                         burn_value=burn_value,
@@ -479,7 +606,7 @@ def _rasterize_windowed_reference(
 def _rasterize_window_task(
     vector_path: Path,
     window: Window,
-    reference_transform: rasterio.Affine,
+    output_transform: Affine,
     reference_crs: CRS | None,
     vector_crs: CRS | None,
     burn_value: int,
@@ -495,7 +622,7 @@ def _rasterize_window_task(
     Args:
         vector_path (Path): Vector label path.
         window (Window): Reference raster window.
-        reference_transform (rasterio.Affine): Full reference affine transform.
+        output_transform (Affine): Full output affine transform.
         reference_crs (CRS | None): Reference raster CRS.
         vector_crs (CRS | None): Vector CRS.
         burn_value (int): Value burned into polygon pixels.
@@ -509,7 +636,7 @@ def _rasterize_window_task(
     """
 
     feature_ids: set[str] = set()
-    bounds = window_bounds(window, reference_transform)
+    bounds = window_bounds(window, output_transform)
     with fiona.open(vector_path) as src:
         query_bounds = bounds
         if reference_crs and vector_crs and reference_crs != vector_crs:
@@ -545,7 +672,7 @@ def _rasterize_window_task(
         window_array = rasterize(
             shapes=shapes_iter(),
             out_shape=(int(window.height), int(window.width)),
-            transform=window_transform(window, reference_transform),
+            transform=window_transform(window, output_transform),
             fill=fill_value,
             dtype=dtype,
             all_touched=all_touched,
@@ -566,6 +693,7 @@ def rasterize_reference_labels(
     window_size: int = 0,
     stream_threshold_pixels: int = 50_000_000,
     workers: int = 1,
+    resolution_factor: int = 1,
 ) -> int:
     """Rasterize labels onto a single reference grid.
 
@@ -583,14 +711,22 @@ def rasterize_reference_labels(
         stream_threshold_pixels (int): Auto-switch threshold for windowed
             rasterization based on total reference pixels.
         workers (int): Worker threads used for windowed rasterization.
+        resolution_factor (int): Integer multiplier applied to output width and
+            height while preserving CRS and bounds.
 
     Returns:
         int: Number of vector features burned into the output raster.
     """
 
     with fiona.open(vector_path) as src, rasterio.open(reference_path) as reference:
+        if int(resolution_factor) < 1:
+            raise ValueError("resolution_factor must be >= 1")
         vector_crs = _resolve_vector_crs(src, vector_crs_override)
-        total_pixels = int(reference.width) * int(reference.height)
+        output_shape, output_transform = _resolve_output_grid(
+            reference,
+            resolution_factor,
+        )
+        total_pixels = int(output_shape[0]) * int(output_shape[1])
         resolved_window_size = int(window_size)
         if resolved_window_size <= 0 and total_pixels >= int(stream_threshold_pixels):
             resolved_window_size = 4096
@@ -608,6 +744,8 @@ def rasterize_reference_labels(
                 window_size=resolved_window_size,
                 vector_path=vector_path,
                 workers=max(1, int(workers)),
+                output_shape=output_shape,
+                output_transform=output_transform,
             )
         return _rasterize_full_reference(
             src=src,
@@ -619,7 +757,174 @@ def rasterize_reference_labels(
             dtype=dtype,
             all_touched=all_touched,
             compress=compress,
+            output_shape=output_shape,
+            output_transform=output_transform,
         )
+
+
+def _merge_label_rasters(
+    input_paths: list[Path],
+    output_path: Path,
+    compress: str,
+) -> Path:
+    """Merge multiple rasterized label TIFFs into one output TIFF.
+
+    The merge uses a pixelwise `max` so any positive label in the source stack
+    is preserved in the final raster.
+
+    Args:
+        input_paths (list[Path]): Rasterized label TIFFs sharing one grid.
+        output_path (Path): Merged output TIFF path.
+        compress (str): GeoTIFF compression codec.
+
+    Returns:
+        Path: Merged output TIFF path.
+    """
+
+    if not input_paths:
+        raise ValueError("input_paths must not be empty when merging label rasters")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with ExitStack() as stack:
+        sources = [stack.enter_context(rasterio.open(path)) for path in input_paths]
+        first = sources[0]
+        for src in sources[1:]:
+            if (
+                src.width != first.width
+                or src.height != first.height
+                or src.crs != first.crs
+                or src.transform != first.transform
+                or src.dtypes[0] != first.dtypes[0]
+            ):
+                raise ValueError(
+                    "all input rasters must share shape, CRS, transform, and dtype"
+                )
+        profile = first.profile.copy()
+        profile.update(driver="GTiff", count=1, compress=compress)
+        with rasterio.open(output_path, "w", **profile) as dst:
+            for window in _iter_windows(first.height, first.width, 4096):
+                merged = sources[0].read(1, window=window)
+                for src in sources[1:]:
+                    merged = np.maximum(merged, src.read(1, window=window))
+                dst.write(merged, 1, window=window)
+    LOGGER.info(
+        "Merged %d rasterized label TIFFs into %s", len(input_paths), output_path
+    )
+    return output_path
+
+
+def rasterize_vector_directory(
+    vector_dir: Path,
+    reference_path: Path,
+    output_path: Path,
+    *,
+    vector_glob: str = "*.shp",
+    burn_value: int = 1,
+    fill_value: int = 0,
+    dtype: str = "uint8",
+    all_touched: bool = False,
+    compress: str = "deflate",
+    vector_crs_override: str = "",
+    window_size: int = 0,
+    stream_threshold_pixels: int = 50_000_000,
+    workers: int = 1,
+    resolution_factor: int = 1,
+    vector_workers: int = 1,
+    overwrite: bool = False,
+) -> tuple[Path, list[Path]]:
+    """Rasterize all shapefiles in a directory tree and merge them.
+
+    Args:
+        vector_dir (Path): Directory containing one or more shapefiles.
+        reference_path (Path): Reference GeoTIFF defining bounds and transform.
+        output_path (Path): Merged output TIFF path or output directory.
+        vector_glob (str): Recursive glob used to discover shapefiles.
+        burn_value (int): Value burned into polygon pixels.
+        fill_value (int): Background value.
+        dtype (str): Output raster dtype.
+        all_touched (bool): Whether to burn every touched pixel.
+        compress (str): GeoTIFF compression codec.
+        vector_crs_override (str): Optional CRS override for the vector layer.
+        window_size (int): Optional fixed streaming window size in pixels.
+        stream_threshold_pixels (int): Auto-switch threshold for windowed
+            rasterization based on total output pixels.
+        workers (int): Worker threads used inside one rasterization job.
+        resolution_factor (int): Integer multiplier for output width and height.
+        vector_workers (int): Parallel worker count across shapefiles.
+        overwrite (bool): Whether to overwrite existing per-shape and merged
+            TIFFs.
+
+    Returns:
+        tuple[Path, list[Path]]: Merged TIFF path and per-shapefile TIFF paths.
+
+    Examples:
+        >>> callable(rasterize_vector_directory)
+        True
+    """
+
+    vector_paths = collect_vector_paths(vector_dir, vector_glob)
+    merged_output_path = derive_output_path(reference_path, output_path)
+    if merged_output_path.exists() and not overwrite:
+        LOGGER.info("Skipping existing merged output %s", merged_output_path)
+        individual_paths = [
+            derive_vector_output_path(merged_output_path, path, vector_dir)
+            for path in vector_paths
+        ]
+        return merged_output_path, individual_paths
+
+    def rasterize_one(vector_file: Path) -> Path:
+        """Rasterize one discovered shapefile into its individual TIFF.
+
+        Args:
+            vector_file (Path): Shapefile discovered under `vector_dir`.
+
+        Returns:
+            Path: Rasterized TIFF path for the one shapefile.
+        """
+
+        individual_output_path = derive_vector_output_path(
+            merged_output_path,
+            vector_file,
+            vector_dir,
+        )
+        if individual_output_path.exists() and not overwrite:
+            LOGGER.info("Skipping existing %s", individual_output_path)
+            return individual_output_path
+        feature_count = rasterize_reference_labels(
+            vector_path=vector_file,
+            reference_path=reference_path,
+            output_path=individual_output_path,
+            burn_value=burn_value,
+            fill_value=fill_value,
+            dtype=dtype,
+            all_touched=all_touched,
+            compress=compress,
+            vector_crs_override=vector_crs_override,
+            window_size=window_size,
+            stream_threshold_pixels=stream_threshold_pixels,
+            workers=workers,
+            resolution_factor=resolution_factor,
+        )
+        LOGGER.info(
+            "Wrote %s from %s with %d intersecting features",
+            individual_output_path,
+            vector_file,
+            feature_count,
+        )
+        return individual_output_path
+
+    if int(vector_workers) <= 1:
+        individual_paths = [rasterize_one(path) for path in vector_paths]
+    else:
+        LOGGER.info(
+            "Rasterizing %d shapefiles with %d parallel vector workers",
+            len(vector_paths),
+            vector_workers,
+        )
+        with ThreadPoolExecutor(max_workers=max(1, int(vector_workers))) as executor:
+            futures = [executor.submit(rasterize_one, path) for path in vector_paths]
+            individual_paths = [future.result() for future in futures]
+    merged_path = _merge_label_rasters(individual_paths, merged_output_path, compress)
+    return merged_path, sorted(individual_paths)
 
 
 def _configure_logging(level: str) -> None:
@@ -650,7 +955,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "vector_path",
         type=Path,
-        help="Vector label path, e.g. /path/to/union.shp.",
+        help="Vector label path or directory of shapefiles.",
     )
     parser.add_argument(
         "reference_path",
@@ -666,6 +971,11 @@ def _parse_args() -> argparse.Namespace:
         "--glob",
         default="*.tif",
         help="Glob for reference TIFF discovery when reference_path is a directory.",
+    )
+    parser.add_argument(
+        "--vector-glob",
+        default="*.shp",
+        help="Recursive glob for shapefile discovery when vector_path is a directory.",
     )
     parser.add_argument(
         "--burn-value",
@@ -727,6 +1037,21 @@ def _parse_args() -> argparse.Namespace:
         default=1,
         help="Worker threads for windowed rasterization.",
     )
+    parser.add_argument(
+        "--vector-workers",
+        type=int,
+        default=1,
+        help="Parallel worker threads across shapefiles in a vector directory.",
+    )
+    parser.add_argument(
+        "--resolution-factor",
+        type=int,
+        default=1,
+        help=(
+            "Integer multiplier for output width and height while preserving "
+            "the reference CRS and geographic extent."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -753,6 +1078,32 @@ def main() -> int:
             "multiple GeoTIFFs"
         )
     for reference_path in reference_paths:
+        if args.vector_path.is_dir():
+            merged_path, individual_paths = rasterize_vector_directory(
+                vector_dir=args.vector_path,
+                reference_path=reference_path,
+                output_path=args.output_path,
+                vector_glob=args.vector_glob,
+                burn_value=args.burn_value,
+                fill_value=args.fill_value,
+                dtype=args.dtype,
+                all_touched=args.all_touched,
+                compress=args.compress,
+                vector_crs_override=args.vector_crs,
+                window_size=args.window_size,
+                stream_threshold_pixels=args.stream_threshold_pixels,
+                workers=args.workers,
+                resolution_factor=args.resolution_factor,
+                vector_workers=args.vector_workers,
+                overwrite=args.overwrite,
+            )
+            LOGGER.info(
+                "Wrote merged %s from %d shapefiles for %s",
+                merged_path,
+                len(individual_paths),
+                reference_path,
+            )
+            continue
         target_path = derive_output_path(reference_path, args.output_path)
         LOGGER.info("Using reference %s -> %s", reference_path, target_path)
         if target_path.exists() and not args.overwrite:
@@ -771,6 +1122,7 @@ def main() -> int:
             window_size=args.window_size,
             stream_threshold_pixels=args.stream_threshold_pixels,
             workers=args.workers,
+            resolution_factor=args.resolution_factor,
         )
         LOGGER.info(
             "Wrote %s from %s with %d intersecting features",
