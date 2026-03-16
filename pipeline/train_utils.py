@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 from torch.utils.data import DataLoader
 
 from utils import SegmentationLoss, SegmentationMetrics, VerbosityLogger
@@ -71,6 +72,76 @@ class ModelEMA:
                     ema_buffers[name].copy_(buf)
 
 
+class NormalizedForwardAdapter(nn.Module):
+    """Adapt segmentation heads so ``forward`` always returns a payload dict.
+
+    This keeps custom aux/edge outputs reachable through wrappers such as DDP,
+    which only invoke the module's ``forward`` method.
+
+    Args:
+        head (nn.Module): Segmentation head to normalize.
+
+    Examples:
+        >>> class Dummy(nn.Module):
+        ...     def forward_with_aux(self, image, features):
+        ...         return features[0], features[0][:, :1]
+        >>> adapter = NormalizedForwardAdapter(Dummy())
+        >>> payload = adapter(torch.randn(1, 3, 2, 2), [torch.randn(1, 2, 2, 2)])
+        >>> sorted(payload.keys())
+        ['aux_logits', 'edge_logits', 'logits', 'skeleton_logits']
+    """
+
+    def __init__(self, head: nn.Module) -> None:
+        """Store the wrapped segmentation head.
+
+        Args:
+            head (nn.Module): Segmentation head whose outputs need normalization.
+
+        Examples:
+            >>> adapter = NormalizedForwardAdapter(torch.nn.Identity())
+            >>> isinstance(adapter.head, torch.nn.Module)
+            True
+        """
+
+        super().__init__()
+        self.head = head
+
+    def forward(
+        self,
+        image: torch.Tensor,
+        features: list[torch.Tensor],
+    ) -> dict[str, Any]:
+        """Run the wrapped head and normalize outputs into one payload.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (list[torch.Tensor]): Multiscale feature tensors.
+
+        Returns:
+            dict[str, Any]: Normalized payload containing logits and optional
+            aux/boundary/topology entries.
+
+        Examples:
+            >>> class Dummy(nn.Module):
+            ...     def forward(self, image, features):
+            ...         _ = image
+            ...         return features[0]
+            >>> adapter = NormalizedForwardAdapter(Dummy())
+            >>> payload = adapter(torch.randn(1, 3, 2, 2), [torch.randn(1, 2, 2, 2)])
+            >>> payload["aux_logits"] is None
+            True
+        """
+
+        if hasattr(self.head, "forward_with_extras"):
+            raw_output = cast(Any, self.head).forward_with_extras(image, features)
+        elif hasattr(self.head, "forward_with_aux"):
+            logits, aux_logits = cast(Any, self.head).forward_with_aux(image, features)
+            raw_output = {"logits": logits, "aux_logits": aux_logits}
+        else:
+            raw_output = cast(Any, self.head)(image, features)
+        return normalize_forward_output(raw_output)
+
+
 def extract_multiscale_features_batch(
     images: torch.Tensor,
     model: Any,
@@ -120,6 +191,52 @@ def extract_multiscale_features_batch(
         feats = patch_tokens.reshape(batch_size, hp, wp, -1).permute(0, 3, 1, 2)
         feature_maps.append(feats)
     return feature_maps
+
+
+def normalize_forward_output(raw_output: Any) -> dict[str, Any]:
+    """Normalize model outputs into a payload with optional extras.
+
+    Args:
+        raw_output (Any): Tensor logits, legacy tuple outputs, or a payload dict.
+
+    Returns:
+        dict[str, Any]: Payload with at least ``logits``, ``aux_logits``,
+        ``edge_logits``, and ``skeleton_logits`` keys.
+
+    Examples:
+        >>> payload = normalize_forward_output(torch.randn(1, 2, 4, 4))
+        >>> payload["aux_logits"] is None and payload["edge_logits"] is None
+        True
+        >>> payload = normalize_forward_output({
+        ...     "logits": torch.randn(1, 2, 4, 4),
+        ...     "extra": 1,
+        ... })
+        >>> payload["extra"]
+        1
+    """
+
+    if isinstance(raw_output, dict):
+        payload = dict(raw_output)
+        if "logits" not in payload:
+            raise ValueError("Model payload dict must include a 'logits' entry.")
+    elif isinstance(raw_output, tuple):
+        if len(raw_output) != 2:
+            raise TypeError(
+                "Tuple model outputs must be (logits, aux_logits) for normalization."
+            )
+        logits, aux_logits = raw_output
+        payload = {"logits": logits, "aux_logits": aux_logits}
+    elif isinstance(raw_output, torch.Tensor):
+        payload = {"logits": raw_output}
+    else:
+        raise TypeError(
+            "Model output must be a tensor, (logits, aux_logits) tuple, "
+            f"or payload dict, got {type(raw_output).__name__}."
+        )
+    payload.setdefault("aux_logits", None)
+    payload.setdefault("edge_logits", None)
+    payload.setdefault("skeleton_logits", None)
+    return payload
 
 
 def move_features_to_device(
@@ -223,6 +340,7 @@ def forward_with_optional_extras(
     model_call: Any,
     image: torch.Tensor,
     features: list[torch.Tensor],
+    require_aux_logits: bool = False,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor | None,
@@ -236,6 +354,7 @@ def forward_with_optional_extras(
         model_call (Any): Model or wrapper with forward methods.
         image (torch.Tensor): Input image tensor.
         features (list[torch.Tensor]): Multiscale feature tensors.
+        require_aux_logits (bool): Whether aux logits must be present.
 
     Returns:
         tuple[
@@ -246,7 +365,7 @@ def forward_with_optional_extras(
             dict[str, Any],
         ]:
         Main logits, aux logits, optional edge logits, optional skeleton logits,
-        and raw payload extras.
+        and normalized payload extras.
 
     Examples:
         >>> class Dummy:
@@ -257,22 +376,30 @@ def forward_with_optional_extras(
         ...     torch.randn(1, 3, 2, 2),
         ...     [torch.randn(1, 2, 2, 2)],
         ... )
-        >>> aux is None and edge is None and skel is None and payload == {}
+        >>> aux is None and edge is None and skel is None
+        True
+        >>> payload["edge_logits"] is None and payload["skeleton_logits"] is None
         True
     """
 
     if hasattr(model_call, "forward_with_extras"):
-        payload = cast(dict[str, Any], model_call.forward_with_extras(image, features))
-        logits = cast(torch.Tensor, payload["logits"])
-        aux_logits = cast(torch.Tensor | None, payload.get("aux_logits"))
-        edge_logits = cast(torch.Tensor | None, payload.get("edge_logits"))
-        skeleton_logits = cast(torch.Tensor | None, payload.get("skeleton_logits"))
-        return logits, aux_logits, edge_logits, skeleton_logits, payload
-    if hasattr(model_call, "forward_with_aux"):
-        logits, aux_logits = model_call.forward_with_aux(image, features)
-        return logits, aux_logits, None, None, {}
-    logits = model_call(image, features)
-    return logits, None, None, None, {}
+        raw_output = cast(Any, model_call).forward_with_extras(image, features)
+    elif hasattr(model_call, "forward_with_aux"):
+        raw_output = cast(Any, model_call).forward_with_aux(image, features)
+    else:
+        raw_output = cast(Any, model_call)(image, features)
+    payload = normalize_forward_output(raw_output)
+    logits = cast(torch.Tensor, payload["logits"])
+    aux_logits = cast(torch.Tensor | None, payload.get("aux_logits"))
+    edge_logits = cast(torch.Tensor | None, payload.get("edge_logits"))
+    skeleton_logits = cast(torch.Tensor | None, payload.get("skeleton_logits"))
+    if require_aux_logits and aux_logits is None:
+        model_name = type(model_call).__name__
+        raise RuntimeError(
+            "Auxiliary supervision is enabled, but the model forward path did not "
+            f"return aux logits. Received wrapper type '{model_name}'."
+        )
+    return logits, aux_logits, edge_logits, skeleton_logits, payload
 
 
 def build_boundary_targets(
@@ -335,13 +462,19 @@ def split_params_for_muon(
         True
     """
 
+    embedding_param_ids = {
+        id(param)
+        for module in model.modules()
+        if isinstance(module, torch.nn.Embedding)
+        for param in module.parameters(recurse=False)
+    }
     muon_params: list[torch.nn.Parameter] = []
     adamw_params: list[torch.nn.Parameter] = []
     for _, p in model.named_parameters():
-        if p.ndim >= 2:
-            muon_params.append(p)
-        else:
+        if id(p) in embedding_param_ids or p.ndim < 2:
             adamw_params.append(p)
+        elif p.ndim >= 2:
+            muon_params.append(p)
     return muon_params, adamw_params
 
 
@@ -563,6 +696,7 @@ def evaluate(
                         model_call,
                         img,
                         feats,
+                        require_aux_logits=loss_fn.aux_weight > 0,
                     )
                 )
                 target_main = align_labels_to_logits(y, logits)

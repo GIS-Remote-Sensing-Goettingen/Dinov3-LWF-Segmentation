@@ -51,6 +51,13 @@ MLflow-compatible artifacts for research workflows.
 - **Baseline optimizer policy:** lightweight DINO baselines
   (`dino_dense_probe`, `dino_segdino_light`) use an AdamW-only optimization
   path by default, while heavier decoder heads keep the Muon+AdamW split path.
+  In the split path, embeddings and 1D parameters stay on AdamW, while Muon
+  applies decoupled weight decay plus paper-style shape-aware update scaling to
+  matrix-like parameters.
+- **Distributed forward policy:** train-time forwards wrap the selected head in
+  a small normalized adapter before DDP so custom aux/boundary/skeleton outputs
+  remain visible to the loss code even when the wrapper only exposes
+  `forward()`.
 
 ## Tracking & Artifacts
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.

@@ -142,6 +142,12 @@ train:
   batch_size: 3
   epochs: 20
   muon_lr: 0.02
+  # Optional explicit Muon weight decay; null reuses adamw_wd.
+  muon_wd:
+  # Paper-style Muon update RMS target multiplier.
+  muon_update_scale: 0.2
+  # Scale Muon updates by sqrt(max(rows, cols)) for each matrix.
+  muon_adjust_lr_for_shape: true
   adamw_lr: 0.001
   adamw_wd: 0.05
   momentum: 0.95

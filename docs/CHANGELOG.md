@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 ### Changed
+- Fix distributed training for auxiliary-output heads by routing train-time
+  forwards through a normalized adapter that preserves aux/boundary/skeleton
+  payloads under DDP, adds a clear aux-required runtime guard, and restores
+  `unet_nano_fapm` deep-supervision gradients; also add regression tests for
+  wrapped optional outputs and `ds_head` gradient flow
+  (`pipeline/phases/train.py`, `pipeline/phases/train_batches.py`,
+  `pipeline/train_utils.py`, `test/test_train_utils_safety.py`,
+  `docs/ARCHITECTURE.md`).
+- Align the Muon optimizer with the repo's scalable paper-inspired defaults by
+  adding decoupled Muon weight decay, shape-aware update scaling, safer
+  non-finite handling, and embedding-aware Muon/AdamW parameter routing, plus
+  new config/logging knobs for the Muon-specific settings
+  (`utils/optim.py`, `pipeline/train_utils.py`, `pipeline/phases/train.py`,
+  `pipeline/utils.py`, `configs/config_*.yml`, `README.md`,
+  `test/test_muon_optimizer.py`, `docs/ARCHITECTURE.md`).
 - Update `segmentation.sh` to request 2 GPUs by default and launch single-node
   training through
   `torchrun`, make the GPU count/config path overridable via environment

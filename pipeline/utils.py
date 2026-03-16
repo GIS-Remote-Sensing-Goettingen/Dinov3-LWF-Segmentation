@@ -406,6 +406,9 @@ def collect_run_params(config: dict) -> dict[str, str]:
     dataset_cfg = config.get("dataset", {})
     stability_cfg = parse_stability_config(config)
     validation_cfg = parse_dataset_validation_config(config)
+    muon_wd = train_cfg.get("muon_wd")
+    if muon_wd is None:
+        muon_wd = train_cfg.get("adamw_wd", 0.01)
     params: dict[str, str] = {
         "model.head": str(model_cfg.get("head", DEFAULT_HEAD)),
         "model.backbone": str(model_cfg.get("backbone", DEFAULT_MODEL_NAME)),
@@ -413,7 +416,13 @@ def collect_run_params(config: dict) -> dict[str, str]:
         "train.batch_size": str(train_cfg.get("batch_size", 4)),
         "train.epochs": str(train_cfg.get("epochs", 30)),
         "train.muon_lr": str(train_cfg.get("muon_lr", 0.02)),
+        "train.muon_wd": str(muon_wd),
+        "train.muon_update_scale": str(train_cfg.get("muon_update_scale", 0.2)),
+        "train.muon_adjust_lr_for_shape": str(
+            train_cfg.get("muon_adjust_lr_for_shape", True)
+        ),
         "train.adamw_lr": str(train_cfg.get("adamw_lr", 0.001)),
+        "train.adamw_wd": str(train_cfg.get("adamw_wd", 0.01)),
         "resources.seed": str(resources_cfg.get("seed", "")),
         "resources.distributed": str(resources_cfg.get("distributed", False)),
         "dataset.augmentations": str(
