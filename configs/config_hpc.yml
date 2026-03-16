@@ -25,7 +25,7 @@ dataset:
   # If true, read/write precomputed DINO features instead of extracting on the fly.
   cache_features: false
   # 0 means "all tiles"; >0 limits prepare/train tile count.
-  max_tiles: 20000
+  max_tiles: 5000
   tile_filter:
     # Keep only tiles containing at least one foreground label.
     enabled: true
