@@ -175,6 +175,13 @@ def upsample_map(values: np.ndarray, target_h: int, target_w: int) -> np.ndarray
 
     Returns:
         np.ndarray: Upsampled array.
+
+    Examples:
+        >>> up = upsample_map(np.array([[1.0]], dtype=np.float32), 2, 3)
+        >>> up.shape
+        (2, 3)
+        >>> float(up[0, 0])
+        1.0
     """
 
     tensor = torch.from_numpy(values).unsqueeze(0).unsqueeze(0).float()

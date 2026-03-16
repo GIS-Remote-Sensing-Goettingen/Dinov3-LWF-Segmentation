@@ -7,9 +7,14 @@
 ### Changed
 - Add `scripts/rasterize_vector_labels.py` to convert polygon label sources
   such as `crf/union.shp` into binary GeoTIFF masks aligned to one reference
-  TIFF or a directory of reference TIFFs, with regression coverage for naming
-  and rasterization behavior (`scripts/rasterize_vector_labels.py`,
-  `test/test_rasterize_vector_labels.py`, `ARCHITECTURE.md`).
+  TIFF or a directory of reference TIFFs, including auto-windowed
+  low-memory rasterization for large references, CLI progress logging, and
+  optional threaded window concurrency, plus a Slurm wrapper defaulting to the
+  cluster repo path under `/user/davide.mattioli/u20330/Dinov3-LWF-Segmentation`,
+  with regression coverage for naming and rasterization behavior
+  (`scripts/rasterize_vector_labels.py`,
+  `test/test_rasterize_vector_labels.py`, `rasterize_labels.sh`,
+  `ARCHITECTURE.md`).
 - Add 5%-interval training progress logs with epoch counts and ETA so long HPC
   runs expose coarse-grained status in plain logs
   (`pipeline/phases/train.py`).
