@@ -2,12 +2,12 @@ logging:
   level: INFO
 
 workflow:
-  vector_dir: /home/mak/cluster/Dinov3-LWF-Segmentation/crf
+  vector_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf
   vector_glob: "*.shp"
-  raster_dir: /home/mak/cluster/Dinov3-LWF-Segmentation/crf
+  raster_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf
   merge_raster_glob: "union_folder*.tif"
-  verify_path: /home/mak/cluster/Dinov3-LWF-Segmentation/crf/verify/planet_labels_2022.tif
-  output_path: /home/mak/cluster/Dinov3-LWF-Segmentation/crf/final_labels_1m.tif
+  verify_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/verify/planet_labels_2022.tif
+  output_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/final_labels_1m.tif
   target_crs: EPSG:25832
   target_resolution: 1.0
   burn_value: 1
