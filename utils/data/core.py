@@ -7,28 +7,31 @@ from __future__ import annotations
 
 import glob
 import json
+import math
 import os
 import random
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence
 
 import numpy as np
 import rasterio
 import torch
-import torch.nn.functional as F
+from affine import Affine
 from rasterio.enums import Resampling
-from rasterio.io import MemoryFile
-from rasterio.mask import mask
-from rasterio.warp import reproject
-from shapely.geometry import box
-from tifffile import imread
+from rasterio.transform import from_origin
+from rasterio.warp import reproject, transform_bounds
+from rasterio.windows import Window
+from rasterio.windows import bounds as window_bounds
+from rasterio.windows import from_bounds
 
 if TYPE_CHECKING:
     from utils.logging import VerbosityLogger
 
 
 CACHE_META_FILENAME = "cache_meta.json"
+SUPERVISION_GRID_MODE = "native_label_grid"
 DEFAULT_DATASET_VALIDATION_CONFIG = {
     "enabled": True,
     "allowed_labels": (0, 1),
@@ -42,6 +45,274 @@ DEFAULT_TILE_FILTER_CONFIG = {
     "mode": "foreground_any",
     "foreground_labels": (1,),
 }
+
+
+@dataclass(frozen=True)
+class TileGridLayout:
+    """Describe the paired image-grid and label-grid tile dimensions.
+
+    Args:
+        image_tile_size (int): Output image tile size in pixels.
+        label_tile_size (int): Output label tile size in pixels.
+        image_resolution (float): Image raster resolution in map units per pixel.
+        label_resolution (float): Label raster resolution in map units per pixel.
+        scale_factor (int): Integer ratio ``label_resolution / image_resolution``.
+
+    Examples:
+        >>> TileGridLayout(480, 96, 0.2, 1.0, 5).label_tile_size
+        96
+    """
+
+    image_tile_size: int
+    label_tile_size: int
+    image_resolution: float
+    label_resolution: float
+    scale_factor: int
+
+
+def _pixel_size(transform: Affine) -> tuple[float, float]:
+    """Return absolute pixel size from an affine transform.
+
+    Args:
+        transform (Affine): Raster affine transform.
+
+    Returns:
+        tuple[float, float]: Pixel width and height.
+
+    Examples:
+        >>> _pixel_size(Affine(2.0, 0.0, 0.0, 0.0, -3.0, 0.0))
+        (2.0, 3.0)
+    """
+
+    return abs(float(transform.a)), abs(float(transform.e))
+
+
+def build_tile_grid_layout(
+    image_path: str,
+    label_path: str,
+    requested_tile_size: int,
+    patch_size: int,
+) -> TileGridLayout:
+    """Build compatible image/label tile sizes for label-grid supervision.
+
+    The image tile size is reduced, if needed, so it is compatible with both
+    the backbone patch size and the native label-grid scale factor.
+
+    Args:
+        image_path (str): Input image path.
+        label_path (str): Label raster path.
+        requested_tile_size (int): Requested image tile size in pixels.
+        patch_size (int): Backbone patch size in image pixels.
+
+    Returns:
+        TileGridLayout: Compatible image and label tile dimensions.
+
+    Raises:
+        ValueError: If the imagery/label grids do not support an integer
+            scale-factor relationship in one CRS.
+
+    Examples:
+        >>> build_tile_grid_layout(  # doctest: +SKIP
+        ...     "image.tif",
+        ...     "labels.tif",
+        ...     requested_tile_size=512,
+        ...     patch_size=16,
+        ... )
+        TileGridLayout(...)
+    """
+
+    with rasterio.open(image_path) as src_img, rasterio.open(label_path) as src_lab:
+        if src_img.crs != src_lab.crs:
+            raise ValueError(
+                "Native label-grid supervision currently requires imagery and "
+                "labels to share one CRS."
+            )
+        img_res_x, img_res_y = _pixel_size(src_img.transform)
+        lab_res_x, lab_res_y = _pixel_size(src_lab.transform)
+    if not math.isclose(img_res_x, img_res_y, rel_tol=1e-6, abs_tol=1e-9):
+        raise ValueError("Image raster must have square pixels for label-grid tiling.")
+    if not math.isclose(lab_res_x, lab_res_y, rel_tol=1e-6, abs_tol=1e-9):
+        raise ValueError("Label raster must have square pixels for label-grid tiling.")
+    scale = lab_res_x / img_res_x
+    rounded_scale = int(round(scale))
+    if rounded_scale < 1 or not math.isclose(
+        scale, rounded_scale, rel_tol=1e-6, abs_tol=1e-6
+    ):
+        raise ValueError(
+            "Label-grid supervision requires label resolution to be an integer "
+            "multiple of image resolution."
+        )
+    compatible_multiple = math.lcm(int(patch_size), int(rounded_scale))
+    image_tile_size = (
+        int(requested_tile_size) // compatible_multiple
+    ) * compatible_multiple
+    if image_tile_size < compatible_multiple:
+        raise ValueError(
+            "Requested tile_size is too small for the image/label resolution "
+            "ratio and patch-size constraints."
+        )
+    label_tile_size = image_tile_size // rounded_scale
+    return TileGridLayout(
+        image_tile_size=image_tile_size,
+        label_tile_size=label_tile_size,
+        image_resolution=img_res_x,
+        label_resolution=lab_res_x,
+        scale_factor=rounded_scale,
+    )
+
+
+def _tile_window_positions(total_size: int, tile_size: int) -> list[int]:
+    """Return fixed-size tile starts that cover one raster dimension.
+
+    Args:
+        total_size (int): Raster width or height in pixels.
+        tile_size (int): Tile size in pixels.
+
+    Returns:
+        list[int]: Start offsets for fixed-size windows.
+
+    Examples:
+        >>> _tile_window_positions(8, 4)
+        [0, 4]
+        >>> _tile_window_positions(10, 4)
+        [0, 4, 6]
+        >>> _tile_window_positions(3, 4)
+        [0]
+    """
+
+    if total_size <= tile_size:
+        return [0]
+    positions = list(range(0, total_size, tile_size))
+    last_start = total_size - tile_size
+    if positions[-1] != last_start:
+        positions[-1] = last_start
+    deduped: list[int] = []
+    for pos in positions:
+        if not deduped or deduped[-1] != pos:
+            deduped.append(pos)
+    return deduped
+
+
+def read_label_window_for_image_bounds(
+    image_path: str,
+    label_path: str,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Read the native label-grid subset covering one image footprint.
+
+    Args:
+        image_path (str): Input image path.
+        label_path (str): Label raster path.
+
+    Returns:
+        tuple[np.ndarray, dict[str, Any]]: Label array and metadata including
+        CRS, transform, bounds, width, and height.
+
+    Raises:
+        ValueError: If no overlap exists between the image and label rasters.
+
+    Examples:
+        >>> read_label_window_for_image_bounds(  # doctest: +SKIP
+        ...     "image.tif",
+        ...     "labels.tif",
+        ... )
+        (array(...), {'crs': ...})
+        >>> isinstance(  # doctest: +SKIP
+        ...     read_label_window_for_image_bounds("image.tif", "labels.tif")[1],
+        ...     dict,
+        ... )
+        True
+    """
+
+    with rasterio.open(image_path) as src_img, rasterio.open(label_path) as src_lab:
+        if src_img.crs == src_lab.crs:
+            image_bounds_in_label = src_img.bounds
+        else:
+            image_bounds_in_label = transform_bounds(
+                src_img.crs,
+                src_lab.crs,
+                *src_img.bounds,
+                densify_pts=21,
+            )
+        label_window = (
+            from_bounds(
+                *image_bounds_in_label,
+                transform=src_lab.transform,
+            )
+            .round_offsets()
+            .round_lengths()
+        )
+        label_window = Window(
+            col_off=max(0, int(label_window.col_off)),
+            row_off=max(0, int(label_window.row_off)),
+            width=max(1, int(label_window.width)),
+            height=max(1, int(label_window.height)),
+        )
+        label_array = src_lab.read(1, window=label_window, boundless=True, fill_value=0)
+        transform = rasterio.windows.transform(label_window, src_lab.transform)
+        bounds = window_bounds(label_window, src_lab.transform)
+        meta = {
+            "crs": src_lab.crs,
+            "transform": transform,
+            "bounds": bounds,
+            "width": int(label_array.shape[1]),
+            "height": int(label_array.shape[0]),
+        }
+        return label_array, meta
+
+
+def read_image_tile_for_label_bounds(
+    image_path: str,
+    bounds: tuple[float, float, float, float],
+    image_tile_size: int,
+) -> np.ndarray:
+    """Read one image tile resampled onto bounds defined in image CRS.
+
+    Args:
+        image_path (str): Input image path.
+        bounds (tuple[float, float, float, float]): Tile bounds in image CRS.
+        image_tile_size (int): Output tile size in pixels.
+
+    Returns:
+        np.ndarray: RGB image tile shaped ``(H, W, C)``.
+
+    Examples:
+        >>> read_image_tile_for_label_bounds(  # doctest: +SKIP
+        ...     "image.tif",
+        ...     (0.0, 0.0, 10.0, 10.0),
+        ...     image_tile_size=64,
+        ... ).shape
+        (64, 64, 3)
+        >>> read_image_tile_for_label_bounds(  # doctest: +SKIP
+        ...     "image.tif",
+        ...     (0.0, 0.0, 5.0, 5.0),
+        ...     image_tile_size=32,
+        ... ).dtype
+        dtype('float32')
+    """
+
+    with rasterio.open(image_path) as src_img:
+        destination = np.zeros(
+            (src_img.count, int(image_tile_size), int(image_tile_size)),
+            dtype=np.float32,
+        )
+        left, bottom, right, top = bounds
+        dst_transform = from_origin(
+            left,
+            top,
+            (right - left) / float(image_tile_size),
+            (top - bottom) / float(image_tile_size),
+        )
+        for band_index in range(1, src_img.count + 1):
+            reproject(
+                source=rasterio.band(src_img, band_index),
+                destination=destination[band_index - 1],
+                src_transform=src_img.transform,
+                src_crs=src_img.crs,
+                dst_transform=dst_transform,
+                dst_crs=src_img.crs,
+                resampling=Resampling.bilinear,
+            )
+    return np.transpose(destination, (1, 2, 0))
 
 
 def _normalize_dataset_validation_cfg(
@@ -453,13 +724,13 @@ def _cache_subdir_name(tile_size: int, cache_features: bool) -> str:
 
     Examples:
         >>> _cache_subdir_name(512, True)
-        'tiles_512_feat'
+        'tiles_512_feat_labelgrid'
         >>> _cache_subdir_name(1024, False)
-        'tiles_1024_nofeat'
+        'tiles_1024_nofeat_labelgrid'
     """
 
     suffix = "feat" if cache_features else "nofeat"
-    return f"tiles_{tile_size}_{suffix}"
+    return f"tiles_{tile_size}_{suffix}_labelgrid"
 
 
 def _cache_meta_path(cache_dir: str) -> str:
@@ -525,6 +796,7 @@ def _write_cache_metadata(
         "cache_features": cache_features,
         "model_name": model_name,
         "layers": list(layers) if layers is not None else None,
+        "supervision_grid_mode": SUPERVISION_GRID_MODE,
     }
     meta_path = _cache_meta_path(cache_dir)
     with open(meta_path, "w", encoding="utf-8") as handle:
@@ -563,6 +835,11 @@ def _validate_cache_metadata(
         mismatches.append(f"model_name={meta.get('model_name')} expected {model_name}")
     if layers is not None and meta.get("layers") != list(layers):
         mismatches.append(f"layers={meta.get('layers')} expected {list(layers)}")
+    if meta.get("supervision_grid_mode") != SUPERVISION_GRID_MODE:
+        mismatches.append(
+            "supervision_grid_mode="
+            f"{meta.get('supervision_grid_mode')} expected {SUPERVISION_GRID_MODE}"
+        )
     if mismatches:
         raise ValueError("Cache metadata mismatch: " + "; ".join(mismatches))
 
@@ -752,13 +1029,14 @@ def process_image_tiles_no_features(
     label_path: str,
     output_dir: str,
     tile_size: int,
+    patch_size: int = 16,
     tile_filter_cfg: dict[str, Any] | None = None,
     max_tiles: int | None = None,
     counter: Any | None = None,
     lock: Any | None = None,
     stop_event: Any | None = None,
 ) -> dict:
-    """Process one image into tiles without DINO features.
+    """Process one image into label-grid-supervised tiles without DINO features.
 
     Args:
         img_path (str): Path to the input image.
@@ -766,6 +1044,7 @@ def process_image_tiles_no_features(
         output_dir (str): Output directory for tiles.
         tile_size (int): Tile size in pixels.
         tile_filter_cfg (dict[str, Any] | None): Optional tile-label filter config.
+        patch_size (int): Backbone patch size used to derive compatible tiles.
         max_tiles (int | None): Optional tile limit.
         counter (multiprocessing.Value | None): Shared tile counter.
         lock (multiprocessing.Lock | None): Shared lock for counter.
@@ -773,68 +1052,68 @@ def process_image_tiles_no_features(
 
     Returns:
         dict: Status and tile counts for the processed image.
+
+    Examples:
+        >>> process_image_tiles_no_features(  # doctest: +SKIP
+        ...     "image.tif",
+        ...     "labels.tif",
+        ...     "cache",
+        ...     tile_size=512,
+        ... )
+        {'status': 'ok', 'tiles_written': ...}
     """
 
     tile_filter = _normalize_tile_filter_cfg(tile_filter_cfg)
+    os.makedirs(output_dir, exist_ok=True)
     if stop_event is not None and stop_event.is_set():
         return {"status": "stopped", "tiles_written": 0, "skipped_no_foreground": 0}
     try:
-        full_img = imread(img_path)
-    except Exception as exc:
-        return {
-            "status": "error",
-            "error_type": "image_read_error",
-            "error": str(exc),
-        }
-    try:
-        full_label = subset_label_to_image_bounds(img_path, label_path)
+        layout = build_tile_grid_layout(
+            img_path,
+            label_path,
+            requested_tile_size=tile_size,
+            patch_size=patch_size,
+        )
     except Exception as exc:
         return {
             "status": "error",
             "error_type": "label_alignment_error",
             "error": str(exc),
         }
-    h, w, _ = full_img.shape
     tiles_written = 0
     skipped_no_foreground = 0
-    for y in range(0, h, tile_size):
-        for x in range(0, w, tile_size):
-            if stop_event is not None and stop_event.is_set():
-                return {
-                    "status": "stopped",
-                    "tiles_written": tiles_written,
-                    "skipped_no_foreground": skipped_no_foreground,
-                }
-            if max_tiles is not None and counter is not None:
-                if counter.value >= max_tiles:
-                    if stop_event is not None:
-                        stop_event.set()
+    with rasterio.open(img_path) as src_img, rasterio.open(label_path) as src_lab:
+        if src_img.crs != src_lab.crs:
+            return {
+                "status": "error",
+                "error_type": "label_alignment_error",
+                "error": "native label-grid supervision requires one shared CRS",
+            }
+        label_window = (
+            from_bounds(
+                *src_img.bounds,
+                transform=src_lab.transform,
+            )
+            .round_offsets()
+            .round_lengths()
+        )
+        row_positions = _tile_window_positions(
+            int(label_window.height),
+            layout.label_tile_size,
+        )
+        col_positions = _tile_window_positions(
+            int(label_window.width),
+            layout.label_tile_size,
+        )
+        for row_off in row_positions:
+            for col_off in col_positions:
+                if stop_event is not None and stop_event.is_set():
                     return {
-                        "status": "limit",
+                        "status": "stopped",
                         "tiles_written": tiles_written,
                         "skipped_no_foreground": skipped_no_foreground,
                     }
-            y_min, x_min = y, x
-            y_max, x_max = y + tile_size, x + tile_size
-            if y_max > h:
-                y_min, y_max = h - tile_size, h
-            if x_max > w:
-                x_min, x_max = w - tile_size, w
-            tile_name = f"{Path(img_path).stem}_y{y_min}_x{x_min}.pt"
-            save_path = os.path.join(output_dir, tile_name)
-            if os.path.exists(save_path):
-                continue
-            img_crop = full_img[y_min:y_max, x_min:x_max, :]
-            lbl_crop = full_label[y_min:y_max, x_min:x_max]
-            if img_crop.max() == 0:
-                continue
-            if not _tile_passes_label_filter(lbl_crop, tile_filter):
-                skipped_no_foreground += 1
-                continue
-            if np.isnan(img_crop).any():
-                img_crop = np.nan_to_num(img_crop)
-            if max_tiles is not None and counter is not None and lock is not None:
-                with lock:
+                if max_tiles is not None and counter is not None:
                     if counter.value >= max_tiles:
                         if stop_event is not None:
                             stop_event.set()
@@ -843,23 +1122,72 @@ def process_image_tiles_no_features(
                             "tiles_written": tiles_written,
                             "skipped_no_foreground": skipped_no_foreground,
                         }
-                    counter.value += 1
-            payload = {
-                "image": torch.from_numpy(img_crop),
-                "features": [],
-                "label": lbl_crop,
-            }
-            try:
-                wrote_tile = _write_tile_payload_atomic(payload, save_path)
-            except Exception as exc:
-                return {
-                    "status": "error",
-                    "error_type": "tile_write_error",
-                    "error": str(exc),
+                tile_window = Window(
+                    col_off=int(label_window.col_off) + int(col_off),
+                    row_off=int(label_window.row_off) + int(row_off),
+                    width=layout.label_tile_size,
+                    height=layout.label_tile_size,
+                )
+                tile_bounds = window_bounds(tile_window, src_lab.transform)
+                tile_name = (
+                    f"{Path(img_path).stem}_y{int(tile_window.row_off)}_x"
+                    f"{int(tile_window.col_off)}.pt"
+                )
+                save_path = os.path.join(output_dir, tile_name)
+                if os.path.exists(save_path):
+                    continue
+                lbl_crop = src_lab.read(
+                    1,
+                    window=tile_window,
+                    boundless=True,
+                    fill_value=0,
+                )
+                try:
+                    img_crop = read_image_tile_for_label_bounds(
+                        img_path,
+                        tile_bounds,
+                        layout.image_tile_size,
+                    )
+                except Exception as exc:
+                    return {
+                        "status": "error",
+                        "error_type": "image_read_error",
+                        "error": str(exc),
+                    }
+                if img_crop.max() == 0:
+                    continue
+                if not _tile_passes_label_filter(lbl_crop, tile_filter):
+                    skipped_no_foreground += 1
+                    continue
+                if np.isnan(img_crop).any():
+                    img_crop = np.nan_to_num(img_crop)
+                if max_tiles is not None and counter is not None and lock is not None:
+                    with lock:
+                        if counter.value >= max_tiles:
+                            if stop_event is not None:
+                                stop_event.set()
+                            return {
+                                "status": "limit",
+                                "tiles_written": tiles_written,
+                                "skipped_no_foreground": skipped_no_foreground,
+                            }
+                        counter.value += 1
+                payload = {
+                    "image": torch.from_numpy(img_crop),
+                    "features": [],
+                    "label": lbl_crop,
                 }
-            if not wrote_tile:
-                continue
-            tiles_written += 1
+                try:
+                    wrote_tile = _write_tile_payload_atomic(payload, save_path)
+                except Exception as exc:
+                    return {
+                        "status": "error",
+                        "error_type": "tile_write_error",
+                        "error": str(exc),
+                    }
+                if not wrote_tile:
+                    continue
+                tiles_written += 1
     return {
         "status": "ok",
         "tiles_written": tiles_written,
@@ -868,8 +1196,7 @@ def process_image_tiles_no_features(
 
 
 def subset_label_to_image_bounds(img_path: str, lab_path: str) -> np.ndarray:
-    """
-    Crop or reproject the label raster so it aligns with the image tile.
+    """Read the native label-grid subset covering one image footprint.
 
     Args:
         img_path (str): Path to the input image.
@@ -882,36 +1209,5 @@ def subset_label_to_image_bounds(img_path: str, lab_path: str) -> np.ndarray:
     array(...)
     """
 
-    with rasterio.open(img_path) as src_img:
-        img_bounds = src_img.bounds
-        img_meta = src_img.meta.copy()
-        img_crs = src_img.crs
-        H, W = src_img.shape
-    with rasterio.open(lab_path) as src_lab:
-        if src_lab.crs == img_crs:
-            geom = [box(*img_bounds).__geo_interface__]
-            out_image, _ = mask(src_lab, geom, crop=True)
-            if out_image.shape[1] != H or out_image.shape[2] != W:
-                t_lbl = torch.from_numpy(out_image).float().unsqueeze(0)
-                t_lbl = F.interpolate(t_lbl, size=(H, W), mode="nearest")
-                labels_aligned = t_lbl.squeeze(0).squeeze(0).numpy()
-            else:
-                labels_aligned = out_image[0]
-        else:
-            new_meta = img_meta.copy()
-            new_meta.update(dtype=src_lab.dtypes[0], count=1)
-            with MemoryFile() as mem:
-                with mem.open(**new_meta) as dst:
-                    reproject(
-                        source=rasterio.band(src_lab, 1),
-                        destination=rasterio.band(dst, 1),
-                        src_transform=src_lab.transform,
-                        src_crs=src_lab.crs,
-                        dst_transform=img_meta["transform"],
-                        dst_crs=img_crs,
-                        dst_width=img_meta["width"],
-                        dst_height=img_meta["height"],
-                        resampling=Resampling.nearest,
-                    )
-                    labels_aligned = dst.read(1)
+    labels_aligned, _ = read_label_window_for_image_bounds(img_path, lab_path)
     return labels_aligned

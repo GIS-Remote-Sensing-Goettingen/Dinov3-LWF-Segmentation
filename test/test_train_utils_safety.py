@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from models.unet_nano_fapm import DinoUNetNanoFAPMHead  # noqa: E402
 from pipeline.train_utils import (  # noqa: E402
     NormalizedForwardAdapter,
+    align_logits_to_labels,
     forward_with_optional_extras,
     resolve_lr_metrics,
     should_warn_high_logit,
@@ -34,6 +35,23 @@ def test_use_adamw_only_for_baseline_heads() -> None:
     assert use_adamw_only_for_head("dino_dense_probe")
     assert use_adamw_only_for_head("dino_segdino_light")
     assert not use_adamw_only_for_head("unet_lite")
+
+
+def test_align_logits_to_labels_downsamples_to_native_label_grid() -> None:
+    """Supervised logits should be resized down to the label grid.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    logits = torch.randn(2, 3, 20, 20)
+    labels = torch.zeros(2, 4, 4, dtype=torch.long)
+
+    aligned = align_logits_to_labels(logits, labels)
+
+    assert aligned is not None
+    assert aligned.shape == (2, 3, 4, 4)
 
 
 def test_should_warn_high_logit_uses_batch_value() -> None:

@@ -9,7 +9,6 @@ from typing import Any, cast
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from ..context import RunContext
 from ..inference_utils import (
@@ -36,7 +35,11 @@ from ..plotting import (
     summarize_branch_importance_epoch,
     summarize_dino_layer_importance_epoch,
 )
-from ..train_utils import extract_multiscale_features_batch, move_features_to_device
+from ..train_utils import (
+    align_logits_to_labels,
+    extract_multiscale_features_batch,
+    move_features_to_device,
+)
 from ..xai.module_xai import build_module_xai_sample
 from ..xai.module_xai_epoch import update_module_xai_epoch
 from .train_batches import ensure_backbone_processor
@@ -386,13 +389,10 @@ def _collect_epoch_xai_samples(
                         )
                     else:
                         sample_logits = eval_call(sample_img, sample_feats)
-                    if sample_logits.shape[-2:] != sample_img.shape[-2:]:
-                        sample_logits = F.interpolate(
-                            sample_logits,
-                            size=sample_img.shape[-2:],
-                            mode="bilinear",
-                            align_corners=False,
-                        )
+                    sample_logits = cast(
+                        torch.Tensor,
+                        align_logits_to_labels(sample_logits, sample_gt),
+                    )
                     gate_raw = sample_extras.get("gate_h4_mean")
                     if isinstance(gate_raw, torch.Tensor):
                         gate_value = float(gate_raw.detach().item())

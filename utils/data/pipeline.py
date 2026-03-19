@@ -12,8 +12,8 @@ import time
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence
 
 import numpy as np
+import rasterio
 import torch
-from tifffile import imread
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import AutoImageProcessor, AutoModel
@@ -28,9 +28,10 @@ from .core import (
     _sanitize_label_tensor,
     _tile_passes_label_filter,
     _write_tile_payload_atomic,
+    build_tile_grid_layout,
     extract_multiscale_features,
     process_image_tiles_no_features,
-    subset_label_to_image_bounds,
+    read_image_tile_for_label_bounds,
 )
 
 if TYPE_CHECKING:
@@ -371,6 +372,7 @@ def prepare_data_tiles(
                 label_path,
                 output_dir,
                 tile_size,
+                ps,
                 tile_filter,
                 max_tiles,
                 counter,
@@ -498,75 +500,134 @@ def prepare_data_tiles(
         torch.cuda.empty_cache()
         gc.collect()
         try:
-            full_img = imread(img_path)
-        except Exception as exc:
-            _log_debug(f"Skipping unreadable image {basename}: {exc}")
-            continue
-        try:
-            full_label = subset_label_to_image_bounds(img_path, label_path)
+            layout = build_tile_grid_layout(
+                img_path,
+                label_path,
+                requested_tile_size=tile_size,
+                patch_size=ps,
+            )
         except Exception as exc:
             _log_debug(f"Skipping label alignment failure for {basename}: {exc}")
             continue
-        H, W, _ = full_img.shape
         skipped_no_foreground = 0
-        for y in range(0, H, tile_size):
-            for x in range(0, W, tile_size):
-                if max_tiles is not None and tiles_written >= max_tiles:
-                    _log_info("Reached max tiles. Stopping tiling.")
-                    return
-                y_min, x_min = y, x
-                y_max, x_max = y + tile_size, x + tile_size
-                if y_max > H:
-                    y_min, y_max = H - tile_size, H
-                if x_max > W:
-                    x_min, x_max = W - tile_size, W
-                tile_name = f"{basename}_y{y_min}_x{x_min}.pt"
-                save_path = os.path.join(output_dir, tile_name)
-                if os.path.exists(save_path):
-                    _log_debug(f"Tile already exists: {tile_name}")
-                    continue
-                img_crop = full_img[y_min:y_max, x_min:x_max, :]
-                lbl_crop = full_label[y_min:y_max, x_min:x_max]
-                if img_crop.max() == 0:
-                    _log_debug(f"Skipping zero tile {tile_name}")
-                    continue
-                if not _tile_passes_label_filter(lbl_crop, tile_filter):
-                    skipped_no_foreground += 1
-                    _log_debug(f"Skipping no-foreground tile {tile_name}")
-                    continue
-                if np.isnan(img_crop).any():
-                    img_crop = np.nan_to_num(img_crop)
-                    _log_debug(f"NaNs detected and replaced for tile {tile_name}")
-                try:
-                    feats = []
-                    if cache_features:
-                        feats = extract_multiscale_features(
-                            img_crop,
-                            model,
-                            processor,
-                            device,
-                            layers,
-                            ps=ps,
+        with rasterio.open(img_path) as src_img, rasterio.open(label_path) as src_lab:
+            if src_img.crs != src_lab.crs:
+                _log_debug(
+                    f"Skipping label alignment failure for {basename}: "
+                    "native label-grid supervision requires one shared CRS"
+                )
+                continue
+            label_window = (
+                rasterio.windows.from_bounds(
+                    *src_img.bounds,
+                    transform=src_lab.transform,
+                )
+                .round_offsets()
+                .round_lengths()
+            )
+            row_positions = range(
+                0,
+                max(int(label_window.height), 1),
+                layout.label_tile_size,
+            )
+            col_positions = range(
+                0,
+                max(int(label_window.width), 1),
+                layout.label_tile_size,
+            )
+            row_positions = list(row_positions) or [0]
+            col_positions = list(col_positions) or [0]
+            if row_positions[-1] != max(
+                int(label_window.height) - layout.label_tile_size, 0
+            ):
+                row_positions[-1] = max(
+                    int(label_window.height) - layout.label_tile_size, 0
+                )
+            if col_positions[-1] != max(
+                int(label_window.width) - layout.label_tile_size, 0
+            ):
+                col_positions[-1] = max(
+                    int(label_window.width) - layout.label_tile_size, 0
+                )
+            row_positions = list(dict.fromkeys(row_positions))
+            col_positions = list(dict.fromkeys(col_positions))
+            for row_off in row_positions:
+                for col_off in col_positions:
+                    if max_tiles is not None and tiles_written >= max_tiles:
+                        _log_info("Reached max tiles. Stopping tiling.")
+                        return
+                    tile_window = rasterio.windows.Window(
+                        col_off=int(label_window.col_off) + int(col_off),
+                        row_off=int(label_window.row_off) + int(row_off),
+                        width=layout.label_tile_size,
+                        height=layout.label_tile_size,
+                    )
+                    tile_bounds = rasterio.windows.bounds(
+                        tile_window, src_lab.transform
+                    )
+                    tile_name = (
+                        f"{basename}_y{int(tile_window.row_off)}_x"
+                        f"{int(tile_window.col_off)}.pt"
+                    )
+                    save_path = os.path.join(output_dir, tile_name)
+                    if os.path.exists(save_path):
+                        _log_debug(f"Tile already exists: {tile_name}")
+                        continue
+                    lbl_crop = src_lab.read(
+                        1,
+                        window=tile_window,
+                        boundless=True,
+                        fill_value=0,
+                    )
+                    try:
+                        img_crop = read_image_tile_for_label_bounds(
+                            img_path,
+                            tile_bounds,
+                            layout.image_tile_size,
                         )
-                    payload = {
-                        "image": torch.from_numpy(img_crop),
-                        "features": [f.cpu() for f in feats] if feats else [],
-                        "label": lbl_crop,
-                    }
-                    wrote_tile = _write_tile_payload_atomic(payload, save_path)
-                    if not wrote_tile:
+                    except Exception as exc:
+                        _log_debug(f"Skipping unreadable image tile {tile_name}: {exc}")
+                        continue
+                    if img_crop.max() == 0:
+                        _log_debug(f"Skipping zero tile {tile_name}")
+                        continue
+                    if not _tile_passes_label_filter(lbl_crop, tile_filter):
+                        skipped_no_foreground += 1
+                        _log_debug(f"Skipping no-foreground tile {tile_name}")
+                        continue
+                    if np.isnan(img_crop).any():
+                        img_crop = np.nan_to_num(img_crop)
+                        _log_debug(f"NaNs detected and replaced for tile {tile_name}")
+                    try:
+                        feats = []
+                        if cache_features:
+                            feats = extract_multiscale_features(
+                                img_crop,
+                                model,
+                                processor,
+                                device,
+                                layers,
+                                ps=ps,
+                            )
+                        payload = {
+                            "image": torch.from_numpy(img_crop),
+                            "features": [f.cpu() for f in feats] if feats else [],
+                            "label": lbl_crop,
+                        }
+                        wrote_tile = _write_tile_payload_atomic(payload, save_path)
+                        if not wrote_tile:
+                            del feats, payload, img_crop, lbl_crop
+                            _log_debug(f"Tile already exists after race: {tile_name}")
+                            continue
                         del feats, payload, img_crop, lbl_crop
-                        _log_debug(f"Tile already exists after race: {tile_name}")
-                        continue
-                    del feats, payload, img_crop, lbl_crop
-                    tiles_written += 1
-                except RuntimeError as e:
-                    if "CUDA" in str(e):
-                        del img_crop
-                        torch.cuda.empty_cache()
-                        gc.collect()
-                        continue
-                    raise e
+                        tiles_written += 1
+                    except RuntimeError as e:
+                        if "CUDA" in str(e):
+                            del img_crop
+                            torch.cuda.empty_cache()
+                            gc.collect()
+                            continue
+                        raise e
         if tile_filter["enabled"] and skipped_no_foreground > 0:
             _log_info(
                 "Image %s: skipped_no_foreground=%d" % (basename, skipped_no_foreground)

@@ -286,6 +286,42 @@ def align_labels_to_logits(y: torch.Tensor, logits: torch.Tensor) -> torch.Tenso
     return aligned.squeeze(1).long()
 
 
+def align_logits_to_labels(
+    logits: torch.Tensor | None,
+    labels: torch.Tensor,
+) -> torch.Tensor | None:
+    """Align logits to the native label grid.
+
+    Args:
+        logits (torch.Tensor | None): Logits tensor or ``None``.
+        labels (torch.Tensor): Label tensor defining the target grid.
+
+    Returns:
+        torch.Tensor | None: Logits resized to label spatial dimensions.
+
+    Examples:
+        >>> y = torch.zeros(1, 2, 2).long()
+        >>> logits = torch.zeros(1, 2, 4, 4)
+        >>> align_logits_to_labels(logits, y).shape
+        torch.Size([1, 2, 2, 2])
+        >>> align_logits_to_labels(None, y) is None
+        True
+    """
+
+    if logits is None:
+        return None
+    if labels.ndim == 2:
+        labels = labels.unsqueeze(0)
+    if logits.shape[-2:] == labels.shape[-2:]:
+        return logits
+    return F.interpolate(
+        logits,
+        size=labels.shape[-2:],
+        mode="bilinear",
+        align_corners=False,
+    )
+
+
 def align_to_patch_grid(
     image: torch.Tensor,
     labels: torch.Tensor | None,
@@ -328,6 +364,8 @@ def align_to_patch_grid(
             )
     image = image[..., :h_eff, :w_eff]
     if labels is None:
+        return image, labels
+    if labels.shape[-2:] != (h, w):
         return image, labels
     if labels.ndim == 2:
         labels = labels[:h_eff, :w_eff]
@@ -699,12 +737,12 @@ def evaluate(
                         require_aux_logits=loss_fn.aux_weight > 0,
                     )
                 )
-                target_main = align_labels_to_logits(y, logits)
-                target_aux = (
-                    align_labels_to_logits(y, aux_logits)
-                    if aux_logits is not None
-                    else None
-                )
+                logits = cast(torch.Tensor, align_logits_to_labels(logits, y))
+                aux_logits = align_logits_to_labels(aux_logits, y)
+                edge_logits = align_logits_to_labels(edge_logits, y)
+                skeleton_logits = align_logits_to_labels(skeleton_logits, y)
+                target_main = y if y.ndim == 3 else y.unsqueeze(0)
+                target_aux = target_main if aux_logits is not None else None
                 edge_targets, edge_mask = build_boundary_targets(
                     labels=y,
                     edge_logits=edge_logits,

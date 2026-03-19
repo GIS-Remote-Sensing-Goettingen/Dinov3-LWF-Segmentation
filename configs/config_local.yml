@@ -170,7 +170,7 @@ prepare:
   # Run the tile-building phase before verification/training.
   enable: false
   # Tile edge length in pixels for cached `.pt` samples.
-  tile_size: 512
+  tile_size: 1024
   # Device used during prepare; usually `cuda` or `cpu`.
   device: cuda
   # Override for feature caching during prepare; keep aligned with `dataset.cache_features`.
@@ -371,7 +371,7 @@ inference:
   # Glob used to discover input files inside `input_dir`.
   glob: "*.tif"
   # Checkpoint path to load for inference; use the train artifact when left blank and available.
-  checkpoint: /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/weights/unet_lite_best.pth
+  checkpoint:
   # Inference tile size in pixels.
   tile_size: 512
   # Overlap fraction between adjacent inference windows.

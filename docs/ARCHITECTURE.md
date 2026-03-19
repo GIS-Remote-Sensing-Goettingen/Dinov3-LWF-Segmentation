@@ -67,6 +67,16 @@ MLflow-compatible artifacts for research workflows.
   resulting metrics/artifacts or failure to the other ranks before later phases
   continue. Cached tile writes use unique temp files plus an atomic final claim
   so concurrent jobs do not misclassify rename races as corrupted imagery.
+- **Native label-grid supervision policy:** prepare caches paired tensors on two
+  grids: image tiles stay on the finer image resolution while label masks stay
+  on the native label raster grid. Training/evaluation treat the label grid as
+  the supervision source of truth by resizing logits down to label space before
+  losses/metrics, and inference writes prediction rasters on the same label
+  grid when `label_path` is available.
+- **Cache compatibility policy:** label-grid-supervised tiles live in
+  cache directories suffixed with `_labelgrid`, and cache metadata records the
+  supervision-grid mode so older image-grid caches are rejected instead of
+  being mixed into new runs.
 
 ## Tracking & Artifacts
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.
@@ -106,7 +116,9 @@ MLflow-compatible artifacts for research workflows.
 ## Workflow
 1. Prepare tiles and features (optional)
    Foreground-aware filtering can be applied here (`dataset.tile_filter`) so only tiles with
-   configured target labels are cached.
+   configured target labels are cached. Under the default native label-grid
+   policy, cached image tensors stay on the image grid while cached labels stay
+   on the coarser native label raster grid for the same map footprint.
 2. Verify cached tiles (readability + semantic checks) (optional)
 3. Train segmentation head with per-epoch validation visualization panels (optional),
    including optional XAI dashboards (DINO attention, Grad-CAM, PCA feature maps,
@@ -115,10 +127,13 @@ MLflow-compatible artifacts for research workflows.
    optional image-only regularizers (color jitter/cutout/gridmask), which are
    cache-safe by default when precomputed features are used. Image/label tensors
    are patch-aligned to backbone patch size during train/eval on-the-fly feature
-   extraction to avoid DINO token-grid misalignment.
+   extraction to avoid DINO token-grid misalignment, but supervision itself is
+   computed on the native label grid by aligning logits down to label space.
 4. Run inference (optional)
    Both `input_tif` and `input_dir` modes use the same sliding-window tiled inference
    and merge path to keep behavior consistent and memory-bounded on large inputs.
    Scene outputs now use center-weighted overlap blending, emit one compact
    explainability figure per input image, and can append foreground polygons
-   into a cumulative `EPSG:4326` shapefile.
+   into a cumulative `EPSG:4326` shapefile. When `label_path` is configured,
+   the default prediction raster is written on the label raster grid rather
+   than the finer source-image grid.

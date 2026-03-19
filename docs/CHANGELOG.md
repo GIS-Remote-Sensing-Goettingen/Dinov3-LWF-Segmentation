@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Switch the default supervision/output policy to the native label grid:
+  prepare now caches image tiles on the image grid paired with smaller native
+  label-grid masks, training/evaluation resize logits down to label space
+  instead of upsampling labels, inference writes scene predictions on the
+  label-grid transform when a label raster is configured, and cache metadata
+  now records the label-grid mode to avoid reusing older image-grid caches
+  (`utils/data/core.py`, `utils/data/pipeline.py`,
+  `pipeline/train_utils.py`, `pipeline/phases/train_batches.py`,
+  `pipeline/phases/train_xai.py`, `pipeline/phases/inference.py`,
+  `test/test_prepare_runtime.py`, `test/test_train_utils_safety.py`,
+  `docs/ARCHITECTURE.md`).
 - Make `rasterize_labels.sh` default `OMP_NUM_THREADS` to
   `SLURM_CPUS_PER_TASK` instead of `1` so the Slurm rasterization job can use
   the CPU allocation it already requests unless the user explicitly overrides

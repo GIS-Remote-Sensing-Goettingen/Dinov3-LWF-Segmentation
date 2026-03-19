@@ -26,7 +26,7 @@ paths:
   # Full raster label path read during prepare when tiles are built or rebuilt.
   label_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/final_labels_1m.tif
   # Base cache root for generated `.pt` tiles; training reads cached tiles here.
-  processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_2
+  processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_2_2/
 
 dataset:
   # Cache DINO features inside `.pt` tiles; false still caches tiles, just without features.
@@ -55,13 +55,13 @@ dataset:
       # Enable Cutout masking augmentation.
       enable: true
       # Probability of applying Cutout to a training sample.
-      prob: 0.10
+      prob: 0.25
       # Minimum Cutout hole size as a fraction of tile edge length.
-      min_frac: 0.08
+      min_frac: 0.1
       # Maximum Cutout hole size as a fraction of tile edge length.
-      max_frac: 0.22
+      max_frac: 0.3
       # Number of Cutout holes added when the augmentation triggers.
-      num_holes: 1
+      num_holes: 2
       # Fill value written inside Cutout holes.
       fill: 0.0
     gridmask:
@@ -190,11 +190,11 @@ train:
   # Device used for the train loop.
   device: cuda
   # Cached tile directory used by training; override `paths.processed_dir` here if needed.
-  processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_2
+  processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_2_2
   # Directory where checkpoints and bad-batch dumps are written.
   weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/
   # Per-rank training batch size.
-  batch_size: 3
+  batch_size: 4
   # Number of training epochs.
   epochs: 20
   # Muon learning rate for matrix-like parameter groups.

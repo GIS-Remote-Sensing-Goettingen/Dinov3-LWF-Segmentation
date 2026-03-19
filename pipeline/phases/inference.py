@@ -12,11 +12,13 @@ import numpy as np
 import rasterio
 import torch
 import torch.nn.functional as F
+from rasterio.enums import Resampling
 from rasterio.windows import Window
 from transformers import AutoImageProcessor, AutoModel
 
 from models import build_head
 from utils import TimedBlock, extract_multiscale_features
+from utils.data.core import build_tile_grid_layout, read_label_window_for_image_bounds
 
 from ..constants import DEFAULT_DEVICE
 from ..context import InferenceError, PhaseOutcome, RunContext
@@ -39,7 +41,7 @@ from ..inference_utils import (
     upsample_map,
 )
 from ..phase_runner import Phase
-from ..utils import get_model_config
+from ..utils import get_model_config, resolve_path
 
 
 class InferencePhase(Phase):
@@ -92,6 +94,7 @@ class InferencePhase(Phase):
         """
 
         infer_cfg = context.config.get("inference", context.config.get("infer", {}))
+        paths_cfg = context.config.get("paths", {})
         model_cfg = get_model_config(context.config)
         device = torch.device(infer_cfg.get("device", DEFAULT_DEVICE))
         processor = AutoImageProcessor.from_pretrained(model_cfg["backbone"])
@@ -153,6 +156,9 @@ class InferencePhase(Phase):
         foreground_class = int(vector_cfg.get("foreground_class", class_index))
         output_suffix = infer_cfg.get("output_suffix", "_pred.tif")
         glob_pattern = infer_cfg.get("glob", "*.tif")
+        label_path = resolve_path(context.config, infer_cfg, "label_path", "")
+        if not label_path and isinstance(paths_cfg, dict):
+            label_path = str(paths_cfg.get("label_path", "") or "")
 
         def _infer_one_tif(
             input_tif_path: str,
@@ -172,25 +178,74 @@ class InferencePhase(Phase):
                 dict[str, float]: Per-file metrics with `tiles_total`.
             """
 
+            label_grid_enabled = bool(label_path and os.path.exists(label_path))
             with rasterio.open(input_tif_path) as src:
                 profile = src.profile.copy()
                 height, width = src.height, src.width
                 channels = src.count
                 source_transform = src.transform
                 source_crs = src.crs
+                scene_rgb = None
+                output_transform = source_transform
+                output_crs = source_crs
+                output_height = height
+                output_width = width
+                tile_size_eff = tile_size
+                stride_eff = stride
+                if label_grid_enabled:
+                    try:
+                        _, label_meta = read_label_window_for_image_bounds(
+                            input_tif_path,
+                            label_path,
+                        )
+                        output_transform = label_meta["transform"]
+                        output_crs = label_meta["crs"]
+                        output_height = int(label_meta["height"])
+                        output_width = int(label_meta["width"])
+                        label_layout = build_tile_grid_layout(
+                            input_tif_path,
+                            label_path,
+                            requested_tile_size=tile_size,
+                            patch_size=ps,
+                        )
+                        tile_size_eff = label_layout.image_tile_size
+                        overlap_px_eff = (
+                            int(tile_size_eff * overlap_cfg)
+                            if overlap_cfg < 1
+                            else int(overlap_cfg)
+                        )
+                        stride_eff = max(1, tile_size_eff - overlap_px_eff)
+                        if explain_enabled:
+                            scene_rgb = np.transpose(
+                                src.read(
+                                    [1, 2, 3],
+                                    out_shape=(3, output_height, output_width),
+                                    resampling=Resampling.bilinear,
+                                ),
+                                (1, 2, 0),
+                            )
+                    except Exception as exc:
+                        label_grid_enabled = False
+                        context.logger.warning(
+                            "Falling back to image-grid inference output for %s: %s"
+                            % (os.path.basename(input_tif_path), exc)
+                        )
+                if explain_enabled and scene_rgb is None:
+                    scene_rgb = np.transpose(src.read([1, 2, 3]), (1, 2, 0))
             if channels != 3:
                 raise InferenceError(
                     f"Expected 3-band imagery: {os.path.basename(input_tif_path)}"
                 )
             prob_accum = np.zeros(
-                (model_cfg["num_classes"], height, width), dtype=np.float32
+                (model_cfg["num_classes"], output_height, output_width),
+                dtype=np.float32,
             )
-            weight_accum = np.zeros((height, width), dtype=np.float32)
-            gradcam_accum = np.zeros((height, width), dtype=np.float32)
+            weight_accum = np.zeros((output_height, output_width), dtype=np.float32)
+            gradcam_accum = np.zeros((output_height, output_width), dtype=np.float32)
             weight_cache: dict[tuple[int, int], np.ndarray] = {}
-            total_tiles = math.ceil(height / stride) * math.ceil(width / stride)
+            total_tiles = math.ceil(height / stride_eff) * math.ceil(width / stride_eff)
             context.logger.info(
-                f"Running inference on {total_tiles} tiles with stride {stride}."
+                f"Running inference on {total_tiles} tiles with stride {stride_eff}."
             )
             local_plot_every_n = plot_every_n
             if explain_enabled:
@@ -204,11 +259,11 @@ class InferencePhase(Phase):
                 rasterio.open(input_tif_path) as src,
                 TimedBlock(context.logger, phase_label),
             ):
-                for y in range(0, height, stride):
-                    for x in range(0, width, stride):
+                for y in range(0, height, stride_eff):
+                    for x in range(0, width, stride_eff):
                         tile_counter += 1
-                        y_max = min(y + tile_size, height)
-                        x_max = min(x + tile_size, width)
+                        y_max = min(y + tile_size_eff, height)
+                        x_max = min(x + tile_size_eff, width)
                         window = Window.from_slices((y, y_max), (x, x_max))
                         img_tile = src.read(window=window, boundless=True)
                         img_tile = np.transpose(img_tile, (1, 2, 0))
@@ -216,8 +271,8 @@ class InferencePhase(Phase):
                             continue
                         img_tile_raw = img_tile
                         orig_h, orig_w = img_tile.shape[:2]
-                        pad_h = max(0, tile_size - orig_h)
-                        pad_w = max(0, tile_size - orig_w)
+                        pad_h = max(0, tile_size_eff - orig_h)
+                        pad_w = max(0, tile_size_eff - orig_w)
                         if pad_h or pad_w:
                             img_tile = np.pad(
                                 img_tile,
@@ -286,11 +341,68 @@ class InferencePhase(Phase):
                                 orig_w,
                             )
                         blend_key = (orig_h, orig_w)
+                        if label_grid_enabled:
+                            tile_bounds = src.window_bounds(window)
+                            label_bounds = tile_bounds
+                            if source_crs != output_crs:
+                                label_bounds = rasterio.warp.transform_bounds(
+                                    source_crs,
+                                    output_crs,
+                                    *tile_bounds,
+                                    densify_pts=21,
+                                )
+                            label_window = (
+                                rasterio.windows.from_bounds(
+                                    *label_bounds,
+                                    transform=output_transform,
+                                )
+                                .round_offsets()
+                                .round_lengths()
+                            )
+                            label_window = Window(
+                                col_off=max(0, int(label_window.col_off)),
+                                row_off=max(0, int(label_window.row_off)),
+                                width=max(1, int(label_window.width)),
+                                height=max(1, int(label_window.height)),
+                            )
+                            row_end = min(
+                                int(label_window.row_off + label_window.height),
+                                output_height,
+                            )
+                            col_end = min(
+                                int(label_window.col_off + label_window.width),
+                                output_width,
+                            )
+                            target_h = max(1, row_end - int(label_window.row_off))
+                            target_w = max(1, col_end - int(label_window.col_off))
+                            tile_probs = (
+                                F.interpolate(
+                                    torch.from_numpy(tile_probs).unsqueeze(0),
+                                    size=(target_h, target_w),
+                                    mode="bilinear",
+                                    align_corners=False,
+                                )
+                                .squeeze(0)
+                                .numpy()
+                            )
+                            if explain_enabled and gradcam_tile is not None:
+                                gradcam_tile = upsample_map(
+                                    np.asarray(gradcam_tile, dtype=np.float32),
+                                    target_h,
+                                    target_w,
+                                )
+                            blend_key = (target_h, target_w)
+                            y_slice = slice(int(label_window.row_off), row_end)
+                            x_slice = slice(int(label_window.col_off), col_end)
+                        else:
+                            blend_key = (orig_h, orig_w)
+                            y_slice = slice(y, y_max)
+                            x_slice = slice(x, x_max)
                         blend_mask = weight_cache.get(blend_key)
                         if blend_mask is None:
                             blend_mask = build_blend_weight_mask(
-                                orig_h,
-                                orig_w,
+                                blend_key[0],
+                                blend_key[1],
                                 mode=merge_mode,
                             )
                             weight_cache[blend_key] = blend_mask
@@ -306,6 +418,20 @@ class InferencePhase(Phase):
                                     tile_probs, class_index
                                 )
                                 pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
+                                if rgb.shape[:2] != pred_tile.shape:
+                                    rgb = np.transpose(
+                                        src.read(
+                                            [1, 2, 3],
+                                            window=window,
+                                            out_shape=(
+                                                3,
+                                                pred_tile.shape[0],
+                                                pred_tile.shape[1],
+                                            ),
+                                            resampling=Resampling.bilinear,
+                                        ),
+                                        (1, 2, 0),
+                                    ).astype(np.uint8)
                                 overlay_pred = overlay_binary_mask(
                                     rgb,
                                     pred_tile == foreground_class,
@@ -335,12 +461,12 @@ class InferencePhase(Phase):
                                     "XAI plotting failed for tile y=%s x=%s\n%s"
                                     % (y, x, traceback.format_exc())
                                 )
-                        prob_accum[:, y:y_max, x:x_max] += (
+                        prob_accum[:, y_slice, x_slice] += (
                             tile_probs * blend_mask[None, ...]
                         )
-                        weight_accum[y:y_max, x:x_max] += blend_mask
+                        weight_accum[y_slice, x_slice] += blend_mask
                         if explain_enabled and gradcam_tile is not None:
-                            gradcam_accum[y:y_max, x:x_max] += gradcam_tile * blend_mask
+                            gradcam_accum[y_slice, x_slice] += gradcam_tile * blend_mask
                         if tile_counter % 50 == 0 or tile_counter == total_tiles:
                             context.logger.info(
                                 f"Inference progress: {tile_counter}/{total_tiles} tiles."
@@ -351,13 +477,18 @@ class InferencePhase(Phase):
                                 tile_counter,
                                 total_tiles,
                             )
-                scene_rgb = None
-                if explain_enabled:
-                    scene_rgb = np.transpose(src.read([1, 2, 3]), (1, 2, 0))
             weight_accum[weight_accum == 0] = 1
             prob_accum /= weight_accum[None, ...]
             pred_full = prob_accum.argmax(axis=0).astype(np.uint8)
-            profile.update(dtype=rasterio.uint8, count=1, nodata=0)
+            profile.update(
+                dtype=rasterio.uint8,
+                count=1,
+                nodata=0,
+                transform=output_transform,
+                crs=output_crs,
+                height=output_height,
+                width=output_width,
+            )
             os.makedirs(os.path.dirname(output_tif_path) or ".", exist_ok=True)
             with rasterio.open(output_tif_path, "w", **profile) as dst:
                 dst.write(pred_full, 1)
@@ -401,8 +532,8 @@ class InferencePhase(Phase):
             if vector_enabled and vector_output_path is not None:
                 features = extract_prediction_features(
                     pred_full,
-                    source_transform,
-                    source_crs,
+                    output_transform,
+                    output_crs,
                     source_id=plot_prefix,
                     run_id=context.run_id,
                     foreground_class=foreground_class,

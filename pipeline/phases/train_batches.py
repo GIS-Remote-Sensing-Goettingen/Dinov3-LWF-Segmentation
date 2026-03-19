@@ -17,7 +17,7 @@ from utils.losses import LOSS_COMPONENT_KEYS
 from ..context import RunContext, TrainingError
 from ..train_utils import (
     ModelEMA,
-    align_labels_to_logits,
+    align_logits_to_labels,
     align_to_patch_grid,
     build_boundary_targets,
     count_nonfinite_parameters,
@@ -250,12 +250,12 @@ def run_train_epoch_batches(
                         require_aux_logits=loss_fn.aux_weight > 0,
                     )
                 )
-                target_main = align_labels_to_logits(y, logits)
-                target_aux = (
-                    align_labels_to_logits(y, aux_logits)
-                    if aux_logits is not None
-                    else None
-                )
+                logits = cast(torch.Tensor, align_logits_to_labels(logits, y))
+                aux_logits = align_logits_to_labels(aux_logits, y)
+                edge_logits = align_logits_to_labels(edge_logits, y)
+                skeleton_logits = align_logits_to_labels(skeleton_logits, y)
+                target_main = y if y.ndim == 3 else y.unsqueeze(0)
+                target_aux = target_main if aux_logits is not None else None
                 edge_targets, edge_mask = build_boundary_targets(
                     labels=y,
                     edge_logits=edge_logits,

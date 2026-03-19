@@ -11,8 +11,11 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+import rasterio
 import torch
+from rasterio.transform import from_origin
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -20,7 +23,12 @@ import main as main_module  # noqa: E402
 import pipeline.phases.prepare as prepare_module  # noqa: E402
 from pipeline.context import DistContext, PhaseResult  # noqa: E402
 from pipeline.phases.prepare import PreparePhase  # noqa: E402
-from utils.data.core import _write_tile_payload_atomic  # noqa: E402
+from utils.data.core import (  # noqa: E402
+    _write_tile_payload_atomic,
+    build_tile_grid_layout,
+    process_image_tiles_no_features,
+    read_label_window_for_image_bounds,
+)
 
 
 class _RecordingLogger:
@@ -63,6 +71,44 @@ class _RecordingLogger:
         """
 
         self.debug_messages.append(str(message))
+
+
+def _write_test_geotiff(
+    path: Path,
+    data: np.ndarray,
+    *,
+    transform,
+    crs: str = "EPSG:25832",
+) -> None:
+    """Write one small GeoTIFF fixture for prepare/runtime tests.
+
+    Args:
+        path (Path): Output path.
+        data (np.ndarray): Raster data, either ``(H, W)`` or ``(H, W, C)``.
+        transform: Raster affine transform.
+        crs (str): CRS identifier.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if data.ndim == 2:
+        count = 1
+        write_data = data[np.newaxis, ...]
+    else:
+        count = int(data.shape[2])
+        write_data = np.transpose(data, (2, 0, 1))
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=int(data.shape[0]),
+        width=int(data.shape[1]),
+        count=count,
+        dtype=str(data.dtype),
+        crs=crs,
+        transform=transform,
+        nodata=0,
+    ) as dst:
+        dst.write(write_data)
 
 
 def _prepare_context(tmp_path: Path, dist_ctx: DistContext) -> SimpleNamespace:
@@ -258,6 +304,115 @@ def test_atomic_tile_writer_cleans_temp_files_on_failure(
         >>> True
         True
     """
+
+
+def test_build_tile_grid_layout_derives_native_label_supervision_sizes(
+    tmp_path: Path,
+) -> None:
+    """Native label-grid tiling should derive compatible image/label sizes.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    image_path = tmp_path / "image.tif"
+    label_path = tmp_path / "labels.tif"
+    _write_test_geotiff(
+        image_path,
+        np.zeros((512, 512, 3), dtype=np.uint8),
+        transform=from_origin(0.0, 102.4, 0.2, 0.2),
+    )
+    _write_test_geotiff(
+        label_path,
+        np.zeros((128, 128), dtype=np.uint8),
+        transform=from_origin(0.0, 128.0, 1.0, 1.0),
+    )
+
+    layout = build_tile_grid_layout(
+        str(image_path),
+        str(label_path),
+        requested_tile_size=512,
+        patch_size=16,
+    )
+
+    assert layout.image_tile_size == 480
+    assert layout.label_tile_size == 96
+    assert layout.scale_factor == 5
+
+
+def test_read_label_window_for_image_bounds_keeps_native_label_grid(
+    tmp_path: Path,
+) -> None:
+    """Image-footprint label reads should preserve native label resolution.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    image_path = tmp_path / "image.tif"
+    label_path = tmp_path / "labels.tif"
+    _write_test_geotiff(
+        image_path,
+        np.zeros((20, 20, 3), dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 0.2, 0.2),
+    )
+    label_data = np.arange(16, dtype=np.uint8).reshape(4, 4)
+    _write_test_geotiff(
+        label_path,
+        label_data,
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+
+    labels, meta = read_label_window_for_image_bounds(str(image_path), str(label_path))
+
+    assert labels.shape == (4, 4)
+    assert labels.tolist() == label_data.tolist()
+    assert meta["width"] == 4
+    assert meta["height"] == 4
+    assert meta["transform"] == from_origin(0.0, 4.0, 1.0, 1.0)
+
+
+def test_process_image_tiles_no_features_writes_smaller_label_grid_tiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cached tiles should keep image and label grids at their native scales.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Monkeypatch fixture.
+    """
+
+    image_path = tmp_path / "image.tif"
+    label_path = tmp_path / "labels.tif"
+    output_dir = tmp_path / "cache"
+    image = np.full((32, 32, 3), 10, dtype=np.uint8)
+    labels = np.ones((8, 8), dtype=np.uint8)
+    _write_test_geotiff(
+        image_path,
+        image,
+        transform=from_origin(0.0, 32.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        label_path,
+        labels,
+        transform=from_origin(0.0, 32.0, 4.0, 4.0),
+    )
+
+    result = process_image_tiles_no_features(
+        str(image_path),
+        str(label_path),
+        str(output_dir),
+        tile_size=32,
+        patch_size=4,
+    )
+
+    assert result["status"] == "ok"
+    saved = sorted(output_dir.glob("*.pt"))
+    assert len(saved) == 1
+    payload = torch.load(saved[0], weights_only=False, map_location="cpu")
+    assert tuple(payload["image"].shape) == (32, 32, 3)
+    assert np.asarray(payload["label"]).shape == (8, 8)
 
     save_path = tmp_path / "tile.pt"
 
