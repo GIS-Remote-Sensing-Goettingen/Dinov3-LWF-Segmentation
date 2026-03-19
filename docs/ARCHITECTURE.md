@@ -17,7 +17,11 @@ MLflow-compatible artifacts for research workflows.
 - `models/`: Segmentation heads (U-Net variants, MaskFormer-style head).
 - `scripts/`: Small one-off utilities for repository workflows and data
   conversions (for example metrics export or rasterizing vector labels onto
-  reference TIFF grids).
+  reference TIFF grids). The rasterize-label workflow now also supports a
+  config-driven merge path that builds one canonical 1 m output grid from a
+  verification raster footprint, rasterizes multiple shapefiles onto that
+  grid, aligns existing label TIFFs to the same grid, merges both stacks, and
+  validates coverage against the verification raster.
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
   Data internals are grouped under the `utils/data/` package (`core.py`,
   `pipeline.py`) with `utils/data/__init__.py` as the public data facade.

@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Rework `scripts/rasterize_vector_labels.py` into a config-driven merge
+  workflow that builds one snapped `EPSG:25832` 1 m grid from the verification
+  raster footprint, rasterizes all matching shapefiles onto that grid, aligns
+  matching pre-rasterized label TIFFs onto the same grid, merges the raster
+  and vector stacks in separate stages before a final merge, and hard-fails
+  when Planet-style verification coverage drops below the configured threshold;
+  also add a small committed config file plus wrapper/script regression tests
+  for the new workflow
+  (`scripts/rasterize_vector_labels.py`, `configs/rasterize_labels.yml`,
+  `rasterize_labels.sh`, `test/test_rasterize_vector_labels.py`,
+  `docs/ARCHITECTURE.md`).
 - Extend `scripts/rasterize_vector_labels.py` with a
   `--resolution-factor` option so label GeoTIFFs can be generated on a
   denser pixel grid while preserving the reference CRS and geographic extent,

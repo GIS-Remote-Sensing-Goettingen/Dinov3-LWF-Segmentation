@@ -9,23 +9,61 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 import fiona
 import numpy as np
 import rasterio
+import yaml
 from affine import Affine
+from rasterio.coords import BoundingBox
 from rasterio.crs import CRS
+from rasterio.enums import Resampling
 from rasterio.features import rasterize
-from rasterio.warp import transform_bounds, transform_geom
+from rasterio.transform import from_origin
+from rasterio.warp import reproject, transform_bounds, transform_geom
 from rasterio.windows import Window
 from rasterio.windows import bounds as window_bounds
 from rasterio.windows import transform as window_transform
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_RASTERIZE_CONFIG_PATH = Path("configs/rasterize_labels.yml")
+
+
+@dataclass(frozen=True)
+class GridSpec:
+    """Explicit raster grid definition used for aligned label outputs.
+
+    Attributes:
+        crs (CRS): Output CRS.
+        transform (Affine): Affine transform of the output grid.
+        width (int): Output width in pixels.
+        height (int): Output height in pixels.
+    """
+
+    crs: CRS
+    transform: Affine
+    width: int
+    height: int
+
+    @property
+    def bounds(self) -> BoundingBox:
+        """Return the geographic bounds of the grid.
+
+        Returns:
+            BoundingBox: Bounds in `(left, bottom, right, top)` order.
+        """
+
+        left = float(self.transform.c)
+        top = float(self.transform.f)
+        right = left + float(self.width) * float(self.transform.a)
+        bottom = top + float(self.height) * float(self.transform.e)
+        return BoundingBox(left=left, bottom=bottom, right=right, top=top)
 
 
 def collect_reference_paths(reference_path: Path, glob_pattern: str) -> list[Path]:
@@ -102,6 +140,31 @@ def collect_vector_paths(vector_path: Path, glob_pattern: str) -> list[Path]:
     )
 
 
+def collect_raster_paths(raster_path: Path, glob_pattern: str) -> list[Path]:
+    """Return one or more raster label TIFF paths.
+
+    Args:
+        raster_path (Path): Raster label path or directory.
+        glob_pattern (str): Recursive glob applied when `raster_path` is a
+            directory.
+
+    Returns:
+        list[Path]: Sorted raster TIFF paths.
+
+    Raises:
+        FileNotFoundError: If no matching raster files are found.
+    """
+
+    if raster_path.is_file():
+        return [raster_path]
+    matches = sorted(path for path in raster_path.rglob(glob_pattern) if path.is_file())
+    if matches:
+        return matches
+    raise FileNotFoundError(
+        f"no raster label TIFFs found under {raster_path} with glob {glob_pattern!r}"
+    )
+
+
 def derive_output_path(reference_path: Path, output_path: Path) -> Path:
     """Return the label TIFF path for a reference raster.
 
@@ -165,6 +228,27 @@ def derive_vector_output_path(
     return parts_root / relative_path.parent / f"{vector_path.stem}_labels.tif"
 
 
+def derive_raster_output_path(
+    merged_output_path: Path,
+    raster_path: Path,
+    raster_root: Path,
+) -> Path:
+    """Return the aligned raster output path under the merged output folder.
+
+    Args:
+        merged_output_path (Path): Final merged TIFF path.
+        raster_path (Path): Source raster label TIFF path.
+        raster_root (Path): Root directory used for recursive discovery.
+
+    Returns:
+        Path: Per-raster aligned TIFF path inside the sibling `_rasters` folder.
+    """
+
+    relative_path = raster_path.relative_to(raster_root)
+    parts_root = merged_output_path.parent / f"{merged_output_path.stem}_rasters"
+    return parts_root / relative_path.parent / f"{raster_path.stem}_aligned.tif"
+
+
 def _normalize_crs(crs_value: str | CRS | dict[str, str] | None) -> CRS | None:
     """Convert CRS-like input into a rasterio CRS.
 
@@ -210,6 +294,146 @@ def _resolve_vector_crs(
     if vector_crs is None:
         vector_crs = _normalize_crs(src.crs)
     return vector_crs
+
+
+def load_rasterize_config(config_path: Path) -> dict[str, Any]:
+    """Load one YAML config file for the raster merge workflow.
+
+    Args:
+        config_path (Path): YAML configuration path.
+
+    Returns:
+        dict[str, Any]: Parsed configuration mapping.
+
+    Raises:
+        FileNotFoundError: If the config file does not exist.
+        ValueError: If the YAML file does not contain a mapping.
+    """
+
+    resolved_path = Path(config_path).expanduser()
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"rasterize config not found: {resolved_path}")
+    with resolved_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"rasterize config must define a mapping at the top level: {resolved_path}"
+        )
+    return data
+
+
+def _config_value(
+    config: dict[str, Any],
+    key: str,
+    default: Any = None,
+    *,
+    required: bool = False,
+) -> Any:
+    """Read one workflow key from the config mapping.
+
+    Args:
+        config (dict[str, Any]): Workflow config mapping.
+        key (str): Key name.
+        default (Any): Default value when key is absent.
+        required (bool): Whether the key must be present.
+
+    Returns:
+        Any: Resolved config value.
+
+    Raises:
+        ValueError: If the key is required but missing.
+    """
+
+    workflow = config.get("workflow", {})
+    if key in workflow:
+        return workflow[key]
+    if key in config:
+        return config[key]
+    if required:
+        raise ValueError(f"missing required rasterize config value: {key}")
+    return default
+
+
+def build_grid_spec_from_verify(
+    verify_path: Path,
+    target_crs: str | CRS,
+    target_resolution: float,
+) -> GridSpec:
+    """Build a snapped output grid from the verification raster footprint.
+
+    Args:
+        verify_path (Path): Verification raster used to define the footprint.
+        target_crs (str | CRS): Requested output CRS.
+        target_resolution (float): Requested output pixel size.
+
+    Returns:
+        GridSpec: Canonical output grid.
+    """
+
+    resolution = float(target_resolution)
+    if resolution <= 0:
+        raise ValueError("target_resolution must be > 0")
+    target_crs_obj = CRS.from_user_input(target_crs)
+    with rasterio.open(verify_path) as verify:
+        verify_crs = verify.crs
+        if verify_crs is None:
+            raise ValueError(f"verification raster has no CRS: {verify_path}")
+        left, bottom, right, top = verify.bounds
+        if verify_crs != target_crs_obj:
+            left, bottom, right, top = transform_bounds(
+                verify_crs,
+                target_crs_obj,
+                left,
+                bottom,
+                right,
+                top,
+                densify_pts=21,
+            )
+    snapped_left = math.floor(left / resolution) * resolution
+    snapped_bottom = math.floor(bottom / resolution) * resolution
+    snapped_right = math.ceil(right / resolution) * resolution
+    snapped_top = math.ceil(top / resolution) * resolution
+    width = int(round((snapped_right - snapped_left) / resolution))
+    height = int(round((snapped_top - snapped_bottom) / resolution))
+    if width <= 0 or height <= 0:
+        raise ValueError("target grid must have positive width and height")
+    return GridSpec(
+        crs=target_crs_obj,
+        transform=from_origin(snapped_left, snapped_top, resolution, resolution),
+        width=width,
+        height=height,
+    )
+
+
+def _build_grid_profile(
+    grid_spec: GridSpec,
+    dtype: str,
+    fill_value: int,
+    compress: str,
+) -> dict[str, object]:
+    """Build a GeoTIFF profile for one explicit output grid.
+
+    Args:
+        grid_spec (GridSpec): Output grid definition.
+        dtype (str): Output raster dtype.
+        fill_value (int): Background fill value.
+        compress (str): GeoTIFF compression codec.
+
+    Returns:
+        dict[str, object]: Profile used to create the output raster.
+    """
+
+    return {
+        "driver": "GTiff",
+        "width": int(grid_spec.width),
+        "height": int(grid_spec.height),
+        "count": 1,
+        "dtype": dtype,
+        "crs": grid_spec.crs,
+        "transform": grid_spec.transform,
+        "nodata": fill_value,
+        "compress": compress,
+    }
 
 
 def _iter_burn_shapes(
@@ -762,6 +986,689 @@ def rasterize_reference_labels(
         )
 
 
+def _rasterize_full_grid(
+    src: fiona.Collection,
+    grid_spec: GridSpec,
+    output_path: Path,
+    vector_crs: CRS | None,
+    burn_value: int,
+    fill_value: int,
+    dtype: str,
+    all_touched: bool,
+    compress: str,
+) -> int:
+    """Rasterize one vector layer onto an explicit output grid.
+
+    Args:
+        src (fiona.Collection): Open vector label dataset.
+        grid_spec (GridSpec): Explicit output grid definition.
+        output_path (Path): Output GeoTIFF path.
+        vector_crs (CRS | None): Vector CRS.
+        burn_value (int): Value burned into polygon pixels.
+        fill_value (int): Background fill value.
+        dtype (str): Output raster dtype.
+        all_touched (bool): Whether to burn every touched pixel.
+        compress (str): GeoTIFF compression codec.
+
+    Returns:
+        int: Number of intersecting vector features.
+    """
+
+    LOGGER.info(
+        "Rasterizing %s on target grid (%dx%d pixels)",
+        output_path.name,
+        grid_spec.width,
+        grid_spec.height,
+    )
+    shapes, feature_count = _iter_burn_shapes(
+        src=src,
+        reference_bounds=tuple(grid_spec.bounds),
+        reference_crs=grid_spec.crs,
+        vector_crs=vector_crs,
+        burn_value=burn_value,
+    )
+    label_array = rasterize(
+        shapes=shapes,
+        out_shape=(grid_spec.height, grid_spec.width),
+        transform=grid_spec.transform,
+        fill=fill_value,
+        dtype=dtype,
+        all_touched=all_touched,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        output_path,
+        "w",
+        **_build_grid_profile(grid_spec, dtype, fill_value, compress),
+    ) as dst:
+        dst.write(label_array, 1)
+    LOGGER.info(
+        "Finished %s with %d intersecting features",
+        output_path,
+        feature_count[0],
+    )
+    return feature_count[0]
+
+
+def _rasterize_windowed_grid(
+    src: fiona.Collection,
+    grid_spec: GridSpec,
+    output_path: Path,
+    vector_crs: CRS | None,
+    burn_value: int,
+    fill_value: int,
+    dtype: str,
+    all_touched: bool,
+    compress: str,
+    window_size: int,
+    vector_path: Path,
+    workers: int,
+) -> int:
+    """Rasterize a vector layer onto an explicit output grid by windows.
+
+    Args:
+        src (fiona.Collection): Open vector label dataset.
+        grid_spec (GridSpec): Explicit output grid definition.
+        output_path (Path): Output GeoTIFF path.
+        vector_crs (CRS | None): Vector CRS.
+        burn_value (int): Value burned into polygon pixels.
+        fill_value (int): Background fill value.
+        dtype (str): Output raster dtype.
+        all_touched (bool): Whether to burn every touched pixel.
+        compress (str): GeoTIFF compression codec.
+        window_size (int): Window edge length in pixels.
+        vector_path (Path): Vector label path used by worker threads.
+        workers (int): Number of worker threads for window rasterization.
+
+    Returns:
+        int: Number of unique intersecting vector features.
+    """
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    seen_feature_ids: set[str] = set()
+    output_height = int(grid_spec.height)
+    output_width = int(grid_spec.width)
+    total_windows = ((output_height + window_size - 1) // window_size) * (
+        (output_width + window_size - 1) // window_size
+    )
+    progress_step = max(1, total_windows // 20)
+    LOGGER.info(
+        "Rasterizing %s in windowed grid mode (%dx%d pixels, %d windows of %d px)",
+        output_path.name,
+        output_width,
+        output_height,
+        total_windows,
+        window_size,
+    )
+    with rasterio.open(
+        output_path,
+        "w",
+        **_build_grid_profile(grid_spec, dtype, fill_value, compress),
+    ) as dst:
+        if workers <= 1:
+            for index, window in enumerate(
+                _iter_windows(output_height, output_width, window_size),
+                start=1,
+            ):
+                bounds = window_bounds(window, grid_spec.transform)
+                shapes, _ = _iter_burn_shapes(
+                    src=src,
+                    reference_bounds=bounds,
+                    reference_crs=grid_spec.crs,
+                    vector_crs=vector_crs,
+                    burn_value=burn_value,
+                    seen_feature_ids=seen_feature_ids,
+                )
+                window_array = rasterize(
+                    shapes=shapes,
+                    out_shape=(int(window.height), int(window.width)),
+                    transform=window_transform(window, grid_spec.transform),
+                    fill=fill_value,
+                    dtype=dtype,
+                    all_touched=all_touched,
+                )
+                dst.write(window_array, 1, window=window)
+                if index == 1 or index == total_windows or index % progress_step == 0:
+                    LOGGER.info(
+                        "Window progress for %s: %d/%d (%.1f%%)",
+                        output_path,
+                        index,
+                        total_windows,
+                        100.0 * index / total_windows,
+                    )
+        else:
+            LOGGER.info("Using %d worker threads for window rasterization", workers)
+            windows_iter = iter(_iter_windows(output_height, output_width, window_size))
+            completed = 0
+            max_inflight = max(workers * 2, 1)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                inflight: dict[Future[tuple[Window, np.ndarray, set[str]]], Window] = {}
+
+                def submit_next() -> bool:
+                    """Submit one more window task if work remains.
+
+                    Returns:
+                        bool: True when a task was submitted.
+                    """
+
+                    try:
+                        next_window = next(windows_iter)
+                    except StopIteration:
+                        return False
+                    future = executor.submit(
+                        _rasterize_window_task,
+                        vector_path=vector_path,
+                        window=next_window,
+                        output_transform=grid_spec.transform,
+                        reference_crs=grid_spec.crs,
+                        vector_crs=vector_crs,
+                        burn_value=burn_value,
+                        fill_value=fill_value,
+                        dtype=dtype,
+                        all_touched=all_touched,
+                    )
+                    inflight[future] = next_window
+                    return True
+
+                while len(inflight) < max_inflight and submit_next():
+                    pass
+                while inflight:
+                    done, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        window, window_array, feature_ids = future.result()
+                        inflight.pop(future)
+                        seen_feature_ids.update(feature_ids)
+                        dst.write(window_array, 1, window=window)
+                        completed += 1
+                        if (
+                            completed == 1
+                            or completed == total_windows
+                            or completed % progress_step == 0
+                        ):
+                            LOGGER.info(
+                                "Window progress for %s: %d/%d (%.1f%%)",
+                                output_path,
+                                completed,
+                                total_windows,
+                                100.0 * completed / total_windows,
+                            )
+                        while len(inflight) < max_inflight and submit_next():
+                            pass
+    LOGGER.info(
+        "Finished %s with %d unique intersecting features",
+        output_path,
+        len(seen_feature_ids),
+    )
+    return len(seen_feature_ids)
+
+
+def rasterize_labels_to_grid(
+    vector_path: Path,
+    output_path: Path,
+    grid_spec: GridSpec,
+    burn_value: int = 1,
+    fill_value: int = 0,
+    dtype: str = "uint8",
+    all_touched: bool = False,
+    compress: str = "deflate",
+    vector_crs_override: str = "",
+    window_size: int = 0,
+    stream_threshold_pixels: int = 50_000_000,
+    workers: int = 1,
+) -> int:
+    """Rasterize labels onto one explicit target grid.
+
+    Args:
+        vector_path (Path): Input vector label path.
+        output_path (Path): Output label GeoTIFF path.
+        grid_spec (GridSpec): Explicit output grid definition.
+        burn_value (int): Value burned into polygon pixels.
+        fill_value (int): Background value.
+        dtype (str): Output raster dtype.
+        all_touched (bool): Whether to burn every touched pixel.
+        compress (str): GeoTIFF compression codec.
+        vector_crs_override (str): Optional CRS override for the vector layer.
+        window_size (int): Optional fixed streaming window size in pixels.
+        stream_threshold_pixels (int): Auto-switch threshold for windowed
+            rasterization based on total output pixels.
+        workers (int): Worker threads used for windowed rasterization.
+
+    Returns:
+        int: Number of vector features burned into the output raster.
+
+    Examples:
+        >>> callable(rasterize_labels_to_grid)
+        True
+    """
+
+    with fiona.open(vector_path) as src:
+        vector_crs = _resolve_vector_crs(src, vector_crs_override)
+        total_pixels = int(grid_spec.height) * int(grid_spec.width)
+        resolved_window_size = int(window_size)
+        if resolved_window_size <= 0 and total_pixels >= int(stream_threshold_pixels):
+            resolved_window_size = 4096
+        if resolved_window_size > 0:
+            return _rasterize_windowed_grid(
+                src=src,
+                grid_spec=grid_spec,
+                output_path=output_path,
+                vector_crs=vector_crs,
+                burn_value=burn_value,
+                fill_value=fill_value,
+                dtype=dtype,
+                all_touched=all_touched,
+                compress=compress,
+                window_size=resolved_window_size,
+                vector_path=vector_path,
+                workers=max(1, int(workers)),
+            )
+        return _rasterize_full_grid(
+            src=src,
+            grid_spec=grid_spec,
+            output_path=output_path,
+            vector_crs=vector_crs,
+            burn_value=burn_value,
+            fill_value=fill_value,
+            dtype=dtype,
+            all_touched=all_touched,
+            compress=compress,
+        )
+
+
+def rasterize_vector_directory_to_grid(
+    vector_dir: Path,
+    output_path: Path,
+    grid_spec: GridSpec,
+    *,
+    vector_glob: str = "*.shp",
+    burn_value: int = 1,
+    fill_value: int = 0,
+    dtype: str = "uint8",
+    all_touched: bool = False,
+    compress: str = "deflate",
+    vector_crs_override: str = "",
+    window_size: int = 0,
+    stream_threshold_pixels: int = 50_000_000,
+    workers: int = 1,
+    vector_workers: int = 1,
+    overwrite: bool = False,
+) -> tuple[Path, list[Path]]:
+    """Rasterize all shapefiles in a directory tree onto one explicit grid.
+
+    Args:
+        vector_dir (Path): Directory containing one or more shapefiles.
+        output_path (Path): Merged output TIFF path.
+        grid_spec (GridSpec): Explicit output grid definition.
+        vector_glob (str): Recursive glob used to discover shapefiles.
+        burn_value (int): Value burned into polygon pixels.
+        fill_value (int): Background value.
+        dtype (str): Output raster dtype.
+        all_touched (bool): Whether to burn every touched pixel.
+        compress (str): GeoTIFF compression codec.
+        vector_crs_override (str): Optional CRS override for the vector layer.
+        window_size (int): Optional fixed streaming window size in pixels.
+        stream_threshold_pixels (int): Auto-switch threshold for windowed
+            rasterization based on total output pixels.
+        workers (int): Worker threads used inside one rasterization job.
+        vector_workers (int): Parallel worker count across shapefiles.
+        overwrite (bool): Whether to overwrite existing outputs.
+
+    Returns:
+        tuple[Path, list[Path]]: Merged TIFF path and per-shapefile TIFF paths.
+
+    Examples:
+        >>> callable(rasterize_vector_directory_to_grid)
+        True
+    """
+
+    vector_paths = collect_vector_paths(vector_dir, vector_glob)
+    merged_output_path = output_path
+    if merged_output_path.exists() and not overwrite:
+        LOGGER.info("Skipping existing merged vector output %s", merged_output_path)
+        individual_paths = [
+            derive_vector_output_path(merged_output_path, path, vector_dir)
+            for path in vector_paths
+        ]
+        return merged_output_path, individual_paths
+
+    def rasterize_one(vector_file: Path) -> Path:
+        """Rasterize one discovered shapefile onto the configured grid.
+
+        Args:
+            vector_file (Path): Shapefile discovered under `vector_dir`.
+
+        Returns:
+            Path: Rasterized TIFF path for the one shapefile.
+        """
+
+        individual_output_path = derive_vector_output_path(
+            merged_output_path,
+            vector_file,
+            vector_dir,
+        )
+        if individual_output_path.exists() and not overwrite:
+            LOGGER.info("Skipping existing %s", individual_output_path)
+            return individual_output_path
+        feature_count = rasterize_labels_to_grid(
+            vector_path=vector_file,
+            output_path=individual_output_path,
+            grid_spec=grid_spec,
+            burn_value=burn_value,
+            fill_value=fill_value,
+            dtype=dtype,
+            all_touched=all_touched,
+            compress=compress,
+            vector_crs_override=vector_crs_override,
+            window_size=window_size,
+            stream_threshold_pixels=stream_threshold_pixels,
+            workers=workers,
+        )
+        LOGGER.info(
+            "Wrote %s from %s with %d intersecting features",
+            individual_output_path,
+            vector_file,
+            feature_count,
+        )
+        return individual_output_path
+
+    if int(vector_workers) <= 1:
+        individual_paths = [rasterize_one(path) for path in vector_paths]
+    else:
+        LOGGER.info(
+            "Rasterizing %d shapefiles with %d parallel vector workers",
+            len(vector_paths),
+            vector_workers,
+        )
+        with ThreadPoolExecutor(max_workers=max(1, int(vector_workers))) as executor:
+            futures = [executor.submit(rasterize_one, path) for path in vector_paths]
+            individual_paths = [future.result() for future in futures]
+    merged_path = _merge_label_rasters(individual_paths, merged_output_path, compress)
+    return merged_path, sorted(individual_paths)
+
+
+def align_label_raster_to_grid(
+    raster_path: Path,
+    output_path: Path,
+    grid_spec: GridSpec,
+    *,
+    fill_value: int = 0,
+    dtype: str = "uint8",
+    compress: str = "deflate",
+) -> Path:
+    """Reproject one label TIFF onto the explicit target grid.
+
+    Args:
+        raster_path (Path): Input label TIFF path.
+        output_path (Path): Aligned output TIFF path.
+        grid_spec (GridSpec): Explicit output grid definition.
+        fill_value (int): Background value.
+        dtype (str): Output raster dtype.
+        compress (str): GeoTIFF compression codec.
+
+    Returns:
+        Path: Output TIFF path aligned to the target grid.
+
+    Examples:
+        >>> callable(align_label_raster_to_grid)
+        True
+    """
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with (
+        rasterio.open(raster_path) as src,
+        rasterio.open(
+            output_path,
+            "w",
+            **_build_grid_profile(grid_spec, dtype, fill_value, compress),
+        ) as dst,
+    ):
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=rasterio.band(dst, 1),
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=src.nodata,
+            dst_transform=grid_spec.transform,
+            dst_crs=grid_spec.crs,
+            dst_nodata=fill_value,
+            resampling=Resampling.nearest,
+            init_dest_nodata=True,
+        )
+    LOGGER.info("Aligned %s onto %s", raster_path, output_path)
+    return output_path
+
+
+def align_raster_directory_to_grid(
+    raster_dir: Path,
+    output_path: Path,
+    grid_spec: GridSpec,
+    *,
+    raster_glob: str = "*.tif",
+    fill_value: int = 0,
+    dtype: str = "uint8",
+    compress: str = "deflate",
+    overwrite: bool = False,
+) -> tuple[Path, list[Path]]:
+    """Align all raster label TIFFs in a directory tree to one explicit grid.
+
+    Args:
+        raster_dir (Path): Directory containing one or more label TIFFs.
+        output_path (Path): Merged output TIFF path.
+        grid_spec (GridSpec): Explicit output grid definition.
+        raster_glob (str): Recursive glob used to discover label TIFFs.
+        fill_value (int): Background value.
+        dtype (str): Output raster dtype.
+        compress (str): GeoTIFF compression codec.
+        overwrite (bool): Whether to overwrite existing outputs.
+
+    Returns:
+        tuple[Path, list[Path]]: Merged TIFF path and aligned per-raster TIFFs.
+
+    Examples:
+        >>> callable(align_raster_directory_to_grid)
+        True
+    """
+
+    raster_paths = collect_raster_paths(raster_dir, raster_glob)
+    merged_output_path = output_path
+    if merged_output_path.exists() and not overwrite:
+        LOGGER.info("Skipping existing merged raster output %s", merged_output_path)
+        individual_paths = [
+            derive_raster_output_path(merged_output_path, path, raster_dir)
+            for path in raster_paths
+        ]
+        return merged_output_path, individual_paths
+
+    individual_paths: list[Path] = []
+    for raster_path in raster_paths:
+        aligned_output_path = derive_raster_output_path(
+            merged_output_path,
+            raster_path,
+            raster_dir,
+        )
+        if aligned_output_path.exists() and not overwrite:
+            LOGGER.info("Skipping existing %s", aligned_output_path)
+            individual_paths.append(aligned_output_path)
+            continue
+        individual_paths.append(
+            align_label_raster_to_grid(
+                raster_path=raster_path,
+                output_path=aligned_output_path,
+                grid_spec=grid_spec,
+                fill_value=fill_value,
+                dtype=dtype,
+                compress=compress,
+            )
+        )
+    merged_path = _merge_label_rasters(individual_paths, merged_output_path, compress)
+    return merged_path, sorted(individual_paths)
+
+
+def measure_planet_coverage(
+    final_output_path: Path,
+    verify_path: Path,
+) -> dict[str, float]:
+    """Measure final-mask coverage against the verification raster.
+
+    Args:
+        final_output_path (Path): Final merged output label TIFF.
+        verify_path (Path): Verification raster used for QA.
+
+    Returns:
+        dict[str, float]: Coverage, containment, IoU, and pixel-count metrics.
+
+    Examples:
+        >>> callable(measure_planet_coverage)
+        True
+    """
+
+    with (
+        rasterio.open(final_output_path) as final_src,
+        rasterio.open(verify_path) as verify_src,
+    ):
+        final_on_verify = np.zeros(
+            (verify_src.height, verify_src.width),
+            dtype=np.uint8,
+        )
+        reproject(
+            source=rasterio.band(final_src, 1),
+            destination=final_on_verify,
+            src_transform=final_src.transform,
+            src_crs=final_src.crs,
+            src_nodata=final_src.nodata,
+            dst_transform=verify_src.transform,
+            dst_crs=verify_src.crs,
+            dst_nodata=0,
+            resampling=Resampling.nearest,
+            init_dest_nodata=True,
+        )
+        verify_data = verify_src.read(1)
+    final_mask = final_on_verify > 0
+    verify_mask = verify_data > 0
+    intersection = int(np.count_nonzero(final_mask & verify_mask))
+    verify_positive = int(np.count_nonzero(verify_mask))
+    final_positive = int(np.count_nonzero(final_mask))
+    union = int(np.count_nonzero(final_mask | verify_mask))
+    coverage = intersection / verify_positive if verify_positive else 0.0
+    output_inside = intersection / final_positive if final_positive else 0.0
+    iou = intersection / union if union else 0.0
+    return {
+        "coverage": float(coverage),
+        "output_inside": float(output_inside),
+        "iou": float(iou),
+        "intersection_pixels": float(intersection),
+        "verify_positive_pixels": float(verify_positive),
+        "final_positive_pixels": float(final_positive),
+    }
+
+
+def run_configured_raster_merge(config: dict[str, Any]) -> dict[str, Any]:
+    """Run the config-driven merge workflow for raster and vector labels.
+
+    Args:
+        config (dict[str, Any]): Workflow config mapping loaded from YAML.
+
+    Returns:
+        dict[str, Any]: Paths, grid metadata, and QA metrics for the run.
+
+    Examples:
+        >>> callable(run_configured_raster_merge)
+        True
+    """
+
+    vector_dir = Path(_config_value(config, "vector_dir", required=True))
+    raster_dir = Path(_config_value(config, "raster_dir", required=True))
+    verify_path = Path(_config_value(config, "verify_path", required=True))
+    output_path = Path(_config_value(config, "output_path", required=True))
+    target_crs = _config_value(config, "target_crs", "EPSG:25832")
+    target_resolution = float(_config_value(config, "target_resolution", 1.0))
+    burn_value = int(_config_value(config, "burn_value", 1))
+    fill_value = int(_config_value(config, "fill_value", 0))
+    dtype = str(_config_value(config, "dtype", "uint8"))
+    all_touched = bool(_config_value(config, "all_touched", False))
+    compress = str(_config_value(config, "compress", "deflate"))
+    vector_crs_override = str(_config_value(config, "vector_crs", ""))
+    window_size = int(_config_value(config, "window_size", 0))
+    stream_threshold_pixels = int(
+        _config_value(config, "stream_threshold_pixels", 50_000_000)
+    )
+    workers = int(_config_value(config, "workers", 1))
+    vector_workers = int(_config_value(config, "vector_workers", 1))
+    overwrite = bool(_config_value(config, "overwrite", False))
+    vector_glob = str(_config_value(config, "vector_glob", "*.shp"))
+    raster_glob = str(_config_value(config, "merge_raster_glob", "*.tif"))
+    min_planet_coverage = float(_config_value(config, "min_planet_coverage", 0.8))
+
+    grid_spec = build_grid_spec_from_verify(
+        verify_path=verify_path,
+        target_crs=target_crs,
+        target_resolution=target_resolution,
+    )
+    vector_merged_path = output_path.with_name(
+        f"{output_path.stem}_vectors{output_path.suffix}"
+    )
+    raster_merged_path = output_path.with_name(
+        f"{output_path.stem}_rasters{output_path.suffix}"
+    )
+    vector_merged_path, vector_parts = rasterize_vector_directory_to_grid(
+        vector_dir=vector_dir,
+        output_path=vector_merged_path,
+        grid_spec=grid_spec,
+        vector_glob=vector_glob,
+        burn_value=burn_value,
+        fill_value=fill_value,
+        dtype=dtype,
+        all_touched=all_touched,
+        compress=compress,
+        vector_crs_override=vector_crs_override,
+        window_size=window_size,
+        stream_threshold_pixels=stream_threshold_pixels,
+        workers=workers,
+        vector_workers=vector_workers,
+        overwrite=overwrite,
+    )
+    raster_merged_path, raster_parts = align_raster_directory_to_grid(
+        raster_dir=raster_dir,
+        output_path=raster_merged_path,
+        grid_spec=grid_spec,
+        raster_glob=raster_glob,
+        fill_value=fill_value,
+        dtype=dtype,
+        compress=compress,
+        overwrite=overwrite,
+    )
+    if output_path.exists() and not overwrite:
+        LOGGER.info("Skipping existing final output %s", output_path)
+    else:
+        _merge_label_rasters(
+            [raster_merged_path, vector_merged_path],
+            output_path,
+            compress,
+        )
+    metrics = measure_planet_coverage(output_path, verify_path)
+    LOGGER.info(
+        "Planet coverage for %s: coverage=%.4f output_inside=%.4f iou=%.4f",
+        output_path,
+        metrics["coverage"],
+        metrics["output_inside"],
+        metrics["iou"],
+    )
+    if metrics["coverage"] < min_planet_coverage:
+        raise ValueError(
+            "final merged output does not meet minimum Planet coverage: "
+            f"{metrics['coverage']:.4f} < {min_planet_coverage:.4f}"
+        )
+    return {
+        "output_path": output_path,
+        "vector_merged_path": vector_merged_path,
+        "raster_merged_path": raster_merged_path,
+        "vector_parts": vector_parts,
+        "raster_parts": raster_parts,
+        "grid_spec": grid_spec,
+        "metrics": metrics,
+    }
+
+
 def _merge_label_rasters(
     input_paths: list[Path],
     output_path: Path,
@@ -942,10 +1849,7 @@ def _configure_logging(level: str) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for vector-to-label raster conversion.
-
-    The parser accepts a vector layer, one reference TIFF or directory of TIFFs,
-    and either one output TIFF path or an output directory for batch mode.
+    """Parse CLI arguments for the config-driven raster merge workflow.
 
     Returns:
         argparse.Namespace: Parsed CLI arguments.
@@ -953,110 +1857,17 @@ def _parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "vector_path",
+        "config_path",
+        nargs="?",
+        default=DEFAULT_RASTERIZE_CONFIG_PATH,
         type=Path,
-        help="Vector label path or directory of shapefiles.",
-    )
-    parser.add_argument(
-        "reference_path",
-        type=Path,
-        help="Reference GeoTIFF or directory of reference GeoTIFFs.",
-    )
-    parser.add_argument(
-        "output_path",
-        type=Path,
-        help="Output TIFF path for a single reference or output directory.",
-    )
-    parser.add_argument(
-        "--glob",
-        default="*.tif",
-        help="Glob for reference TIFF discovery when reference_path is a directory.",
-    )
-    parser.add_argument(
-        "--vector-glob",
-        default="*.shp",
-        help="Recursive glob for shapefile discovery when vector_path is a directory.",
-    )
-    parser.add_argument(
-        "--burn-value",
-        type=int,
-        default=1,
-        help="Value written inside polygons.",
-    )
-    parser.add_argument(
-        "--fill-value",
-        type=int,
-        default=0,
-        help="Background value written outside polygons.",
-    )
-    parser.add_argument(
-        "--dtype",
-        default="uint8",
-        help="Output raster dtype, e.g. uint8 or uint16.",
-    )
-    parser.add_argument(
-        "--all-touched",
-        action="store_true",
-        help="Burn every pixel touched by a polygon edge.",
-    )
-    parser.add_argument(
-        "--compress",
-        default="deflate",
-        help="GeoTIFF compression codec.",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite output TIFFs if they already exist.",
-    )
-    parser.add_argument(
-        "--vector-crs",
-        default="",
-        help="Optional CRS override, e.g. EPSG:25832.",
-    )
-    parser.add_argument(
-        "--window-size",
-        type=int,
-        default=0,
-        help="Optional streaming window size in pixels for large references.",
-    )
-    parser.add_argument(
-        "--stream-threshold-pixels",
-        type=int,
-        default=50_000_000,
-        help="Auto-enable windowed rasterization above this pixel count.",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        help="Logging level, e.g. INFO or DEBUG.",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help="Worker threads for windowed rasterization.",
-    )
-    parser.add_argument(
-        "--vector-workers",
-        type=int,
-        default=1,
-        help="Parallel worker threads across shapefiles in a vector directory.",
-    )
-    parser.add_argument(
-        "--resolution-factor",
-        type=int,
-        default=1,
-        help=(
-            "Integer multiplier for output width and height while preserving "
-            "the reference CRS and geographic extent."
-        ),
+        help="Path to the rasterize-labels YAML config.",
     )
     return parser.parse_args()
 
 
 def main() -> int:
-    """Run the vector label rasterization CLI.
+    """Run the config-driven raster and vector label merge CLI.
 
     Returns:
         int: Exit code.
@@ -1067,69 +1878,11 @@ def main() -> int:
     """
 
     args = _parse_args()
-    _configure_logging(args.log_level)
-    reference_paths = collect_reference_paths(args.reference_path, args.glob)
-    if len(reference_paths) > 1 and args.output_path.suffix.lower() in {
-        ".tif",
-        ".tiff",
-    }:
-        raise ValueError(
-            "output_path must be a directory when reference_path resolves to "
-            "multiple GeoTIFFs"
-        )
-    for reference_path in reference_paths:
-        if args.vector_path.is_dir():
-            merged_path, individual_paths = rasterize_vector_directory(
-                vector_dir=args.vector_path,
-                reference_path=reference_path,
-                output_path=args.output_path,
-                vector_glob=args.vector_glob,
-                burn_value=args.burn_value,
-                fill_value=args.fill_value,
-                dtype=args.dtype,
-                all_touched=args.all_touched,
-                compress=args.compress,
-                vector_crs_override=args.vector_crs,
-                window_size=args.window_size,
-                stream_threshold_pixels=args.stream_threshold_pixels,
-                workers=args.workers,
-                resolution_factor=args.resolution_factor,
-                vector_workers=args.vector_workers,
-                overwrite=args.overwrite,
-            )
-            LOGGER.info(
-                "Wrote merged %s from %d shapefiles for %s",
-                merged_path,
-                len(individual_paths),
-                reference_path,
-            )
-            continue
-        target_path = derive_output_path(reference_path, args.output_path)
-        LOGGER.info("Using reference %s -> %s", reference_path, target_path)
-        if target_path.exists() and not args.overwrite:
-            LOGGER.info("Skipping existing %s", target_path)
-            continue
-        feature_count = rasterize_reference_labels(
-            vector_path=args.vector_path,
-            reference_path=reference_path,
-            output_path=target_path,
-            burn_value=args.burn_value,
-            fill_value=args.fill_value,
-            dtype=args.dtype,
-            all_touched=args.all_touched,
-            compress=args.compress,
-            vector_crs_override=args.vector_crs,
-            window_size=args.window_size,
-            stream_threshold_pixels=args.stream_threshold_pixels,
-            workers=args.workers,
-            resolution_factor=args.resolution_factor,
-        )
-        LOGGER.info(
-            "Wrote %s from %s with %d intersecting features",
-            target_path,
-            reference_path,
-            feature_count,
-        )
+    config = load_rasterize_config(args.config_path)
+    logging_config = config.get("logging", {})
+    _configure_logging(str(logging_config.get("level", "INFO")))
+    result = run_configured_raster_merge(config)
+    LOGGER.info("Wrote final merged labels to %s", result["output_path"])
     return 0
 
 

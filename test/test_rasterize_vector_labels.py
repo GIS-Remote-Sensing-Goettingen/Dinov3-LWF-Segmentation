@@ -9,17 +9,23 @@ import fiona
 import numpy as np
 import pytest
 import rasterio
+import yaml
 from rasterio.transform import from_origin
+from rasterio.warp import transform_bounds
 from shapely.geometry import box, mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.rasterize_vector_labels import (  # noqa: E402
+    build_grid_spec_from_verify,
     collect_vector_paths,
     derive_output_path,
+    derive_raster_output_path,
     derive_vector_output_path,
+    measure_planet_coverage,
     rasterize_reference_labels,
     rasterize_vector_directory,
+    run_configured_raster_merge,
 )
 
 
@@ -90,6 +96,38 @@ def _write_test_reference(path: Path) -> None:
         dst.write(np.zeros((4, 4), dtype=np.uint8), 1)
 
 
+def _write_test_raster(
+    path: Path,
+    data: np.ndarray,
+    *,
+    crs: str,
+    transform,
+) -> None:
+    """Write one small single-band uint8 GeoTIFF for tests.
+
+    Args:
+        path (Path): Output GeoTIFF path.
+        data (np.ndarray): Raster array written as band 1.
+        crs (str): Raster CRS string.
+        transform: Raster affine transform.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=int(data.shape[0]),
+        width=int(data.shape[1]),
+        count=1,
+        dtype="uint8",
+        crs=crs,
+        transform=transform,
+        nodata=0,
+    ) as dst:
+        dst.write(data.astype(np.uint8), 1)
+
+
 def test_derive_output_path_replaces_prediction_suffix() -> None:
     """Prediction stems should normalize to `_labels.tif`.
 
@@ -152,6 +190,23 @@ def test_derive_vector_output_path_preserves_relative_subdirectories() -> None:
     output = derive_vector_output_path(merged, vector_path, vector_root)
 
     assert output.as_posix() == "labels/scene_labels_parts/nested/part_labels.tif"
+
+
+def test_derive_raster_output_path_preserves_relative_subdirectories() -> None:
+    """Aligned raster outputs should mirror the input directory structure.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    merged = Path("labels/final_labels.tif")
+    raster_root = Path("rasters")
+    raster_path = raster_root / "nested" / "part.tif"
+
+    output = derive_raster_output_path(merged, raster_path, raster_root)
+
+    assert output.as_posix() == "labels/final_labels_rasters/nested/part_aligned.tif"
 
 
 def test_rasterize_reference_labels_burns_binary_mask(tmp_path: Path) -> None:
@@ -439,3 +494,186 @@ def test_rasterize_vector_directory_merges_nested_shapefiles(
         [0, 0, 0, 0],
         [0, 0, 0, 1],
     ]
+
+
+def test_build_grid_spec_from_verify_reprojects_and_snaps_bounds(
+    tmp_path: Path,
+) -> None:
+    """Verification bounds should become a snapped 1 m target grid in UTM.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    verify_path = tmp_path / "verify.tif"
+    original_bounds = (500000.0, 6000000.0, 500010.0, 6000010.0)
+    verify_bounds = transform_bounds(
+        "EPSG:25832",
+        "EPSG:3857",
+        *original_bounds,
+        densify_pts=21,
+    )
+    verify_transform = from_origin(
+        verify_bounds[0],
+        verify_bounds[3],
+        (verify_bounds[2] - verify_bounds[0]) / 5.0,
+        (verify_bounds[3] - verify_bounds[1]) / 5.0,
+    )
+    _write_test_raster(
+        verify_path,
+        np.zeros((5, 5), dtype=np.uint8),
+        crs="EPSG:3857",
+        transform=verify_transform,
+    )
+
+    grid_spec = build_grid_spec_from_verify(verify_path, "EPSG:25832", 1.0)
+
+    assert grid_spec.crs == rasterio.CRS.from_epsg(25832)
+    assert grid_spec.transform.a == 1.0
+    assert grid_spec.transform.e == -1.0
+    assert grid_spec.bounds.left <= original_bounds[0]
+    assert grid_spec.bounds.bottom <= original_bounds[1]
+    assert grid_spec.bounds.right >= original_bounds[2]
+    assert grid_spec.bounds.top >= original_bounds[3]
+    assert grid_spec.bounds.left == round(grid_spec.bounds.left)
+    assert grid_spec.bounds.bottom == round(grid_spec.bounds.bottom)
+    assert grid_spec.bounds.right == round(grid_spec.bounds.right)
+    assert grid_spec.bounds.top == round(grid_spec.bounds.top)
+
+
+def test_run_configured_raster_merge_merges_rasters_and_vectors(
+    tmp_path: Path,
+) -> None:
+    """Configured workflow should merge raster and shapefile labels on one grid.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    vector_dir = tmp_path / "vectors"
+    raster_dir = tmp_path / "rasters"
+    verify_path = tmp_path / "verify.tif"
+    output_path = tmp_path / "final_labels.tif"
+    config_path = tmp_path / "rasterize_labels.yml"
+
+    _write_box_vector(vector_dir / "union.shp", bounds=(0.0, 0.0, 4.0, 8.0))
+    _write_box_vector(
+        vector_dir / "folder_2" / "union.shp", bounds=(4.0, 0.0, 8.0, 4.0)
+    )
+    _write_test_raster(
+        verify_path,
+        np.ones((4, 4), dtype=np.uint8),
+        crs="EPSG:25832",
+        transform=from_origin(0.0, 8.0, 2.0, 2.0),
+    )
+
+    raster_top_right = np.zeros((16, 16), dtype=np.uint8)
+    raster_top_right[:8, 8:] = 1
+    raster_extra = np.zeros((16, 16), dtype=np.uint8)
+    raster_extra[:4, 12:] = 1
+    _write_test_raster(
+        raster_dir / "union_folder3.tif",
+        raster_top_right,
+        crs="EPSG:25832",
+        transform=from_origin(0.0, 8.0, 0.5, 0.5),
+    )
+    _write_test_raster(
+        raster_dir / "union_folder4.tif",
+        raster_extra,
+        crs="EPSG:25832",
+        transform=from_origin(0.0, 8.0, 0.5, 0.5),
+    )
+
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "logging": {"level": "INFO"},
+                "workflow": {
+                    "vector_dir": str(vector_dir),
+                    "vector_glob": "*.shp",
+                    "raster_dir": str(raster_dir),
+                    "merge_raster_glob": "union_folder*.tif",
+                    "verify_path": str(verify_path),
+                    "output_path": str(output_path),
+                    "target_crs": "EPSG:25832",
+                    "target_resolution": 1.0,
+                    "min_planet_coverage": 0.8,
+                    "overwrite": True,
+                    "vector_workers": 2,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_configured_raster_merge(yaml.safe_load(config_path.read_text()))
+
+    assert result["output_path"] == output_path
+    assert len(result["vector_parts"]) == 2
+    assert len(result["raster_parts"]) == 2
+    assert result["vector_merged_path"].exists()
+    assert result["raster_merged_path"].exists()
+    assert output_path.exists()
+
+    with rasterio.open(output_path) as src:
+        data = src.read(1)
+        assert src.crs == rasterio.CRS.from_epsg(25832)
+        assert src.transform == from_origin(0.0, 8.0, 1.0, 1.0)
+        assert data.tolist() == np.ones((8, 8), dtype=np.uint8).tolist()
+
+    metrics = measure_planet_coverage(output_path, verify_path)
+    assert metrics["coverage"] == pytest.approx(1.0)
+    assert result["metrics"]["coverage"] == pytest.approx(1.0)
+
+
+def test_run_configured_raster_merge_fails_below_planet_threshold(
+    tmp_path: Path,
+) -> None:
+    """Configured workflow should fail when Planet coverage is too low.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    vector_dir = tmp_path / "vectors"
+    raster_dir = tmp_path / "rasters"
+    verify_path = tmp_path / "verify.tif"
+    output_path = tmp_path / "final_labels.tif"
+
+    _write_box_vector(vector_dir / "union.shp", bounds=(0.0, 0.0, 2.0, 2.0))
+    _write_test_raster(
+        verify_path,
+        np.ones((4, 4), dtype=np.uint8),
+        crs="EPSG:25832",
+        transform=from_origin(0.0, 8.0, 2.0, 2.0),
+    )
+    _write_test_raster(
+        raster_dir / "union_folder3.tif",
+        np.zeros((16, 16), dtype=np.uint8),
+        crs="EPSG:25832",
+        transform=from_origin(0.0, 8.0, 0.5, 0.5),
+    )
+    _write_test_raster(
+        raster_dir / "union_folder4.tif",
+        np.zeros((16, 16), dtype=np.uint8),
+        crs="EPSG:25832",
+        transform=from_origin(0.0, 8.0, 0.5, 0.5),
+    )
+
+    with pytest.raises(ValueError, match="minimum Planet coverage"):
+        run_configured_raster_merge(
+            {
+                "workflow": {
+                    "vector_dir": str(vector_dir),
+                    "vector_glob": "*.shp",
+                    "raster_dir": str(raster_dir),
+                    "merge_raster_glob": "union_folder*.tif",
+                    "verify_path": str(verify_path),
+                    "output_path": str(output_path),
+                    "target_crs": "EPSG:25832",
+                    "target_resolution": 1.0,
+                    "min_planet_coverage": 0.8,
+                    "overwrite": True,
+                }
+            }
+        )

@@ -13,41 +13,16 @@ module load miniforge3 gcc cuda
 source activate "${SEGEDGE_CONDA_ENV:-/mnt/vast-standard/home/davide.mattioli/u20330/all}"
 
 : "${REPO_ROOT:=/user/davide.mattioli/u20330/Dinov3-LWF-Segmentation}"
+: "${RASTERIZE_CONFIG_PATH:=${REPO_ROOT}/configs/rasterize_labels.yml}"
 
 cd "${REPO_ROOT}"
 
 export HF_HUB_OFFLINE=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 
-: "${VECTOR_PATH:=${REPO_ROOT}/crf/union.shp}"
-: "${REFERENCE_PATH:=/user/davide.mattioli/u20330/planet_labels_2022.tif}"
-: "${OUTPUT_PATH:=${REPO_ROOT}/crf/new_labels_union.tif}"
-: "${REFERENCE_GLOB:=*.tif}"
-: "${VECTOR_GLOB:=*.shp}"
-: "${VECTOR_CRS:=EPSG:25832}"
-: "${WINDOW_SIZE:=0}"
-: "${STREAM_THRESHOLD_PIXELS:=50000000}"
-: "${WORKERS:=${SLURM_CPUS_PER_TASK:-1}}"
-: "${VECTOR_WORKERS:=4}"
-: "${RESOLUTION_FACTOR:=4}"
-: "${LOG_LEVEL:=INFO}"
-: "${OVERWRITE:=0}"
-
 echo "job_id=${SLURM_JOB_ID:-local}"
 echo "repo_root=${REPO_ROOT}"
-echo "vector_path=${VECTOR_PATH}"
-echo "reference_path=${REFERENCE_PATH}"
-echo "output_path=${OUTPUT_PATH}"
-echo "reference_glob=${REFERENCE_GLOB}"
-echo "vector_glob=${VECTOR_GLOB}"
-echo "vector_crs=${VECTOR_CRS}"
-echo "window_size=${WINDOW_SIZE}"
-echo "stream_threshold_pixels=${STREAM_THRESHOLD_PIXELS}"
-echo "workers=${WORKERS}"
-echo "vector_workers=${VECTOR_WORKERS}"
-echo "resolution_factor=${RESOLUTION_FACTOR}"
-echo "log_level=${LOG_LEVEL}"
-echo "overwrite=${OVERWRITE}"
+echo "rasterize_config_path=${RASTERIZE_CONFIG_PATH}"
 
 nvidia-smi || true
 python --version
@@ -61,26 +36,8 @@ PY
 
 cmd=(
   python -u ./scripts/rasterize_vector_labels.py
-  "${VECTOR_PATH}"
-  "${REFERENCE_PATH}"
-  "${OUTPUT_PATH}"
-  --glob "${REFERENCE_GLOB}"
-  --vector-glob "${VECTOR_GLOB}"
-  --vector-crs "${VECTOR_CRS}"
-  --stream-threshold-pixels "${STREAM_THRESHOLD_PIXELS}"
-  --workers "${WORKERS}"
-  --vector-workers "${VECTOR_WORKERS}"
-  --resolution-factor "${RESOLUTION_FACTOR}"
-  --log-level "${LOG_LEVEL}"
+  "${RASTERIZE_CONFIG_PATH}"
 )
-
-if [[ "${WINDOW_SIZE}" -gt 0 ]]; then
-  cmd+=(--window-size "${WINDOW_SIZE}")
-fi
-
-if [[ "${OVERWRITE}" == "1" ]]; then
-  cmd+=(--overwrite)
-fi
 
 printf 'Running command:'
 printf ' %q' "${cmd[@]}"
