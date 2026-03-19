@@ -117,7 +117,7 @@ model:
   # Transformer block ids extracted from the backbone and passed to the head.
   layers: [5, 11, 17, 23]
   # Segmentation head architecture to train.
-  head: unet_nano_fapm
+  head: unet_topo_fusion
   # Number of semantic output classes.
   num_classes: 2
   # Channel count per selected DINO feature map.
