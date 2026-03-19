@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 ### Changed
+- Make `rasterize_labels.sh` default `OMP_NUM_THREADS` to
+  `SLURM_CPUS_PER_TASK` instead of `1` so the Slurm rasterization job can use
+  the CPU allocation it already requests unless the user explicitly overrides
+  the thread count (`rasterize_labels.sh`).
 - Replace the placeholder introduction/purpose text in `AGENTS.md` with a
   concise summary of the repo's DINOv3 segmentation pipeline, configs, and
   supporting documentation (`AGENTS.md`).

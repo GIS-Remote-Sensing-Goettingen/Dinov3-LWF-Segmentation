@@ -18,7 +18,7 @@ source activate "${SEGEDGE_CONDA_ENV:-/mnt/vast-standard/home/davide.mattioli/u2
 cd "${REPO_ROOT}"
 
 export HF_HUB_OFFLINE=1
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-1}}"
 
 echo "job_id=${SLURM_JOB_ID:-local}"
 echo "repo_root=${REPO_ROOT}"
