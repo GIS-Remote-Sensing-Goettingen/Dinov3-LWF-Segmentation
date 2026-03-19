@@ -17,7 +17,7 @@ from ..constants import (
 )
 from ..context import PhaseOutcome, RunContext
 from ..phase_runner import Phase
-from ..utils import get_model_config, resolve_path
+from ..utils import broadcast_main_object, get_model_config, resolve_path
 
 
 class PreparePhase(Phase):
@@ -26,27 +26,35 @@ class PreparePhase(Phase):
     name = "prepare"
     config_key = "prepare"
 
-    def execute(self, context: RunContext) -> PhaseOutcome:
-        """Run tiling and feature caching.
+    def _execute_main_rank(self, context: RunContext) -> PhaseOutcome:
+        """Run prepare work once on rank 0 or in non-distributed mode.
 
         Args:
             context (RunContext): Active run context.
 
         Returns:
-            PhaseOutcome: Metrics and artifacts from the phase.
+            PhaseOutcome: Prepared cache metrics and artifact paths.
         """
 
         section = context.config.get(self.config_key, {})
         dataset_cfg = context.config.get("dataset", {})
         model_cfg = get_model_config(context.config)
         img_dir = resolve_path(
-            context.config, section, "img_dir", DEFAULT_RAW_IMAGES_DIR
+            context.config,
+            section,
+            "raw_images_dir",
+            DEFAULT_RAW_IMAGES_DIR,
+            legacy_keys=("img_dir",),
         )
         label_path = resolve_path(
             context.config, section, "label_path", DEFAULT_LABEL_PATH
         )
         output_dir = resolve_path(
-            context.config, section, "output_dir", DEFAULT_PROCESSED_DIR
+            context.config,
+            section,
+            "processed_dir",
+            DEFAULT_PROCESSED_DIR,
+            legacy_keys=("output_dir",),
         )
         device = torch.device(section.get("device", DEFAULT_DEVICE))
         if context.dist_ctx.enabled:
@@ -83,4 +91,46 @@ class PreparePhase(Phase):
             "tiles_added": float(max(after_count - before_count, 0)),
         }
         artifacts = {"processed_dir": output_dir}
+        return PhaseOutcome(metrics=metrics, artifacts=artifacts)
+
+    def execute(self, context: RunContext) -> PhaseOutcome:
+        """Run tiling and feature caching.
+
+        Args:
+            context (RunContext): Active run context.
+
+        Returns:
+            PhaseOutcome: Metrics and artifacts from the phase.
+        """
+
+        local_error: Exception | None = None
+        sync_payload: dict[str, object | None] = {"error": None, "outcome": None}
+        if (not context.dist_ctx.enabled) or context.dist_ctx.is_main:
+            try:
+                outcome = self._execute_main_rank(context)
+                sync_payload["outcome"] = {
+                    "metrics": outcome.metrics,
+                    "artifacts": outcome.artifacts,
+                }
+            except Exception as exc:
+                local_error = exc
+                sync_payload["error"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+        sync_payload = broadcast_main_object(context.dist_ctx, sync_payload)
+        error = sync_payload.get("error")
+        if error is not None:
+            if local_error is not None:
+                raise local_error
+            error_map = error if isinstance(error, dict) else {}
+            message = str(error_map.get("message", "prepare failed on rank 0"))
+            raise RuntimeError(f"Prepare phase failed on rank 0: {message}")
+        outcome_map = sync_payload.get("outcome")
+        if not isinstance(outcome_map, dict):
+            raise RuntimeError("Prepare phase did not produce a distributed outcome.")
+        metrics = outcome_map.get("metrics")
+        artifacts = outcome_map.get("artifacts")
+        if not isinstance(metrics, dict) or not isinstance(artifacts, dict):
+            raise RuntimeError("Prepare phase returned an invalid distributed outcome.")
         return PhaseOutcome(metrics=metrics, artifacts=artifacts)

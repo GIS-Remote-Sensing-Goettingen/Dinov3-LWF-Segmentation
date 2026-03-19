@@ -5,6 +5,89 @@
 
 ## [Unreleased]
 ### Changed
+- Make `rasterize_labels.sh` default `OMP_NUM_THREADS` to
+  `SLURM_CPUS_PER_TASK` instead of `1` so the Slurm rasterization job can use
+  the CPU allocation it already requests unless the user explicitly overrides
+  the thread count (`rasterize_labels.sh`).
+- Replace the placeholder introduction/purpose text in `AGENTS.md` with a
+  concise summary of the repo's DINOv3 segmentation pipeline, configs, and
+  supporting documentation (`AGENTS.md`).
+- Expand `docs/STYLE.MD` with explicit logging guidance, a concrete
+  module-level logger example, and clearer wording around config-file-driven
+  script execution and docstring/doctest expectations (`docs/STYLE.MD`).
+- Extend `docs/STYLE.MD` with performance guidance on choosing efficient
+  libraries and preferring vectorized operations for array-heavy work, with a
+  concrete `zip()`-loop versus NumPy example (`docs/STYLE.MD`).
+- Clarify in `docs/STYLE.MD` that numeric bulk operations should prefer
+  `numpy.ndarray` over Python lists so array code stays vectorized and
+  efficient (`docs/STYLE.MD`).
+- Rework `scripts/rasterize_vector_labels.py` into a config-driven merge
+  workflow that builds one snapped `EPSG:25832` 1 m grid from the verification
+  raster footprint, rasterizes all matching shapefiles onto that grid, aligns
+  matching pre-rasterized label TIFFs onto the same grid, merges the raster
+  and vector stacks in separate stages before a final merge, and hard-fails
+  when Planet-style verification coverage drops below the configured threshold;
+  also add a small committed config file plus wrapper/script regression tests
+  for the new workflow
+  (`scripts/rasterize_vector_labels.py`, `configs/rasterize_labels.yml`,
+  `rasterize_labels.sh`, `test/test_rasterize_vector_labels.py`,
+  `docs/ARCHITECTURE.md`).
+- Extend `scripts/rasterize_vector_labels.py` with a
+  `--resolution-factor` option so label GeoTIFFs can be generated on a
+  denser pixel grid while preserving the reference CRS and geographic extent,
+  and add recursive shapefile-directory processing with parallel per-shape TIFF
+  outputs plus a merged final TIFF, with regression coverage for scaled
+  transforms, bounds preservation, higher-resolution windowed parity, and
+  nested shapefile batch merging; also expose the new vector-glob,
+  vector-worker, and resolution-factor controls through the Slurm wrapper
+  (`scripts/rasterize_vector_labels.py`, `rasterize_labels.sh`,
+  `test/test_rasterize_vector_labels.py`).
+- Fix distributed prepare correctness by making tile generation a main-rank-only
+  phase under DDP, broadcasting the rank-0 outcome to other ranks, hardening
+  cache writes with unique atomic temp files, and replacing misleading
+  "corrupted image" rename-race logs with read/label/write-specific diagnostics;
+  also make the CLI report failed phase summaries instead of always logging a
+  success footer
+  (`pipeline/phases/prepare.py`, `pipeline/utils.py`, `utils/data/core.py`,
+  `utils/data/pipeline.py`, `main.py`, `test/test_prepare_runtime.py`,
+  `docs/ARCHITECTURE.md`).
+- Unify prepare path resolution with the documented config schema so the shared
+  `paths.raw_images_dir`, `paths.label_path`, and `paths.processed_dir` keys are
+  now the single source of truth in the shipped YAML profiles, while legacy
+  `img_dir` / `output_dir` aliases remain supported in code for backward
+  compatibility
+  (`pipeline/phases/prepare.py`, `pipeline/utils.py`,
+  `configs/config.example.yml`, `configs/config_local.yml`,
+  `configs/config_hpc.yml`, `test/test_config_integrity.py`).
+- Rewrite the shipped YAML profiles so every user-facing config entry now has a
+  direct explanatory comment, with especially explicit cache/label/processed-dir
+  semantics to make prepare-vs-train behavior easier to navigate; also update
+  the README config reference to mirror the clarified cache rules
+  (`configs/config.example.yml`, `configs/config_local.yml`,
+  `configs/config_hpc.yml`, `README.md`).
+- Fix distributed training for auxiliary-output heads by routing train-time
+  forwards through a normalized adapter that preserves aux/boundary/skeleton
+  payloads under DDP, adds a clear aux-required runtime guard, and restores
+  `unet_nano_fapm` deep-supervision gradients; also add regression tests for
+  wrapped optional outputs and `ds_head` gradient flow
+  (`pipeline/phases/train.py`, `pipeline/phases/train_batches.py`,
+  `pipeline/train_utils.py`, `test/test_train_utils_safety.py`,
+  `docs/ARCHITECTURE.md`).
+- Align the Muon optimizer with the repo's scalable paper-inspired defaults by
+  adding decoupled Muon weight decay, shape-aware update scaling, safer
+  non-finite handling, and embedding-aware Muon/AdamW parameter routing, plus
+  new config/logging knobs for the Muon-specific settings
+  (`utils/optim.py`, `pipeline/train_utils.py`, `pipeline/phases/train.py`,
+  `pipeline/utils.py`, `configs/config_*.yml`, `README.md`,
+  `test/test_muon_optimizer.py`, `docs/ARCHITECTURE.md`).
+- Update `segmentation.sh` to request 2 GPUs by default and launch single-node
+  training through
+  `torchrun`, make the GPU count/config path overridable via environment
+  variables, and align `configs/config_hpc.yml` with distributed training by
+  default while fixing the cluster label path; also resolve the repo root and
+  config path from `SLURM_SUBMIT_DIR`/absolute paths so `torchrun` works from
+  Slurm's spool directory
+  (`segmentation.sh`, `configs/config_hpc.yml`, `README.md`).
 - Add `scripts/rasterize_vector_labels.py` to convert polygon label sources
   such as `crf/union.shp` into binary GeoTIFF masks aligned to one reference
   TIFF or a directory of reference TIFFs, including auto-windowed

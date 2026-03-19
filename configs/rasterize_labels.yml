@@ -1,0 +1,24 @@
+logging:
+  level: INFO
+
+workflow:
+  vector_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf
+  vector_glob: "*.shp"
+  raster_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf
+  merge_raster_glob: "union_folder*.tif"
+  verify_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/verify/planet_labels_2022.tif
+  output_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/final_labels_1m.tif
+  target_crs: EPSG:25832
+  target_resolution: 1.0
+  burn_value: 1
+  fill_value: 0
+  dtype: uint8
+  compress: deflate
+  all_touched: false
+  vector_crs: EPSG:25832
+  window_size: 0
+  stream_threshold_pixels: 50000000
+  workers: 8
+  vector_workers: 4
+  min_planet_coverage: 0.8
+  overwrite: false

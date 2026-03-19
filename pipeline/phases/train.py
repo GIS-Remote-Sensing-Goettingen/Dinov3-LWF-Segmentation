@@ -30,6 +30,7 @@ from ..plotting import resolve_cam_layer
 from ..train_config import parse_train_loss_config, parse_train_plot_config
 from ..train_utils import (
     ModelEMA,
+    NormalizedForwardAdapter,
     build_autocast,
     count_nonfinite_parameters,
     evaluate,
@@ -37,7 +38,7 @@ from ..train_utils import (
     split_params_for_muon,
     use_adamw_only_for_head,
 )
-from ..utils import get_hook_option, get_model_config, resolve_path, unwrap_model
+from ..utils import get_hook_option, get_model_config, resolve_path
 from .train_batches import ensure_backbone_processor, run_train_epoch_batches
 from .train_xai import collect_epoch_xai_metrics
 
@@ -77,6 +78,9 @@ def _build_optimizer(
         muon_params,
         lr=section.get("muon_lr", 0.02),
         momentum=section.get("momentum", 0.95),
+        muon_wd=section.get("muon_wd"),
+        muon_update_scale=section.get("muon_update_scale", 0.2),
+        muon_adjust_lr_for_shape=section.get("muon_adjust_lr_for_shape", True),
         adamw_params=adamw_params,
         adamw_lr=section.get("adamw_lr", 1e-3),
         adamw_wd=section.get("adamw_wd", 0.01),
@@ -226,12 +230,13 @@ class TrainPhase(Phase):
         if val_loader is not None:
             context.logger.info(f"Validation tiles: {dataset_size(val_loader.dataset)}")
 
-        model = build_head(
+        base_model = build_head(
             model_cfg["head"],
             num_classes=model_cfg["num_classes"],
             dino_channels=model_cfg["dino_channels"],
             model_cfg=context.config.get("model", {}),
         ).to(device)
+        model = NormalizedForwardAdapter(base_model).to(device)
         if section.get("compile", False) and hasattr(torch, "compile"):
             model = cast(torch.nn.Module, torch.compile(model))
         if context.dist_ctx.enabled:
@@ -241,7 +246,6 @@ class TrainPhase(Phase):
                 output_device=context.dist_ctx.local_rank,
                 find_unused_parameters=False,
             )
-        base_model = unwrap_model(cast(torch.nn.Module, model))
         total_params = sum(p.numel() for p in base_model.parameters())
         trainable_params = sum(
             p.numel() for p in base_model.parameters() if p.requires_grad
@@ -415,11 +419,7 @@ class TrainPhase(Phase):
                         )
                         continue
 
-                    eval_model = (
-                        ema.ema_model
-                        if ema
-                        else unwrap_model(cast(torch.nn.Module, model))
-                    )
+                    eval_model = ema.ema_model if ema else base_model
                     if not cache_features:
                         backbone, processor = ensure_backbone_processor(
                             backbone,

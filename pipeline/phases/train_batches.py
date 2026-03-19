@@ -26,7 +26,6 @@ from ..train_utils import (
     move_features_to_device,
     should_warn_high_logit,
 )
-from ..utils import unwrap_model
 
 
 def _handle_nonfinite_batch(
@@ -244,7 +243,12 @@ def run_train_epoch_batches(
                 )
             with autocast:
                 logits, aux_logits, edge_logits, skeleton_logits, _ = (
-                    forward_with_optional_extras(model_call, img, feats)
+                    forward_with_optional_extras(
+                        model_call,
+                        img,
+                        feats,
+                        require_aux_logits=loss_fn.aux_weight > 0,
+                    )
                 )
                 target_main = align_labels_to_logits(y, logits)
                 target_aux = (
@@ -407,7 +411,7 @@ def run_train_epoch_batches(
                 scheduler.step()
                 epoch_health["scheduler_steps"] += 1
                 if ema:
-                    ema.update(unwrap_model(model))
+                    ema.update(base_model)
             else:
                 epoch_health["skipped_optimizer_steps"] += 1
 
@@ -416,9 +420,7 @@ def run_train_epoch_batches(
                 and epoch_health["optimizer_steps"] % stability.check_params_every_steps
                 == 0
             ):
-                param_nonfinite_count = count_nonfinite_parameters(
-                    unwrap_model(cast(torch.nn.Module, model))
-                )
+                param_nonfinite_count = count_nonfinite_parameters(base_model)
                 epoch_health["param_nonfinite_count"] = float(param_nonfinite_count)
                 if param_nonfinite_count > 0:
                     action = _handle_nonfinite_batch(

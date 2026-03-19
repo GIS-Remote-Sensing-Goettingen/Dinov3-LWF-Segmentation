@@ -18,6 +18,9 @@ This repository provides a research-grade segmentation pipeline that keeps a fro
    ```bash
    torchrun --standalone --nproc_per_node=4 main.py config.yml
    ```
+   On Slurm, `segmentation.sh` now defaults to a single-node 2-GPU `torchrun`
+   launch against `configs/config_hpc.yml`; override `GPUS_PER_NODE` or
+   `CONFIG_PATH` at submit time when needed.
    Only rank 0 prints logs and runs inference; validation metrics are computed on rank 0 and broadcast to the others. If no argument is provided the script checks the first CLI argument, then `$DINOV3SEG_CONFIG`, and finally searches upward for `configs/config_hpc.yml`.
 
 3. **Observe logs**: The logger honors three verbosity levels (`error`, `info`, `debug`), can print timestamps, and optionally mirrors output to a log file. Configure it via the `logging` block.
@@ -25,6 +28,23 @@ This repository provides a research-grade segmentation pipeline that keeps a fro
 ## Configuration Reference
 
 The YAML file drives everything. Each section mirrors a phase and shares defaults if a specific value is missing.
+
+The shipped profiles under `configs/` are now the primary reference: every
+user-facing key is commented inline, including blank values and override
+behavior.
+
+Important cache semantics:
+- `dataset.cache_features` and `prepare.cache_features` control whether cached
+  `.pt` tiles include precomputed DINO features. They do not disable tile
+  caching itself.
+- `paths.label_path` is read during `prepare` when tiles are built. Training
+  usually reads cached `.pt` tiles from `processed_dir`, not the label TIFF
+  directly.
+- If you change `label_path`, `dataset.tile_filter`, or tile size settings, use
+  a fresh `processed_dir` or delete the old cached tiles before rerunning
+  `prepare`.
+- `paths.processed_dir` is the shared default cache root; `train.processed_dir`
+  and other phase-local `processed_dir` keys override it for that phase only.
 
 Repository layout:
 - `configs/` contains the shipped example/local/HPC YAML profiles.
@@ -144,6 +164,9 @@ train:
   batch_size: 4
   epochs: 30
   muon_lr: 0.02
+  muon_wd:        # optional; defaults to adamw_wd when unset
+  muon_update_scale: 0.2
+  muon_adjust_lr_for_shape: true
   adamw_lr: 0.001
   adamw_wd: 0.01
   momentum: 0.95
@@ -272,6 +295,8 @@ Inference input selection:
 ## Distributed Training
 
 - Set `resources.distributed: true` in the config and launch via `torchrun --standalone --nproc_per_node=<gpus> main.py config.yml`.
+- `segmentation.sh` requests 2 GPUs by default and launches `torchrun` with the
+  visible GPU count unless `GPUS_PER_NODE` is overridden.
 - Training uses `DistributedDataParallel` with `DistributedSampler`; rank 0 handles logging, validation loops, checkpointing, and inference while other ranks stay silent and focus on SGD.
 - Validation metrics (loss, mIoU) and early-stopping signals are broadcast to every rank so they can exit cleanly at the same epoch. Inference automatically runs only on rank 0 to avoid duplicate outputs.
 
@@ -299,12 +324,12 @@ Adding a new decoder only requires implementing `SegmentationHead`, registering 
 - `utils/data.py` handles tiling, label alignment, feature extraction, cache verification, and the `PrecomputedDataset`. It supports an optional foreground-label tile filter during preparation (`dataset.tile_filter`), applies optional train-time augmentations (flips/rotations + color jitter/cutout/gridmask), validates finiteness/label ranges, and supports region-based splits. Image-only augmentations are skipped by default when cached features are enabled unless `dataset.augmentations.allow_feature_mismatch` is set to `true`.
 - `utils/losses.py` implements the combined segmentation losses (CE or focal + Dice + optional boundary BCE + optional skeleton BCE + optional soft-clDice topology term) for main/aux outputs.
 - `utils/metrics.py` accumulates per-class IoU/Dice; we early-stop on validation mIoU instead of loss.
-- `utils/optim.py` contains the Muon optimizer (matrix-aware momentum with orthogonalization), AdamW handling, and a configurable EarlyStopping helper that works for min/max metrics.
+- `utils/optim.py` contains the Muon optimizer (matrix-aware momentum with orthogonalization, decoupled Muon weight decay, and paper-style shape-aware update scaling), AdamW handling, and a configurable EarlyStopping helper that works for min/max metrics.
 - `utils/logging.py` exposes the verbosity logger (`stdout` + optional file) and `TimedBlock` context manager.
 - `config.py` reads the YAML file, honors the `$DINOV3SEG_CONFIG` override, and searches upward from the working directory if no path is provided.
 - `scripts/export_metrics_csv.py` converts `artifacts/metrics.jsonl` into a flat CSV for thesis tables/plots.
 
-- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, configurable CE/focal + Dice (+ optional boundary BCE/skeleton BCE/soft-clDice topology) losses, fp32-loss mixed precision, gradient clipping, parameter finite checks, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), per-layer DINO connection importance trends, Lite+ gate importance, per-epoch branch-importance trendlines (`branch_importance_trends.png`), per-epoch DINO-layer trendlines (`dino_layer_importance_trends.png`), per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries), and module-specific diagnostics under `plots/xai/module/` (layer-fusion argmax/entropy + region bars, gate boundary ROC panels, boundary error-reduction maps, LoRA ratio maps/histograms, and topology skeleton overlays with trend plots).
+- **Training extras:** gradient accumulation, optional `torch.compile`, Muon+AdamW with OneCycleLR, model EMA, configurable CE/focal + Dice (+ optional boundary BCE/skeleton BCE/soft-clDice topology) losses, fp32-loss mixed precision, gradient clipping, parameter finite checks, Muon routing that keeps embeddings/bias-like params on AdamW, per-epoch validation grids (4 tile pairs by default) with per-tile IoU/F1, and optional epoch-level XAI panels (`epoch_XXXX_xai.png`) with DINO CLS/rollout focus, Grad-CAM overlays, per-sample DINO PCA (PC1-3), top-k influential DINO channel maps, gradient-based branch importance (`image` vs `dino`), per-layer DINO connection importance trends, Lite+ gate importance, per-epoch branch-importance trendlines (`branch_importance_trends.png`), per-epoch DINO-layer trendlines (`dino_layer_importance_trends.png`), per-epoch channel-importance artifacts (bar chart + trends + heatmap + JSON summaries), and module-specific diagnostics under `plots/xai/module/` (layer-fusion argmax/entropy + region bars, gate boundary ROC panels, boundary error-reduction maps, LoRA ratio maps/histograms, and topology skeleton overlays with trend plots).
 - **Inference extras:** sliding-window streaming directly from disk, configurable overlap with probability blending, AMP, and optional flip-based test-time augmentation.
 - **MLflow traces:** epoch metrics include explicit validation aliases (`train.val_miou`, `train.val_iou`, `train.val_f1`, `train.val_mdice`), full loss decomposition (`train.loss_*` + `train.val_loss_*`), split learning-rate traces (`train.lr_muon`, `train.lr_adamw`), branch + DINO-layer importance means, and model size settings (`model_total_params`, `model_trainable_params`, `model_non_trainable_params`) as params/tags. Artifacts are grouped under `artifacts/plots/{metrics,xai,inference}` per run.
 - With MLflow enabled, training and inference plots are written directly under the active run artifact tree (`artifacts/plots/...`) to avoid mixed local output folders.

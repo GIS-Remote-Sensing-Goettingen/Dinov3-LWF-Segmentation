@@ -4,6 +4,7 @@ Optimization utilities: Muon optimizer and early stopping helper.
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, Optional
 
 import torch
@@ -55,8 +56,8 @@ def zeropower_via_newtonschulz5(
 
 class Muon(optim.Optimizer):
     """
-    Muon optimizer: orthogonalized momentum for >=2D weights plus AdamW for
-    1D tensors.
+    Muon optimizer: orthogonalized momentum for matrix-like weights plus AdamW
+    for embeddings and 1D tensors.
     """
 
     def __init__(
@@ -66,6 +67,9 @@ class Muon(optim.Optimizer):
         momentum: float = 0.95,
         nesterov: bool = True,
         ns_steps: int = 5,
+        muon_wd: float | None = None,
+        muon_update_scale: float = 0.2,
+        muon_adjust_lr_for_shape: bool = True,
         adamw_params: Optional[Iterable[Tensor]] = None,
         adamw_lr: float = 1e-4,
         adamw_betas: tuple[float, float] = (0.9, 0.95),
@@ -81,6 +85,11 @@ class Muon(optim.Optimizer):
             momentum (float): Momentum coefficient.
             nesterov (bool): Whether to use Nesterov momentum.
             ns_steps (int): Newton-Schulz iteration steps.
+            muon_wd (float | None): Decoupled weight decay for Muon-managed
+                parameters. ``None`` reuses ``adamw_wd``.
+            muon_update_scale (float): Global factor applied to Muon updates.
+            muon_adjust_lr_for_shape (bool): Whether to scale each matrix update
+                by ``sqrt(max(rows, cols))`` based on its 2D Muon view.
             adamw_params (Optional[Iterable[Tensor]]): Parameters for AdamW updates.
             adamw_lr (float): Learning rate for AdamW updates.
             adamw_betas (tuple[float, float]): AdamW beta coefficients.
@@ -99,6 +108,9 @@ class Muon(optim.Optimizer):
             momentum=momentum,
             nesterov=nesterov,
             ns_steps=ns_steps,
+            muon_wd=muon_wd,
+            muon_update_scale=muon_update_scale,
+            muon_adjust_lr_for_shape=muon_adjust_lr_for_shape,
             adamw_params=list(adamw_params) if adamw_params is not None else None,
             adamw_lr=adamw_lr,
             adamw_betas=adamw_betas,
@@ -148,6 +160,9 @@ class Muon(optim.Optimizer):
             momentum = group["momentum"]
             nesterov = group["nesterov"]
             ns_steps = group["ns_steps"]
+            muon_wd = self._resolve_muon_wd(group)
+            muon_update_scale = float(group["muon_update_scale"])
+            muon_adjust_lr_for_shape = bool(group["muon_adjust_lr_for_shape"])
             update_max_norm = group.get("update_max_norm")
             for p in group["params"]:
                 if p.grad is None:
@@ -156,8 +171,7 @@ class Muon(optim.Optimizer):
                 if not torch.isfinite(g).all():
                     step_stats["muon_params_skipped"] += 1
                     continue
-                if g.ndim > 2:
-                    g = g.view(g.size(0), -1)
+                g, rows, cols = self._reshape_for_muon(g)
                 state = self.state[p]
                 buf = state.setdefault("momentum_buffer", torch.zeros_like(g))
                 buf.mul_(momentum).add_(g)
@@ -169,19 +183,66 @@ class Muon(optim.Optimizer):
                 if not torch.isfinite(g).all():
                     step_stats["muon_params_skipped"] += 1
                     continue
+                update_scale = muon_update_scale
+                if muon_adjust_lr_for_shape:
+                    update_scale *= math.sqrt(float(max(rows, cols)))
+                g = g.mul(update_scale)
+                if not torch.isfinite(g).all():
+                    step_stats["muon_params_skipped"] += 1
+                    continue
                 if update_max_norm is not None and update_max_norm > 0:
                     upd_norm = g.norm()
                     if torch.isfinite(upd_norm) and upd_norm > update_max_norm:
                         g = g * (float(update_max_norm) / (upd_norm.item() + 1e-12))
                 if g.shape != p.shape:
                     g = g.view_as(p)
-                p.data.add_(g, alpha=-lr)
-                if not torch.isfinite(p.data).all():
+                candidate = p.data
+                if muon_wd != 0.0:
+                    candidate = candidate * (1 - lr * muon_wd)
+                candidate = candidate.add(g, alpha=-lr)
+                if not torch.isfinite(candidate).all():
                     step_stats["muon_params_skipped"] += 1
                     continue
+                p.data.copy_(candidate)
                 step_stats["muon_params_updated"] += 1
         self.last_step_stats = step_stats
         return None
+
+    @staticmethod
+    def _reshape_for_muon(g: Tensor) -> tuple[Tensor, int, int]:
+        """Return Muon's 2D view and logical matrix shape.
+
+        Args:
+            g (Tensor): Gradient tensor for one Muon-managed parameter.
+
+        Examples:
+            >>> reshaped, rows, cols = Muon._reshape_for_muon(torch.ones(2, 3, 4))
+            >>> reshaped.shape, rows, cols
+            (torch.Size([2, 12]), 2, 12)
+        """
+
+        if g.ndim <= 2:
+            return g, int(g.size(0)), int(g.size(1) if g.ndim == 2 else 1)
+        rows = int(g.size(0))
+        cols = int(g[0].numel())
+        return g.view(rows, cols), rows, cols
+
+    @staticmethod
+    def _resolve_muon_wd(group: dict) -> float:
+        """Resolve the effective Muon weight decay.
+
+        Args:
+            group (dict): Optimizer parameter group dictionary.
+
+        Examples:
+            >>> Muon._resolve_muon_wd({"muon_wd": None, "adamw_wd": 0.05})
+            0.05
+        """
+
+        muon_wd = group.get("muon_wd")
+        if muon_wd is None:
+            muon_wd = group["adamw_wd"]
+        return float(muon_wd)
 
     def _step_adamw(self, group) -> tuple[int, int]:
         """

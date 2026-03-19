@@ -5,11 +5,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from models.unet_nano_fapm import DinoUNetNanoFAPMHead  # noqa: E402
 from pipeline.train_utils import (  # noqa: E402
+    NormalizedForwardAdapter,
+    forward_with_optional_extras,
     resolve_lr_metrics,
     should_warn_high_logit,
     use_adamw_only_for_head,
@@ -81,3 +85,127 @@ def test_resolve_lr_metrics_handles_adamw_and_muon() -> None:
     assert lr2 >= 0.0
     assert lr_muon2 == lr2
     assert lr_adamw2 > 0.0
+
+
+def test_forward_adapter_preserves_aux_and_edge_outputs() -> None:
+    """Ensure wrapper-based forward paths keep optional outputs accessible.
+
+    This covers the normalized adapter path used by DDP-wrapped training.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    head = DinoUNetNanoFAPMHead(num_classes=2, dino_channels=8)
+    adapter = NormalizedForwardAdapter(head)
+    image = torch.randn(1, 3, 256, 256)
+    features = [
+        torch.randn(1, 8, 32, 32),
+        torch.randn(1, 8, 16, 16),
+        torch.randn(1, 8, 8, 8),
+        torch.randn(1, 8, 4, 4),
+    ]
+
+    logits, aux_logits, edge_logits, skeleton_logits, payload = (
+        forward_with_optional_extras(
+            adapter,
+            image,
+            features,
+            require_aux_logits=True,
+        )
+    )
+
+    assert logits.shape == (1, 2, 256, 256)
+    assert aux_logits is not None
+    assert aux_logits.shape == (1, 2, 32, 32)
+    assert edge_logits is not None
+    assert edge_logits.shape == (1, 1, 256, 256)
+    assert skeleton_logits is None
+    assert "decoder_h8" in payload
+
+
+def test_forward_with_optional_extras_requires_aux_when_configured() -> None:
+    """Fail fast when aux supervision is enabled but aux logits are missing.
+
+    This prevents silent DDP runs where the auxiliary head never receives
+    gradients.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    class ForwardOnly(torch.nn.Module):
+        """Minimal forward-only module for aux-missing regression coverage."""
+
+        def __init__(self) -> None:
+            """Build the tiny forward-only probe head.
+
+            The module intentionally omits any aux-returning helper.
+            """
+
+            super().__init__()
+            self.head = torch.nn.Conv2d(8, 2, kernel_size=1)
+
+        def forward(
+            self,
+            image: torch.Tensor,
+            features: list[torch.Tensor],
+        ) -> torch.Tensor:
+            """Return only main logits for the first feature map.
+
+            Args:
+                image (torch.Tensor): Input image tensor.
+                features (list[torch.Tensor]): Feature tensors.
+
+            Returns:
+                torch.Tensor: Main logits without any auxiliary payload.
+            """
+
+            _ = image
+            return self.head(features[0])
+
+    with pytest.raises(RuntimeError, match="Auxiliary supervision is enabled"):
+        forward_with_optional_extras(
+            ForwardOnly(),
+            torch.randn(1, 3, 4, 4),
+            [torch.randn(1, 8, 4, 4)],
+            require_aux_logits=True,
+        )
+
+
+def test_forward_adapter_restores_ds_head_gradients() -> None:
+    """Ensure aux-head parameters receive gradients through the adapter path.
+
+    This exercises the same path that previously dropped `ds_head` gradients
+    under DDP.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    head = DinoUNetNanoFAPMHead(num_classes=2, dino_channels=8)
+    adapter = NormalizedForwardAdapter(head)
+    image = torch.randn(1, 3, 256, 256)
+    features = [
+        torch.randn(1, 8, 32, 32),
+        torch.randn(1, 8, 16, 16),
+        torch.randn(1, 8, 8, 8),
+        torch.randn(1, 8, 4, 4),
+    ]
+
+    logits, aux_logits, _, _, _ = forward_with_optional_extras(
+        adapter,
+        image,
+        features,
+        require_aux_logits=True,
+    )
+    assert aux_logits is not None
+
+    loss = logits.mean() + aux_logits.mean()
+    loss.backward()
+
+    assert head.ds_head.weight.grad is not None
+    assert head.ds_head.bias.grad is not None

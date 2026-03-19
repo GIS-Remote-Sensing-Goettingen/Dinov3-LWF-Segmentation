@@ -93,6 +93,29 @@ def cleanup_distributed(ctx: DistContext) -> None:
         dist.destroy_process_group()
 
 
+def broadcast_main_object(ctx: DistContext, payload: Any) -> Any:
+    """Broadcast a Python object from rank 0 to all ranks.
+
+    Args:
+        ctx (DistContext): Distributed context.
+        payload (Any): Object to broadcast from rank 0.
+
+    Returns:
+        Any: The object received from rank 0, or the input when distributed
+            mode is disabled.
+
+    Examples:
+        >>> broadcast_main_object(DistContext(), {"ok": True})["ok"]
+        True
+    """
+
+    if not ctx.enabled:
+        return payload
+    obj_list = [payload if ctx.is_main else None]
+    dist.broadcast_object_list(obj_list, src=0)
+    return obj_list[0]
+
+
 def apply_resource_config(config: dict) -> None:
     """Apply thread, seed, and precision settings from the config.
 
@@ -183,7 +206,13 @@ def section_enabled(config: dict, name: str) -> bool:
     return bool(section.get("enable", False))
 
 
-def resolve_path(config: dict, section: dict, key: str, fallback: str) -> str:
+def resolve_path(
+    config: dict,
+    section: dict,
+    key: str,
+    fallback: str,
+    legacy_keys: tuple[str, ...] = (),
+) -> str:
     """Resolve a path from a section, falling back to global paths or defaults.
 
     Args:
@@ -191,6 +220,8 @@ def resolve_path(config: dict, section: dict, key: str, fallback: str) -> str:
         section (dict): Phase-specific section.
         key (str): Configuration key to resolve.
         fallback (str): Fallback path.
+        legacy_keys (tuple[str, ...]): Optional backward-compatible aliases
+            checked after `key`.
 
     Returns:
         str: Resolved path string.
@@ -199,10 +230,23 @@ def resolve_path(config: dict, section: dict, key: str, fallback: str) -> str:
         >>> cfg = {"paths": {"processed_dir": "/tmp/proc"}}
         >>> resolve_path(cfg, {"processed_dir": "/custom"}, "processed_dir", "/default")
         '/custom'
+        >>> cfg = {"paths": {"raw_images_dir": "/tmp/imgs"}}
+        >>> resolve_path(cfg, {}, "raw_images_dir", "/default", ("img_dir",))
+        '/tmp/imgs'
+        >>> cfg = {"paths": {"img_dir": "/tmp/legacy"}}
+        >>> resolve_path(cfg, {}, "raw_images_dir", "/default", ("img_dir",))
+        '/tmp/legacy'
     """
 
     paths_cfg = config.get("paths", {})
-    return section.get(key) or paths_cfg.get(key) or fallback
+    direct = section.get(key) or paths_cfg.get(key)
+    if direct:
+        return direct
+    for legacy_key in legacy_keys:
+        legacy_value = section.get(legacy_key) or paths_cfg.get(legacy_key)
+        if legacy_value:
+            return legacy_value
+    return fallback
 
 
 def get_model_config(config: dict) -> dict[str, Any]:
@@ -406,6 +450,9 @@ def collect_run_params(config: dict) -> dict[str, str]:
     dataset_cfg = config.get("dataset", {})
     stability_cfg = parse_stability_config(config)
     validation_cfg = parse_dataset_validation_config(config)
+    muon_wd = train_cfg.get("muon_wd")
+    if muon_wd is None:
+        muon_wd = train_cfg.get("adamw_wd", 0.01)
     params: dict[str, str] = {
         "model.head": str(model_cfg.get("head", DEFAULT_HEAD)),
         "model.backbone": str(model_cfg.get("backbone", DEFAULT_MODEL_NAME)),
@@ -413,7 +460,13 @@ def collect_run_params(config: dict) -> dict[str, str]:
         "train.batch_size": str(train_cfg.get("batch_size", 4)),
         "train.epochs": str(train_cfg.get("epochs", 30)),
         "train.muon_lr": str(train_cfg.get("muon_lr", 0.02)),
+        "train.muon_wd": str(muon_wd),
+        "train.muon_update_scale": str(train_cfg.get("muon_update_scale", 0.2)),
+        "train.muon_adjust_lr_for_shape": str(
+            train_cfg.get("muon_adjust_lr_for_shape", True)
+        ),
         "train.adamw_lr": str(train_cfg.get("adamw_lr", 0.001)),
+        "train.adamw_wd": str(train_cfg.get("adamw_wd", 0.01)),
         "resources.seed": str(resources_cfg.get("seed", "")),
         "resources.distributed": str(resources_cfg.get("distributed", False)),
         "dataset.augmentations": str(
