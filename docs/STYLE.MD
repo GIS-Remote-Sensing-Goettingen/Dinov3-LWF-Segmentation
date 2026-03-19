@@ -175,14 +175,86 @@ Mutating globals makes understanding flow harder.
 Instead, pass parameters and return results explicitly.
 
 ---
-## 10)  avoid flags whe running a script
-Prefer creating config.yml files  than using flags when running scripts exept specified.
+## 10) Logging
+
+Use logging for operational visibility and debugging. Prefer structured,
+intention-revealing log messages over `print()`
+
+* Use the right level: `debug` for detailed diagnostics, `info` for normal
+  progress, `warning` for recoverable issues, and `error` for failures.
+* Keep logs concise and reader-oriented.
+
+**Example:**
+
+```python
+import logging
+from pathlib import Path
+
+LOGGER = logging.getLogger(__name__)
+
+
+def load_config(config_path: Path) -> dict:
+    """Load one YAML config file."""
+    LOGGER.info("Loading config from %s", config_path)
+    if not config_path.is_file():
+        LOGGER.error("Config file not found: %s", config_path)
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    data = {"path": str(config_path)}
+    LOGGER.debug("Loaded config keys: %s", sorted(data))
+    return data
+```
 
 ---
+## 11) Use Efficient Libraries and Vectorized Operations
+
+Prefer libraries that already implement the heavy work efficiently instead of
+rewriting the same logic in slow Python loops.
+
+Guidelines:
+
+* Use optimized libraries such as `numpy`, `rasterio`, `torch`, or
+  `Polars` when the task is naturally array-, tensor-, table-, or raster-based.
+* Prefer `numpy.ndarray` over Python lists when the data is numeric and you are
+  doing elementwise math, masking, reductions, raster operations, or other
+  bulk array transforms.
+* Prefer vectorized operations over manual `for` loops when you are doing the
+  same arithmetic or boolean operation across many values.
+* Keep the vectorized version readable. If the optimized form becomes obscure,
+  add a short comment explaining the intent.
+
+**Example: `zip()` loop vs NumPy vectorization**
+
+```python
+import numpy as np
+
+# Python lists are fine for small heterogeneous collections,
+# but numeric bulk operations should usually move to NumPy arrays.
+left_list = [1, 2, 3, 4]
+right_list = [10, 20, 30, 40]
+summed_with_zip = [a + b for a, b in zip(left_list, right_list)]
+
+left = np.array([1, 2, 3, 4], dtype=np.int32)
+right = np.array([10, 20, 30, 40], dtype=np.int32)
+
+# NumPy vectorized operation: clearer intent for array math and much faster
+# on large numeric data.
+summed_vectorized = left + right
+```
+
+If the task is numeric and array-shaped, start with arrays rather than lists so
+the rest of the code can stay vectorized.
+---
+## 12) Avoid Flags When Running a Script
+
+Prefer creating `config.yml` files rather than using flags when running
+scripts, unless specified otherwise.
 
 ---
-## 11)  ALWAYS include docstrings and doctests
- And if necessary, add tests in the tests folder , for more compehensive and end to end tests.
+## 13) Always Include Docstrings and Doctests
+
+And if necessary, add tests in the tests folder for more comprehensive and
+end-to-end tests.
 
 ---
 

@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 ### Changed
+- Replace the placeholder introduction/purpose text in `AGENTS.md` with a
+  concise summary of the repo's DINOv3 segmentation pipeline, configs, and
+  supporting documentation (`AGENTS.md`).
+- Expand `docs/STYLE.MD` with explicit logging guidance, a concrete
+  module-level logger example, and clearer wording around config-file-driven
+  script execution and docstring/doctest expectations (`docs/STYLE.MD`).
+- Extend `docs/STYLE.MD` with performance guidance on choosing efficient
+  libraries and preferring vectorized operations for array-heavy work, with a
+  concrete `zip()`-loop versus NumPy example (`docs/STYLE.MD`).
+- Clarify in `docs/STYLE.MD` that numeric bulk operations should prefer
+  `numpy.ndarray` over Python lists so array code stays vectorized and
+  efficient (`docs/STYLE.MD`).
 - Rework `scripts/rasterize_vector_labels.py` into a config-driven merge
   workflow that builds one snapped `EPSG:25832` 1 m grid from the verification
   raster footprint, rasterizes all matching shapefiles onto that grid, aligns

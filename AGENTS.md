@@ -1,10 +1,10 @@
 # AGENTS.md
 
 ## Introduction
-This repository is documentation + configuration (Markdown-first). Optimize for readability and minimal diffs.
+This repository contains a config-driven DINOv3 semantic-segmentation pipeline, its training/inference utilities, and the supporting documentation and YAML profiles used to run and reproduce experiments.
 
 ## Purpose and scope
-- Repository purpose: [one sentence describing what this repo documents/contains]
+- Repository purpose: This repo documents and ships the code, configs, and workflow notes for running DINOv3-based segmentation experiments and related dataset-label utilities.
 - Allowed changes:
   - Edit Markdown docs and configuration files.
   - Add new docs in the appropriate folder (see “Project map”).
@@ -33,13 +33,12 @@ WARNING THE FOLLOWING IS MANDATORY YOU MUST FOLLOW THESE STEPS BEFORE COMING BAC
 3. Run 'pytest --doctest-modules ' and other tests if you have them; do not respond without running them unless the user explicitly says not to.
 4. Update docs/CHANGELOG.md with a short entry describing what changed (and why).
 5. If design/structure changed, update docs/ARCHITECTURE.md.
-6. In the PR/response, include:
+6. Check if the diff allign with the style rules in docs/STYLE.MD;
+7. In the PR/response, include:
    - Summary of changes (1–3 bullets)
    - Commands you ran + results
    - Any follow-ups or risks
 @@@@@@
-
-
 
 ## Project map
 - `/` — runnable entry points and repository-level instructions
@@ -47,9 +46,3 @@ WARNING THE FOLLOWING IS MANDATORY YOU MUST FOLLOW THESE STEPS BEFORE COMING BAC
 - `/docs` — architecture notes, changelog, model notes, and writing/style docs
 - `[templates/ etc]` — what belongs there
 -  `[test/ etc]`  — e2e test files or others
-
-## Writing and style rules (reader-optimized)
-- Prefer declarative, intention-revealing writing.
-- Keep sections short; avoid repetition.
-- Use consistent headings and terminology (follow `docs/STYLE.MD`).
-- Avoid mass whitespace/format-only changes unless required.
