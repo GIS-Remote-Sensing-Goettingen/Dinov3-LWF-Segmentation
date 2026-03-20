@@ -5,12 +5,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from models.unet_nano_fapm import DinoUNetNanoFAPMHead  # noqa: E402
+from pipeline.phases.train_xai import _build_plot_rgb  # noqa: E402
 from pipeline.train_utils import (  # noqa: E402
     NormalizedForwardAdapter,
     align_logits_to_labels,
@@ -52,6 +54,23 @@ def test_align_logits_to_labels_downsamples_to_native_label_grid() -> None:
 
     assert aligned is not None
     assert aligned.shape == (2, 3, 4, 4)
+
+
+def test_build_plot_rgb_matches_native_label_grid_shape() -> None:
+    """XAI preview RGB should be rendered on the GT/pred label grid.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    sample_img = torch.linspace(0.0, 1.0, steps=3 * 8 * 8).reshape(1, 3, 8, 8)
+    sample_gt = torch.zeros(1, 2, 2, dtype=torch.long)
+
+    rgb = _build_plot_rgb(sample_img, sample_gt)
+
+    assert rgb.shape == (2, 2, 3)
+    assert rgb.dtype == np.uint8
 
 
 def test_should_warn_high_logit_uses_batch_value() -> None:

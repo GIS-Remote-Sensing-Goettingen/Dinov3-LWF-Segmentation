@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import random
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -70,8 +71,14 @@ def setup_distributed(resources_cfg: dict) -> DistContext:
             "Distributed mode requires torchrun/launch to set RANK and WORLD_SIZE"
         )
     backend = resources_cfg.get("dist_backend", "nccl")
+    timeout_minutes = max(1.0, float(resources_cfg.get("dist_timeout_minutes", 30.0)))
     torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+    dist.init_process_group(
+        backend=backend,
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(minutes=timeout_minutes),
+    )
     ctx.enabled = True
     ctx.rank = rank
     ctx.world_size = world_size

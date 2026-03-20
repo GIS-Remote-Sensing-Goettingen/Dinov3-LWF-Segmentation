@@ -9,6 +9,8 @@ resources:
   distributed: false
   # Backend used for distributed process-group setup when `distributed` is true.
   dist_backend: nccl
+  # Collective timeout in minutes for DDP sync points such as rank-0 validation.
+  dist_timeout_minutes: 30
 
 logging:
   # Console/file log verbosity: `error`, `info`, or `debug`.

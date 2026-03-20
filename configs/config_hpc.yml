@@ -9,6 +9,8 @@ resources:
   distributed: true
   # Backend used for distributed process-group setup when `distributed` is true.
   dist_backend: nccl
+  # Collective timeout in minutes for DDP sync points such as rank-0 validation.
+  dist_timeout_minutes: 30
 
 logging:
   # Console/file log verbosity: `error`, `info`, or `debug`.
@@ -206,9 +208,9 @@ train:
   # Scale Muon updates by matrix shape when true.
   muon_adjust_lr_for_shape: true
   # AdamW learning rate for bias-like, embedding, and 1D parameter groups.
-  adamw_lr: 0.001
+  adamw_lr: 0.0003
   # AdamW weight decay.
-  adamw_wd: 0.05
+  adamw_wd: 0.01
   # Momentum used by the Muon optimizer path.
   momentum: 0.95
   # Early-stopping patience measured in epochs.

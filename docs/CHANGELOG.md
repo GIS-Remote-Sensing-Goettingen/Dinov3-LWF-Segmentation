@@ -5,6 +5,22 @@
 
 ## [Unreleased]
 ### Changed
+- Harden distributed training against epoch-boundary NCCL timeouts by making
+  validation and epoch-level XAI rank-0-only work that is synchronized back to
+  the other ranks via explicit DDP summary broadcasts plus an end-of-epoch
+  barrier, adding a configurable `resources.dist_timeout_minutes` process-group
+  timeout, avoiding the unsupported-attention warning path for rollout maps by
+  switching to eager attention before requesting attentions when needed, and
+  adding regression coverage for the new distributed helpers
+  (`pipeline/phases/train.py`, `pipeline/utils.py`,
+  `pipeline/inference_utils.py`, `configs/config_*.yml`,
+  `test/test_train_distributed_runtime.py`, `docs/ARCHITECTURE.md`).
+- Fix the train-time XAI dashboard GT panel after the native label-grid
+  supervision change by rendering the preview RGB on the same label grid as
+  GT/pred masks while still computing Grad-CAM and attention maps from the
+  full-resolution image tile, plus add a regression test for the preview-grid
+  helper (`pipeline/phases/train_xai.py`,
+  `test/test_train_utils_safety.py`).
 - Switch the default supervision/output policy to the native label grid:
   prepare now caches image tiles on the image grid paired with smaller native
   label-grid masks, training/evaluation resize logits down to label space

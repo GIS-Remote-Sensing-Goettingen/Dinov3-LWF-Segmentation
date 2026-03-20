@@ -399,6 +399,7 @@ def compute_attention_maps(
     _, _, h_proc, w_proc = inputs["pixel_values"].shape
     hp, wp = h_proc // ps, w_proc // ps
     zero_map = np.zeros((hp, wp), dtype=np.float32)
+    supported_attention_backends = {"eager", "eager_paged", "flex_attention"}
 
     def _maps_from_attentions(attentions: Any) -> tuple[np.ndarray, np.ndarray] | None:
         """Compute CLS and rollout maps from model attentions.
@@ -477,21 +478,27 @@ def compute_attention_maps(
 
     try:
         out = None
-        with torch.no_grad():
-            out = backbone(
-                **inputs,
-                output_attentions=True,
-            )
-        attn_maps = _maps_from_attentions(getattr(out, "attentions", None))
-        if attn_maps is not None:
-            cls_map, rollout_map = attn_maps
-            return cls_map, rollout_map, True
-
         original_backend = _get_attention_backend(backbone)
         eager_switched = False
-        if original_backend and original_backend != "eager":
+        if (
+            original_backend
+            and original_backend not in supported_attention_backends
+            and original_backend != "eager"
+        ):
             eager_switched = _set_attention_backend(backbone, "eager")
         try:
+            with torch.no_grad():
+                out = backbone(
+                    **inputs,
+                    output_attentions=True,
+                )
+            attn_maps = _maps_from_attentions(getattr(out, "attentions", None))
+            if attn_maps is not None:
+                cls_map, rollout_map = attn_maps
+                return cls_map, rollout_map, True
+
+            if not eager_switched and original_backend and original_backend != "eager":
+                eager_switched = _set_attention_backend(backbone, "eager")
             if eager_switched:
                 with torch.no_grad():
                     out = backbone(

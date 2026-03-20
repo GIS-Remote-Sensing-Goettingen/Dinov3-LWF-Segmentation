@@ -62,6 +62,13 @@ MLflow-compatible artifacts for research workflows.
   a small normalized adapter before DDP so custom aux/boundary/skeleton outputs
   remain visible to the loss code even when the wrapper only exposes
   `forward()`.
+- **Distributed epoch-boundary policy:** under DDP, rank 0 remains the source
+  of truth for validation metrics, early-stopping decisions, checkpoint
+  eligibility, and epoch-level XAI/plot artifacts. Validation/XAI summaries are
+  broadcast back to the other ranks, and an explicit barrier is used before the
+  next epoch begins so one rank cannot enter the next DDP forward while rank 0
+  is still finishing epoch-end diagnostics. The process-group timeout is also
+  configurable through `resources.dist_timeout_minutes` for slower HPC runs.
 - **Distributed prepare policy:** when `resources.distributed` is enabled,
   `PreparePhase` runs tiling/cache writes only on rank 0, then broadcasts the
   resulting metrics/artifacts or failure to the other ranks before later phases

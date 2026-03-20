@@ -38,7 +38,12 @@ from ..train_utils import (
     split_params_for_muon,
     use_adamw_only_for_head,
 )
-from ..utils import get_hook_option, get_model_config, resolve_path
+from ..utils import (
+    broadcast_main_object,
+    get_hook_option,
+    get_model_config,
+    resolve_path,
+)
 from .train_batches import ensure_backbone_processor, run_train_epoch_batches
 from .train_xai import collect_epoch_xai_metrics
 
@@ -150,6 +155,272 @@ def _compose_epoch_metrics(
         },
         **xai_epoch_metrics,
     }
+
+
+def _scalarize_validation_metrics(val_metrics: dict[str, Any]) -> dict[str, float]:
+    """Convert the validation metric payload to broadcast-safe scalars.
+
+    This keeps epoch-end DDP synchronization limited to the scalar values
+    actually needed by non-main ranks.
+
+    Args:
+        val_metrics (dict[str, Any]): Raw validation metrics.
+
+    Returns:
+        dict[str, float]: Scalar metrics needed outside rank 0.
+
+    Examples:
+        >>> _scalarize_validation_metrics({"miou": 0.5})["miou"]
+        0.5
+    """
+
+    scalar_metrics = {
+        "miou": float(val_metrics.get("miou", 0.0)),
+        "mdice": float(val_metrics.get("mdice", 0.0)),
+        "nonfinite_val_batches": float(val_metrics.get("nonfinite_val_batches", 0.0)),
+        "nonfinite_val_loss_batches": float(
+            val_metrics.get("nonfinite_val_loss_batches", 0.0)
+        ),
+        "max_abs_logit": float(val_metrics.get("max_abs_logit", 0.0)),
+    }
+    for key in LOSS_COMPONENT_KEYS:
+        scalar_metrics[key] = float(val_metrics.get(key, float("nan")))
+    return scalar_metrics
+
+
+def _resolve_epoch_validation_state(
+    *,
+    context: RunContext,
+    epoch: int,
+    avg_train_loss: float,
+    eval_model: torch.nn.Module,
+    val_loader: Any,
+    loss_fn: SegmentationLoss,
+    device: torch.device,
+    use_amp: bool,
+    model_cfg: dict[str, Any],
+    cache_features: bool,
+    backbone: Any,
+    processor: Any,
+    ps: int,
+    stability: Any,
+    boundary_kernel_size: int,
+    early_stopping: EarlyStopping,
+) -> tuple[dict[str, Any], Any, Any]:
+    """Run rank-0 validation and broadcast the epoch summary to all ranks.
+
+    This keeps validation and early-stopping decisions on rank 0 while still
+    giving every rank the same epoch-level scalar state before the next epoch.
+
+    Args:
+        context (RunContext): Active run context.
+        epoch (int): Zero-based epoch index.
+        avg_train_loss (float): Training loss averaged on the local rank.
+        eval_model (torch.nn.Module): Model used for validation.
+        val_loader (Any): Validation loader, present only on rank 0 in DDP.
+        loss_fn (SegmentationLoss): Validation loss function.
+        device (torch.device): Device used for validation.
+        use_amp (bool): Whether AMP is enabled for validation.
+        model_cfg (dict[str, Any]): Parsed model configuration.
+        cache_features (bool): Whether cached DINO features are available.
+        backbone (Any): Cached backbone handle for on-the-fly features.
+        processor (Any): Cached processor handle for on-the-fly features.
+        ps (int): Backbone patch size.
+        stability (Any): Parsed stability configuration.
+        boundary_kernel_size (int): Boundary target kernel size.
+        early_stopping (EarlyStopping): Early-stopping helper updated on rank 0.
+
+    Returns:
+        tuple[dict[str, Any], Any, Any]: Broadcast validation payload plus
+        possibly updated backbone and processor handles.
+
+    Examples:
+        >>> callable(_resolve_epoch_validation_state)
+        True
+    """
+
+    payload: dict[str, Any] | None = None
+    validation_started_at = time.time()
+    if (not context.dist_ctx.enabled) or context.dist_ctx.is_main:
+        if not cache_features:
+            backbone, processor = ensure_backbone_processor(
+                backbone,
+                processor,
+                model_cfg["backbone"],
+                device,
+            )
+        val_loss, val_metrics = evaluate(
+            eval_model,
+            val_loader,
+            loss_fn,
+            device,
+            use_amp,
+            context.logger if context.dist_ctx.is_main else None,
+            model_cfg["num_classes"],
+            cache_features=cache_features,
+            backbone=backbone,
+            processor=processor,
+            layers=model_cfg["layers"],
+            ps=ps,
+            stability=stability,
+            boundary_kernel_size=boundary_kernel_size,
+        )
+        validation_duration = time.time() - validation_started_at
+        context.logger.info(
+            "Epoch %s validation finished in %.2fs" % (epoch + 1, validation_duration)
+        )
+        param_nonfinite_count = float(count_nonfinite_parameters(eval_model))
+        checkpoint_is_finite = (
+            math.isfinite(avg_train_loss)
+            and math.isfinite(val_loss)
+            and param_nonfinite_count == 0.0
+        )
+        stop_flag = False
+        if checkpoint_is_finite:
+            early_stopping(float(val_metrics["miou"]), eval_model)
+            stop_flag = early_stopping.early_stop
+        elif stability.nonfinite_action == "stop_run":
+            stop_flag = True
+        payload = {
+            "val_loss": float(val_loss),
+            "val_metrics": _scalarize_validation_metrics(val_metrics),
+            "param_nonfinite_count": param_nonfinite_count,
+            "checkpoint_is_finite": bool(checkpoint_is_finite),
+            "stop_flag": bool(stop_flag),
+            "validation_duration_s": float(validation_duration),
+        }
+    if context.dist_ctx.enabled:
+        payload = cast(dict[str, Any], broadcast_main_object(context.dist_ctx, payload))
+    assert payload is not None
+    return payload, backbone, processor
+
+
+def _resolve_epoch_xai_state(
+    *,
+    context: RunContext,
+    epoch: int,
+    eval_model: torch.nn.Module,
+    val_loader: Any,
+    cache_features: bool,
+    model_cfg: dict[str, Any],
+    loss_ignore_index: int | None,
+    plot_cfg: Any,
+    plot_metrics_dir: str,
+    plot_xai_dir: str,
+    plot_xai_cam_layer: int | None,
+    plot_xai_pca_layer: int | None,
+    model_layer_ids: list[int],
+    backbone: Any,
+    processor: Any,
+    device: torch.device,
+    ps: int,
+    autocast: Any,
+    histories: dict[str, Any],
+) -> tuple[dict[str, float], Any, Any]:
+    """Run epoch-level plots/XAI on rank 0 and share scalar results.
+
+    This keeps heavy diagnostics on rank 0 without letting non-main ranks race
+    into the next DDP forward pass with stale epoch state.
+
+    Args:
+        context (RunContext): Active run context.
+        epoch (int): Zero-based epoch index.
+        eval_model (torch.nn.Module): Evaluation model for XAI generation.
+        val_loader (Any): Validation loader, present only on rank 0 in DDP.
+        cache_features (bool): Whether cached features are available.
+        model_cfg (dict[str, Any]): Parsed model configuration.
+        loss_ignore_index (int | None): Ignore index for GT overlays.
+        plot_cfg (Any): Parsed plotting/XAI configuration.
+        plot_metrics_dir (str): Directory for validation metric plots.
+        plot_xai_dir (str): Directory for XAI artifacts.
+        plot_xai_cam_layer (int | None): CAM layer id.
+        plot_xai_pca_layer (int | None): PCA layer id.
+        model_layer_ids (list[int]): Requested DINO layer ids.
+        backbone (Any): Cached backbone handle.
+        processor (Any): Cached processor handle.
+        device (torch.device): Device used for XAI.
+        ps (int): Backbone patch size.
+        autocast (Any): Autocast context manager.
+        histories (dict[str, Any]): Mutable epoch-history buffers.
+
+    Returns:
+        tuple[dict[str, float], Any, Any]: Broadcast scalar XAI metrics plus
+        possibly updated backbone and processor handles.
+
+    Examples:
+        >>> callable(_resolve_epoch_xai_state)
+        True
+    """
+
+    payload: dict[str, Any] | None = None
+    if (not context.dist_ctx.enabled) or context.dist_ctx.is_main:
+        xai_started_at = time.time()
+        xai_epoch_metrics, backbone, processor = collect_epoch_xai_metrics(
+            context=context,
+            epoch=epoch,
+            eval_model=eval_model,
+            val_loader=val_loader,
+            cache_features=cache_features,
+            model_cfg=model_cfg,
+            loss_ignore_index=loss_ignore_index,
+            plot_cfg=plot_cfg,
+            plot_metrics_dir=plot_metrics_dir,
+            plot_xai_dir=plot_xai_dir,
+            plot_xai_cam_layer=plot_xai_cam_layer,
+            plot_xai_pca_layer=plot_xai_pca_layer,
+            model_layer_ids=model_layer_ids,
+            backbone=backbone,
+            processor=processor,
+            device=device,
+            ps=ps,
+            autocast=autocast,
+            histories=histories,
+        )
+        xai_duration = time.time() - xai_started_at
+        if plot_cfg.enabled:
+            context.logger.info(
+                "Epoch %s epoch-end diagnostics finished in %.2fs"
+                % (epoch + 1, xai_duration)
+            )
+        payload = {
+            "xai_epoch_metrics": {
+                str(key): float(value) for key, value in xai_epoch_metrics.items()
+            },
+            "xai_duration_s": float(xai_duration),
+        }
+    if context.dist_ctx.enabled:
+        payload = cast(dict[str, Any], broadcast_main_object(context.dist_ctx, payload))
+    assert payload is not None
+    xai_metrics = payload.get("xai_epoch_metrics", {})
+    return (
+        {
+            str(key): float(value)
+            for key, value in cast(dict[str, Any], xai_metrics).items()
+        },
+        backbone,
+        processor,
+    )
+
+
+def _synchronize_epoch_boundary(context: RunContext, epoch: int) -> None:
+    """Prevent the next DDP forward from racing ahead of rank-0 epoch work.
+
+    Args:
+        context (RunContext): Active run context.
+        epoch (int): Zero-based epoch index.
+
+    Examples:
+        >>> callable(_synchronize_epoch_boundary)
+        True
+    """
+
+    if not context.dist_ctx.enabled:
+        return
+    waited_at = time.time()
+    dist.barrier()
+    context.logger.info(
+        "Epoch %s distributed barrier wait %.2fs" % (epoch + 1, time.time() - waited_at)
+    )
 
 
 class TrainPhase(Phase):
@@ -420,57 +691,37 @@ class TrainPhase(Phase):
                         continue
 
                     eval_model = ema.ema_model if ema else base_model
-                    if not cache_features:
-                        backbone, processor = ensure_backbone_processor(
-                            backbone,
-                            processor,
-                            model_cfg["backbone"],
-                            device,
+                    validation_state, backbone, processor = (
+                        _resolve_epoch_validation_state(
+                            context=context,
+                            epoch=epoch,
+                            avg_train_loss=avg_train_loss,
+                            eval_model=eval_model,
+                            val_loader=val_loader,
+                            loss_fn=loss_fn,
+                            device=device,
+                            use_amp=use_amp,
+                            model_cfg=model_cfg,
+                            cache_features=cache_features,
+                            backbone=backbone,
+                            processor=processor,
+                            ps=ps,
+                            stability=stability,
+                            boundary_kernel_size=boundary_kernel_size,
+                            early_stopping=early_stopping,
                         )
-                    val_loss, val_metrics = evaluate(
-                        eval_model,
-                        val_loader,
-                        loss_fn,
-                        device,
-                        use_amp,
-                        context.logger if context.dist_ctx.is_main else None,
-                        model_cfg["num_classes"],
-                        cache_features=cache_features,
-                        backbone=backbone,
-                        processor=processor,
-                        layers=model_cfg["layers"],
-                        ps=ps,
-                        stability=stability,
-                        boundary_kernel_size=boundary_kernel_size,
                     )
-                    xai_epoch_metrics, backbone, processor = collect_epoch_xai_metrics(
-                        context=context,
-                        epoch=epoch,
-                        eval_model=eval_model,
-                        val_loader=val_loader,
-                        cache_features=cache_features,
-                        model_cfg=model_cfg,
-                        loss_ignore_index=loss_ignore_index,
-                        plot_cfg=plot_cfg,
-                        plot_metrics_dir=plot_metrics_dir,
-                        plot_xai_dir=plot_xai_dir,
-                        plot_xai_cam_layer=plot_xai_cam_layer,
-                        plot_xai_pca_layer=plot_xai_pca_layer,
-                        model_layer_ids=model_layer_ids,
-                        backbone=backbone,
-                        processor=processor,
-                        device=device,
-                        ps=ps,
-                        autocast=autocast,
-                        histories=histories,
+                    val_loss = float(validation_state["val_loss"])
+                    val_metrics = cast(
+                        dict[str, float], validation_state["val_metrics"]
                     )
-                    if context.dist_ctx.enabled:
-                        loss_tensor = torch.tensor(
-                            [val_loss, val_metrics["miou"]], device=device
-                        )
-                        dist.broadcast(loss_tensor, src=0)
-                        val_loss = loss_tensor[0].item()
-                        val_metrics["miou"] = loss_tensor[1].item()
+                    epoch_health["param_nonfinite_count"] = float(
+                        validation_state["param_nonfinite_count"]
+                    )
+                    checkpoint_is_finite = bool(
+                        validation_state["checkpoint_is_finite"]
+                    )
+                    stop_flag = bool(validation_state["stop_flag"])
 
                     context.logger.info(
                         f"Epoch {epoch + 1} | Train Loss: {avg_train_loss:.4f} | "
@@ -501,8 +752,26 @@ class TrainPhase(Phase):
                             )
                         )
                         next_progress_pct += 5
-                    epoch_health["param_nonfinite_count"] = float(
-                        count_nonfinite_parameters(eval_model)
+                    xai_epoch_metrics, backbone, processor = _resolve_epoch_xai_state(
+                        context=context,
+                        epoch=epoch,
+                        eval_model=eval_model,
+                        val_loader=val_loader,
+                        cache_features=cache_features,
+                        model_cfg=model_cfg,
+                        loss_ignore_index=loss_ignore_index,
+                        plot_cfg=plot_cfg,
+                        plot_metrics_dir=plot_metrics_dir,
+                        plot_xai_dir=plot_xai_dir,
+                        plot_xai_cam_layer=plot_xai_cam_layer,
+                        plot_xai_pca_layer=plot_xai_pca_layer,
+                        model_layer_ids=model_layer_ids,
+                        backbone=backbone,
+                        processor=processor,
+                        device=device,
+                        ps=ps,
+                        autocast=autocast,
+                        histories=histories,
                     )
                     epoch_ckpt = os.path.join(
                         weights_dir,
@@ -511,31 +780,12 @@ class TrainPhase(Phase):
                             f"MIOU_{val_metrics['miou']:.4f}_EPOCH_{epoch + 1}.pth"
                         ),
                     )
-                    checkpoint_is_finite = (
-                        math.isfinite(avg_train_loss)
-                        and math.isfinite(val_loss)
-                        and epoch_health["param_nonfinite_count"] == 0
-                    )
                     if context.dist_ctx.is_main and checkpoint_is_finite:
                         torch.save(eval_model.state_dict(), epoch_ckpt)
                     elif context.dist_ctx.is_main:
                         context.logger.error(
                             "Skipping checkpoint save due to non-finite training state."
                         )
-
-                    stop_flag = False
-                    if context.dist_ctx.is_main and checkpoint_is_finite:
-                        early_stopping(val_metrics["miou"], eval_model)
-                        stop_flag = early_stopping.early_stop
-                    elif (
-                        not checkpoint_is_finite
-                        and stability.nonfinite_action == "stop_run"
-                    ):
-                        stop_flag = True
-                    if context.dist_ctx.enabled:
-                        flag_tensor = torch.tensor(1 if stop_flag else 0, device=device)
-                        dist.broadcast(flag_tensor, src=0)
-                        stop_flag = bool(flag_tensor.item())
 
                     lr_value, lr_muon_value, lr_adamw_value = resolve_lr_metrics(
                         optimizer=optimizer,
@@ -577,6 +827,7 @@ class TrainPhase(Phase):
                     if math.isfinite(float(val_metrics["miou"])):
                         best_miou = max(best_miou, float(val_metrics["miou"]))
                     final_val_loss = val_loss
+                    _synchronize_epoch_boundary(context, epoch)
                     if stop_flag:
                         if context.dist_ctx.is_main:
                             if (

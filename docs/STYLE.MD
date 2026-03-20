@@ -234,6 +234,7 @@ left_list = [1, 2, 3, 4]
 right_list = [10, 20, 30, 40]
 summed_with_zip = [a + b for a, b in zip(left_list, right_list)]
 
+
 left = np.array([1, 2, 3, 4], dtype=np.int32)
 right = np.array([10, 20, 30, 40], dtype=np.int32)
 

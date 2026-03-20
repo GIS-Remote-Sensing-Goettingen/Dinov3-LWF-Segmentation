@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from ..context import RunContext
 from ..inference_utils import (
@@ -43,6 +44,31 @@ from ..train_utils import (
 from ..xai.module_xai import build_module_xai_sample
 from ..xai.module_xai_epoch import update_module_xai_epoch
 from .train_batches import ensure_backbone_processor
+
+
+def _build_plot_rgb(sample_img: torch.Tensor, sample_gt: torch.Tensor) -> np.ndarray:
+    """Build a uint8 RGB preview aligned to the GT/pred label grid.
+
+    Args:
+        sample_img (torch.Tensor): Image tensor shaped ``(1, C, H, W)``.
+        sample_gt (torch.Tensor): Label tensor whose spatial shape defines the
+            preview grid.
+
+    Returns:
+        np.ndarray: RGB preview shaped ``(H_label, W_label, 3)``.
+    """
+
+    plot_img = sample_img.detach().float().cpu()
+    target_size = (int(sample_gt.shape[-2]), int(sample_gt.shape[-1]))
+    if tuple(plot_img.shape[-2:]) != target_size:
+        plot_img = F.interpolate(
+            plot_img,
+            size=target_size,
+            mode="bilinear",
+            align_corners=False,
+        )
+    rgb = plot_img.permute(0, 2, 3, 1).numpy()[0]
+    return np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
 
 
 def collect_epoch_xai_metrics(
@@ -350,6 +376,9 @@ def _collect_epoch_xai_samples(
         for local_idx, wants_plot, wants_channel in wanted_local:
             sample_img = v_img[local_idx : local_idx + 1]
             sample_gt = v_y[local_idx : local_idx + 1]
+            rgb_input = sample_img.detach().cpu().numpy().transpose(0, 2, 3, 1)[0]
+            rgb_input = np.clip(rgb_input * 255.0, 0, 255).astype(np.uint8)
+            rgb = _build_plot_rgb(sample_img, sample_gt)
             if cache_features and feats_device:
                 sample_feats = [
                     feat[local_idx : local_idx + 1] for feat in feats_device
@@ -400,8 +429,6 @@ def _collect_epoch_xai_samples(
                             gate_importance = gate_value
                 pred_mask = sample_logits.argmax(dim=1).detach().cpu().numpy()[0]
                 gt_mask = sample_gt.detach().cpu().numpy()[0]
-                rgb = sample_img.detach().cpu().numpy().transpose(0, 2, 3, 1)[0]
-                rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
                 tile_iou, tile_f1 = compute_tile_iou_f1(
                     pred_mask,
                     gt_mask,
@@ -451,14 +478,11 @@ def _collect_epoch_xai_samples(
                     )
                     if layer_info:
                         dino_layer_importance_samples.append(layer_info)
-            else:
-                rgb = sample_img.detach().cpu().numpy().transpose(0, 2, 3, 1)[0]
-                rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
 
             if plot_cfg.xai_enable and (wants_plot or wants_channel):
                 rgb_h, rgb_w = int(rgb.shape[0]), int(rgb.shape[1])
                 gradcam_result = compute_gradcam_with_topk_channels(
-                    image_hw3=rgb.astype(np.float32),
+                    image_hw3=rgb_input.astype(np.float32),
                     backbone=backbone,
                     head=eval_model,
                     processor=processor,
@@ -504,7 +528,7 @@ def _collect_epoch_xai_samples(
                         attn_rollout_map,
                         had_attn,
                     ) = compute_attention_maps(
-                        rgb.astype(np.float32),
+                        rgb_input.astype(np.float32),
                         backbone,
                         processor,
                         device,
