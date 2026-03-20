@@ -11,6 +11,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from models.unet_nano import DinoUNetNanoHead  # noqa: E402
 from models.unet_nano_fapm import DinoUNetNanoFAPMHead  # noqa: E402
 from pipeline.phases.train_xai import _build_plot_rgb  # noqa: E402
 from pipeline.train_utils import (  # noqa: E402
@@ -246,3 +247,110 @@ def test_forward_adapter_restores_ds_head_gradients() -> None:
 
     assert head.ds_head.weight.grad is not None
     assert head.ds_head.bias.grad is not None
+
+
+def _build_nano_feature_pyramid(
+    dino_channels: int,
+    feature_count: int,
+) -> list[torch.Tensor]:
+    """Build a shallow-to-deep feature pyramid for Nano head tests.
+
+    Args:
+        dino_channels (int): Channel count for each synthetic feature map.
+        feature_count (int): Number of DINO feature maps to synthesize.
+    """
+
+    spatial_sizes = [32, 16, 8, 4]
+    if feature_count < 0 or feature_count > 5:
+        raise ValueError(f"Unsupported test feature count: {feature_count}")
+    if feature_count == 0:
+        selected_sizes: list[int] = []
+    elif feature_count <= 4:
+        selected_sizes = spatial_sizes[-feature_count:]
+    else:
+        selected_sizes = [64] + spatial_sizes
+    return [torch.randn(1, dino_channels, size, size) for size in selected_sizes]
+
+
+@pytest.mark.parametrize("feature_count", [1, 2, 3, 4])
+def test_unet_nano_accepts_one_to_four_feature_maps(feature_count: int) -> None:
+    """`unet_nano` should adapt to 1-4 DINO layers without losing aux outputs.
+
+    This verifies the new optional-skip behavior while preserving the expected
+    full-resolution main logits and H/8 auxiliary logits.
+
+    Args:
+        feature_count (int): Number of DINO feature maps passed to the head.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    head = DinoUNetNanoHead(num_classes=2, dino_channels=8)
+    image = torch.randn(1, 3, 256, 256)
+    features = _build_nano_feature_pyramid(8, feature_count)
+
+    logits, aux_logits = head.forward_with_aux(image, features)
+    payload = head.forward_with_extras(image, features)
+
+    assert logits.shape == (1, 2, 256, 256)
+    assert aux_logits.shape == (1, 2, 32, 32)
+    assert payload["logits"].shape == logits.shape
+    assert payload["aux_logits"].shape == aux_logits.shape
+    assert "bottleneck_features" in payload
+    assert "decoder_h8" in payload
+    assert "decoder_h4" in payload
+    assert "decoder_h2" in payload
+
+
+@pytest.mark.parametrize("feature_count", [1, 2, 3, 4])
+def test_unet_nano_backward_works_with_partial_feature_pyramids(
+    feature_count: int,
+) -> None:
+    """`unet_nano` gradients should flow for every supported feature count.
+
+    This ensures the adaptive skip-dropping path still propagates gradients to
+    both the auxiliary and final prediction heads.
+
+    Args:
+        feature_count (int): Number of DINO feature maps passed to the head.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    head = DinoUNetNanoHead(num_classes=2, dino_channels=8)
+    image = torch.randn(1, 3, 256, 256)
+    features = _build_nano_feature_pyramid(8, feature_count)
+
+    logits, aux_logits = head.forward_with_aux(image, features)
+    loss = logits.mean() + aux_logits.mean()
+    loss.backward()
+
+    assert head.ds_head.weight.grad is not None
+    assert head.final_conv.weight.grad is not None
+
+
+@pytest.mark.parametrize("feature_count", [0, 5])
+def test_unet_nano_rejects_invalid_feature_counts(feature_count: int) -> None:
+    """`unet_nano` should fail fast outside the supported 1-4 layer range.
+
+    This guards against misconfigured `model.layers` lists that would otherwise
+    produce ambiguous decoder wiring.
+
+    Args:
+        feature_count (int): Number of DINO feature maps passed to the head.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    head = DinoUNetNanoHead(num_classes=2, dino_channels=8)
+    image = torch.randn(1, 3, 256, 256)
+    features = _build_nano_feature_pyramid(8, feature_count)
+
+    with pytest.raises(ValueError, match="requires 1 to 4 DINO feature maps"):
+        head.forward_with_aux(image, features)

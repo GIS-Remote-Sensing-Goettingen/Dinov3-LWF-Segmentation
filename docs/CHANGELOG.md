@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 ### Changed
+- Make `unet_nano` accept 1-4 selected DINO layers by keeping the deepest
+  available feature as the bottleneck input and dropping missing shallow DINO
+  skip concatenations, while preserving the existing 4-layer path; add
+  regression coverage for supported and invalid feature-count cases
+  (`models/unet_nano.py`, `test/test_train_utils_safety.py`, `README.md`,
+  `docs/ARCHITECTURE.md`).
+- Expand the inline comments in all shipped YAML profiles so selector-style
+  config fields now spell out their accepted values directly in the config
+  files (for example head names, normalization/activation modes, AMP options,
+  inference merge/layout choices, booleans, and blank-vs-path fields)
+  (`configs/config.example.yml`, `configs/config_local.yml`,
+  `configs/config_hpc.yml`).
 - Fix distributed train/validation split construction so rank 0 now resolves
   the random `max_tiles` sample plus leakage-safe split once and broadcasts the
   exact file lists to all other ranks before `DistributedSampler` is built;

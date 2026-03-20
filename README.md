@@ -315,7 +315,7 @@ The `model.head` key selects one of the decoders registered under `models/`:
 | `unet_v2`   | `models/unet_v2.py` | Adds Spatial Prior Module + Fidelity-Aware projections + deep supervision. |
 | `unet_lite` | `models/UnetLite.py` | Lightweight DinoUNet variant with reduced channels for faster training/inference. |
 | `unet_lite_plus` | `models/unet_lite_plus.py` | Opt-in Lite+ variant using interpolate+conv upsampling, GN+GELU residual blocks, and lightweight gated H/4 fusion. |
-| `unet_nano` | `models/unet_nano.py` | Aggressively compact decoder with GroupNorm, GELU, Dropout2d, and late RGB fusion at H/4 and H/2. |
+| `unet_nano` | `models/unet_nano.py` | Aggressively compact decoder with GroupNorm, GELU, Dropout2d, late RGB fusion at H/4 and H/2, and adaptive support for 1-4 selected DINO layers by dropping missing shallow skips. |
 | `unet_nano_fapm` | `models/unet_nano_fapm.py` | Nano variant with low-rank split-and-modulate projections (NanoFAPM) plus a lightweight boundary branch fused into final logits. |
 | `unet_topo_fusion` | `models/unet_topo_fusion.py` | Topology-aware variant with learned DINO layer fusion, LoRA-style projection adapters, boundary-feature gating, and a skeleton branch for soft-clDice supervision. |
 | `maskformer`| `models/maskformer.py` | Pixel decoder fused with transformer mask head (MaskFormer style).       |

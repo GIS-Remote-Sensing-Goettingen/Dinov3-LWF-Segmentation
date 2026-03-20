@@ -119,9 +119,11 @@ MLflow-compatible artifacts for research workflows.
   for quality without changing pipeline wiring. `dino_dense_probe` is the
   minimal dense-probe head over last-layer DINO tokens, and
   `dino_segdino_light` is a SegDINO-style multi-layer fusion head.
-  `unet_nano` keeps the deep path tiny and adds RGB priors only in late decoder
-  stages (H/4, H/2), while `unet_nano_fapm` adds low-rank split-and-modulate
-  DINO projections and a lightweight boundary branch fused into final logits.
+  `unet_nano` keeps the deep path tiny, adds RGB priors only in late decoder
+  stages (H/4, H/2), and can run with 1-4 selected DINO layers by dropping
+  missing shallow skip connections, while `unet_nano_fapm` adds low-rank
+  split-and-modulate DINO projections and a lightweight boundary branch fused
+  into final logits.
   `unet_topo_fusion` adds learned DINO layer mixing, LoRA-style projection
   adapters, boundary feature gating, and an auxiliary skeleton stream for
   topology-aware training.

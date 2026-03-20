@@ -2,12 +2,13 @@
 Nano U-Net head with DINO backbone features and late RGB prior fusion.
 
 Architecture overview:
-- DINO path: fidelity-aware projections compress 4 backbone scales into compact
-  widths [64, 64, 32, 32] from deep to shallow.
+- DINO path: fidelity-aware projections compress up to 4 backbone scales into
+  compact widths [64, 64, 32, 32] from deep to shallow.
 - Decoder path: tiny GroupNorm+GELU blocks with Dropout2d regularization.
 - Deep supervision logits are emitted at H/8.
 - Late RGB fusion: Spatial Prior Module (SPM) features are fused at H/4 and H/2
-  to recover boundary detail without widening the deep decoder.
+  to recover boundary detail without widening the deep decoder. When fewer than
+  4 DINO layers are configured, missing shallow skip sources are dropped.
 """
 
 from __future__ import annotations
@@ -91,6 +92,10 @@ class NanoDoubleConv(nn.Module):
 class DinoUNetNanoHead(SegmentationHead):
     """Aggressively compact decoder head with late RGB boundary fusion.
 
+    The head accepts 1 to 4 DINO feature maps ordered from shallowest to
+    deepest. With fewer than 4 maps, the deepest available feature still drives
+    the bottleneck path while missing shallow skip concatenations are omitted.
+
     Examples:
         >>> head = DinoUNetNanoHead(num_classes=2, dino_channels=64)
         >>> img = torch.randn(1, 3, 256, 256)
@@ -124,12 +129,15 @@ class DinoUNetNanoHead(SegmentationHead):
         self.bottleneck = NanoDoubleConv(64, 64, dropout_rate=0.1)
         self.up1 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
         self.conv1 = NanoDoubleConv(64 + 64, 64, dropout_rate=0.1)
+        self.conv1_no_skip = NanoDoubleConv(64, 64, dropout_rate=0.1)
 
         self.up2 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
         self.conv2 = NanoDoubleConv(32 + 32, 32, dropout_rate=0.1)
+        self.conv2_no_skip = NanoDoubleConv(32, 32, dropout_rate=0.1)
 
         self.up3 = nn.ConvTranspose2d(32, 32, kernel_size=2, stride=2)
         self.conv3 = NanoDoubleConv(32 + 32, 32, dropout_rate=0.1)
+        self.conv3_no_skip = NanoDoubleConv(32, 32, dropout_rate=0.1)
 
         self.ds_head = nn.Conv2d(32, num_classes, kernel_size=1)
 
@@ -160,6 +168,57 @@ class DinoUNetNanoHead(SegmentationHead):
             )
         return torch.cat([x, skip], dim=1)
 
+    def _resolve_dino_connections(
+        self,
+        features: List[torch.Tensor],
+    ) -> tuple[
+        torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None
+    ]:
+        """Map 1-4 input features onto the fixed Nano decoder roles.
+
+        Args:
+            features (List[torch.Tensor]): DINO features ordered shallowest to deepest.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+            Deep bottleneck feature plus optional mid2, mid1, and shallow skips.
+        """
+
+        feature_count = len(features)
+        if feature_count < 1 or feature_count > 4:
+            raise ValueError(
+                "DinoUNetNanoHead requires 1 to 4 DINO feature maps, "
+                f"got {feature_count}."
+            )
+        d_deep = self.fapm1(features[-1])  # deepest selected layer
+        d_mid2 = self.fapm2(features[-2]) if feature_count >= 2 else None
+        d_mid1 = self.fapm3(features[-3]) if feature_count >= 3 else None
+        d_shallow = self.fapm4(features[-4]) if feature_count >= 4 else None
+        return d_deep, d_mid2, d_mid1, d_shallow
+
+    def _decode_stage(
+        self,
+        x: torch.Tensor,
+        upsampler: nn.Module,
+        with_skip: nn.Module,
+        no_skip: nn.Module,
+        skip: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Run one decoder stage with an optional DINO skip connection.
+
+        Args:
+            x (torch.Tensor): Decoder activation before upsampling.
+            upsampler (nn.Module): Stage upsampling module.
+            with_skip (nn.Module): Convolution block used when a DINO skip exists.
+            no_skip (nn.Module): Convolution block used when the DINO skip is absent.
+            skip (torch.Tensor | None): Optional DINO skip tensor for this stage.
+        """
+
+        x = upsampler(x)
+        if skip is None:
+            return no_skip(x)
+        return with_skip(self._concat(x, skip))
+
     def _forward_impl(
         self, image: torch.Tensor, features: List[torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
@@ -167,7 +226,8 @@ class DinoUNetNanoHead(SegmentationHead):
 
         Args:
             image (torch.Tensor): Input image tensor.
-            features (List[torch.Tensor]): Multiscale DINO features from shallow to deep.
+            features (List[torch.Tensor]): One to four DINO features from shallow
+                to deep.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]: Main logits,
@@ -176,22 +236,14 @@ class DinoUNetNanoHead(SegmentationHead):
 
         spm_h2, spm_h4 = self.spm(image)  # H/2 and H/4
 
-        d_shallow = self.fapm4(features[0])  # H/8
-        d_mid1 = self.fapm3(features[1])  # H/16
-        d_mid2 = self.fapm2(features[2])  # H/32
-        d_deep = self.fapm1(features[3])  # H/64
+        d_deep, d_mid2, d_mid1, d_shallow = self._resolve_dino_connections(features)
 
         x = self.bottleneck(d_deep)
         bottleneck_feat = x
 
-        x = self.up1(x)
-        x = self.conv1(self._concat(x, d_mid2))
-
-        x = self.up2(x)
-        x = self.conv2(self._concat(x, d_mid1))
-
-        x = self.up3(x)
-        x = self.conv3(self._concat(x, d_shallow))
+        x = self._decode_stage(x, self.up1, self.conv1, self.conv1_no_skip, d_mid2)
+        x = self._decode_stage(x, self.up2, self.conv2, self.conv2_no_skip, d_mid1)
+        x = self._decode_stage(x, self.up3, self.conv3, self.conv3_no_skip, d_shallow)
         decoder_h8 = x
 
         aux_logits = self.ds_head(x)

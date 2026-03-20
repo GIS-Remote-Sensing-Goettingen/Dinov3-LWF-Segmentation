@@ -3,25 +3,25 @@ resources:
   seed: 1337
   # CPU threads used by OpenMP-backed libraries such as NumPy / PyTorch kernels.
   omp_threads: 4
-  # Torch matmul precision hint: usually `high`, `medium`, or `highest`.
+  # Torch matmul precision hint; common values are `highest`, `high`, or `medium`.
   matmul_precision: high
-  # Enable DistributedDataParallel when launching with `torchrun`.
+  # Enable DistributedDataParallel when launching with `torchrun`: `true` or `false`.
   distributed: false
-  # Backend used for distributed process-group setup when `distributed` is true.
+  # DDP backend when `distributed` is true; typically `nccl` or `gloo`.
   dist_backend: nccl
   # Collective timeout in minutes for DDP sync points such as rank-0 validation.
   dist_timeout_minutes: 30
-  # Ask DDP to tolerate intermittently unused parameters at some performance cost.
+  # Ask DDP to tolerate intermittently unused parameters: `true` or `false`.
   ddp_find_unused_parameters: true
 
 logging:
   # Console/file log verbosity: `error`, `info`, or `debug`.
   level: debug
-  # Prefix each log line with a timestamp when true.
+  # Prefix each log line with a timestamp: `true` or `false`.
   timestamps: true
-  # Log file path; keep it empty only if you want console-only logs.
+  # Log file path, or leave blank for console-only logs.
   file: /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/logs/run.log
-  # Create one log file per run id instead of always reusing `file`.
+  # Create one log file per run id: `true` or `false`.
   per_run: true
 
 paths:
@@ -33,30 +33,30 @@ paths:
   processed_dir: /mnt/OS/processed_tiles_1024/
 
 dataset:
-  # Cache DINO features inside `.pt` tiles; false still caches tiles, just without features.
+  # Cache DINO features inside `.pt` tiles: `true` or `false`.
   cache_features: false
-  # Tile cap for prepare/train sampling: `0` means "use all available tiles".
+  # Tile cap for prepare/train sampling: `0` or any positive integer.
   max_tiles: 0
   tile_filter:
-    # Enable prepare-time filtering so only tiles matching the rule are cached.
+    # Enable prepare-time filtering: `true` or `false`.
     enabled: true
-    # Tile filter mode; `foreground_any` keeps tiles containing any listed class.
+    # Tile filter mode; currently only `foreground_any` is supported.
     mode: foreground_any
     # Label ids treated as foreground by `tile_filter.mode`.
     foreground_labels: [1]
   augmentations:
-    # Master switch for train-time augmentations.
+    # Master switch for train-time augmentations: `true` or `false`.
     enable: true
-    # Random horizontal flip applied during training.
+    # Random horizontal flip during training: `true` or `false`.
     hflip: true
-    # Random vertical flip applied during training.
+    # Random vertical flip during training: `true` or `false`.
     vflip: true
-    # Random 90-degree rotations applied during training.
+    # Random 90-degree rotations during training: `true` or `false`.
     rotate90: true
-    # Allow image-only augmentations even when cached features can no longer match.
+    # Allow image-only augments with stale cached features: `true` or `false`.
     allow_feature_mismatch: false
     cutout:
-      # Enable Cutout masking augmentation.
+      # Enable Cutout masking augmentation: `true` or `false`.
       enable: true
       # Probability of applying Cutout to a training sample.
       prob: 0.10
@@ -69,7 +69,7 @@ dataset:
       # Fill value written inside Cutout holes.
       fill: 0.0
     gridmask:
-      # Enable GridMask augmentation.
+      # Enable GridMask augmentation: `true` or `false`.
       enable: false
       # Probability of applying GridMask to a sample.
       prob: 0.20
@@ -79,12 +79,12 @@ dataset:
       d_max: 128
       # Masked-cell fraction inside each grid period.
       ratio: 0.5
-      # Randomly rotate the GridMask pattern when true.
+      # Randomly rotate the GridMask pattern: `true` or `false`.
       rotate: true
       # Fill value written into masked GridMask cells.
       fill: 0.0
     color_jitter:
-      # Enable brightness/contrast/saturation/hue jitter.
+      # Enable brightness/contrast/saturation/hue jitter: `true` or `false`.
       enable: true
       # Probability of applying ColorJitter to a sample.
       prob: 0.35
@@ -97,22 +97,22 @@ dataset:
       # Hue jitter strength.
       hue: 0.04
   splits:
-    # Optional text file listing explicit training tile paths; blank uses random split.
+    # Explicit training tile list path, or blank for random split.
     train_list:
-    # Optional text file listing explicit validation tile paths; blank uses random split.
+    # Explicit validation tile list path, or blank for random split.
     val_list:
   validation:
-    # Enable semantic checks on cached tiles before train/verify.
+    # Enable semantic checks on cached tiles: `true` or `false`.
     enabled: true
     # Valid class ids expected inside labels after sanitization.
     allowed_labels: [0, 1]
     # Ignore label used by losses/metrics for invalid or masked pixels.
     ignore_index: 255
-    # Policy for labels outside `allowed_labels`; `map_to_ignore` is the safe default.
+    # Policy for labels outside `allowed_labels`: `map_to_ignore` or `error`.
     out_of_range_policy: map_to_ignore
-    # Require all cached feature tensors to be finite.
+    # Require all cached feature tensors to be finite: `true` or `false`.
     require_finite_features: true
-    # Require cached image tensors to be finite.
+    # Require cached image tensors to be finite: `true` or `false`.
     require_finite_images: true
 
 model:
@@ -120,14 +120,16 @@ model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   # Transformer block ids extracted from the backbone and passed to the head.
   layers: [5, 11, 17, 23]
-  # Segmentation head architecture to train.
+  # Segmentation head architecture: `dino_dense_probe`, `dino_segdino_light`,
+  # `maskformer`, `unet`, `unet_v2`, `unet_lite`, `unet_lite_plus`,
+  # `unet_nano`, `unet_nano_fapm`, or `unet_topo_fusion`.
   head: unet_lite
   # Number of semantic output classes.
   num_classes: 2
   # Channel count per selected DINO feature map.
   dino_channels: 1024
   dense_probe:
-    # Normalization type for the dense linear-probe baseline.
+    # Dense-probe normalization: `batchnorm`, `syncbn`, `groupnorm`, or `none`.
     norm_type: batchnorm
     # Group count used only when `norm_type: groupnorm`.
     groupnorm_groups: 32
@@ -138,10 +140,10 @@ model:
     activation: gelu
     # Dropout rate inside the SegDINO-style head.
     dropout: 0.0
-    # Require the feature count to match `len(model.layers)` exactly.
+    # Require the feature count to match `len(model.layers)`: `true` or `false`.
     strict_layers: true
   fusion:
-    # Enable learned multi-layer fusion for compatible heads.
+    # Enable learned multi-layer fusion for compatible heads: `true` or `false`.
     enable: true
     # Decoder width after each per-layer projection.
     hidden: 64
@@ -149,10 +151,10 @@ model:
     layer_hidden: 128
     # Maximum number of DINO layers the fusion module can mix.
     max_layers: 6
-    # Save full spatial fusion-weight maps for diagnostics when true.
+    # Save full spatial fusion-weight maps for diagnostics: `true` or `false`.
     save_maps: false
   lora:
-    # Enable low-rank projection adapters in compatible heads.
+    # Enable low-rank projection adapters in compatible heads: `true` or `false`.
     enable: true
     # LoRA rank used by compatible projection adapters.
     rank: 8
@@ -160,22 +162,22 @@ model:
     alpha: 16.0
     # Dropout applied on the LoRA branch input.
     dropout: 0.0
-    # Freeze the base projection when true and train only the LoRA update.
+    # Freeze the base projection and train only the LoRA update: `true` or `false`.
     freeze_base: true
   boundary_gate:
-    # Enable boundary-aware gating/refinement in compatible heads.
+    # Enable boundary-aware gating/refinement in compatible heads: `true` or `false`.
     enable: true
     # Strength of the learned boundary gate modulation.
     scale: 0.1
-    # Clamp the gate output to its stable range when true.
+    # Clamp the gate output to its stable range: `true` or `false`.
     clamp: true
 
 prepare:
-  # Run the tile-building phase before verification/training.
+  # Run the tile-building phase before verification/training: `true` or `false`.
   enable: false
   # Tile edge length in pixels for cached `.pt` samples.
   tile_size: 1024
-  # Device used during prepare; usually `cuda` or `cpu`.
+  # Torch device string for prepare; common values are `cuda`, `cpu`, or `mps`.
   device: cuda
   # Override for feature caching during prepare; keep aligned with `dataset.cache_features`.
   cache_features: false
@@ -183,15 +185,15 @@ prepare:
   workers: 8
 
 verify:
-  # Run cached-tile verification before training.
+  # Run cached-tile verification before training: `true` or `false`.
   enable: false
   # Worker count used to scan cached `.pt` tiles.
   workers: 8
 
 train:
-  # Run supervised training.
+  # Run supervised training: `true` or `false`.
   enable: false
-  # Device used for the train loop.
+  # Torch device string for training; common values are `cuda`, `cpu`, or `mps`.
   device: cuda
   # Cached tile directory used by training; override `paths.processed_dir` here if needed.
   processed_dir: /mnt/OS/processed_tiles_1024/
@@ -223,17 +225,17 @@ train:
   num_workers: 4
   # Gradient-accumulation steps before each optimizer update.
   grad_accum_steps: 1
-  # Enable `torch.compile` for the train-time model wrapper.
+  # Enable `torch.compile` for the train-time model wrapper: `true` or `false`.
   compile: false
   # EMA decay; `0.0` disables exponential moving average weights.
   ema_decay: 0.0
   plots:
     epoch:
-      # Enable per-epoch validation plot exports.
+      # Enable per-epoch validation plot exports: `true` or `false`.
       enable: true
       # Plot output directory when MLflow artifact redirection is not active.
       dir: output/plot
-      # Matplotlib colormap used for segmentation visualizations.
+      # Matplotlib colormap name, for example `tab20`, `viridis`, or `magma`.
       cmap: tab20
       # Number of validation tile pairs shown per epoch.
       pairs: 4
@@ -242,30 +244,32 @@ train:
       # Class id used for per-tile metric overlays in plots.
       metric_class_index: 1
     xai:
-      # Enable epoch-level explainability artifacts.
+      # Enable epoch-level explainability artifacts: `true` or `false`.
       enable: true
       # Foreground class index used by XAI methods.
       class_index: 1
       # Number of channels highlighted in top-k channel panels.
       topk_channels: 5
-      # CAM layer selection mode; `last_requested_layer` follows `model.layers`.
+      # CAM layer selection mode: `last_requested_layer` or `first_requested_layer`.
       cam_layer_mode: last_requested_layer
-      # Render DINO attention rollout maps when available.
+      # Render DINO attention rollout maps when available: `true` or `false`.
       render_attn_rollout: true
       pca:
-        # Enable PCA visualizations of DINO feature maps.
+        # Enable PCA visualizations of DINO feature maps: `true` or `false`.
         enable: true
-        # PCA layer selection mode; `same_as_cam` reuses `cam_layer_mode`.
+        # PCA layer mode: `same_as_cam`, `last_requested_layer`, or
+        # `first_requested_layer`.
         layer_mode: same_as_cam
       branch_importance:
-        # Enable gradient-based image-vs-DINO branch importance plots.
+        # Enable gradient-based image-vs-DINO branch importance plots: `true` or
+        # `false`.
         enable: true
         # Class index used for branch-importance attribution.
         class_index: 1
         # Maximum validation samples used for branch-importance plots.
         max_samples: 4
       channel_tracking:
-        # Enable epoch-level DINO channel-importance tracking.
+        # Enable epoch-level DINO channel-importance tracking: `true` or `false`.
         enable: true
         # Maximum validation samples used for channel tracking.
         max_samples: 64
@@ -275,16 +279,17 @@ train:
         top_n_stable: 10
         # Minimum sample presence ratio for a channel to count as stable.
         min_presence: 0.05
-        # Save aggregated channel-importance JSON outputs when true.
+        # Save aggregated channel-importance JSON outputs: `true` or `false`.
         save_json: true
       module:
-        # Enable module-specific XAI panels for compatible heads.
+        # Enable module-specific XAI panels for compatible heads: `true` or `false`.
         enable: true
         # Run module-specific XAI every N epochs.
         every_n_epochs: 5
         # Maximum samples included in module-specific XAI.
         max_samples: 8
-        # Save full-resolution module maps in addition to summaries.
+        # Save full-resolution module maps in addition to summaries: `true` or
+        # `false`.
         save_maps: true
         # Boundary-band width in pixels for boundary-focused module metrics.
         boundary_band_px: 3
@@ -292,11 +297,12 @@ train:
         gate_threshold: 0.5
         # Numerical epsilon used by entropy-based module plots.
         entropy_eps: 1.0e-8
-        # Fail the run on unsupported module-XAI paths when true.
+        # Fail the run on unsupported module-XAI paths: `true` or `false`.
         strict: false
-        # Enable LoRA ratio diagnostics for compatible heads.
+        # Enable LoRA ratio diagnostics for compatible heads: `true` or `false`.
         enable_lora_ratio: true
-        # Enable topology/skeleton-specific XAI panels for compatible heads.
+        # Enable topology/skeleton-specific XAI panels for compatible heads:
+        # `true` or `false`.
         enable_topology_panels: true
   loss:
     main:
@@ -329,7 +335,7 @@ train:
     class_index: 1
     # Iteration count for differentiable skeletonization.
     iters: 10
-    # Use aux logits for topology loss when available.
+    # Use aux logits for topology loss when available: `true` or `false`.
     on_aux: true
     # Extra topology downsampling factor; `1` means no extra downsampling.
     downsample: 1
@@ -337,9 +343,9 @@ train:
     amp:
       # AMP mode: `auto`, `on`, or `off`.
       enabled: auto
-      # AMP dtype used when AMP is enabled: usually `bf16` or `fp16`.
+      # AMP dtype used when AMP is enabled: `bf16` or `fp16`.
       dtype: bf16
-    # Cast logits to fp32 before loss computation for numerical stability.
+    # Cast logits to fp32 before loss computation: `true` or `false`.
     loss_fp32: true
     # Gradient clipping norm; `0` disables clipping.
     grad_clip_norm: 1.0
@@ -352,65 +358,67 @@ train:
       max_consecutive_batches: 2
       # Abort after this many total non-finite batches in one epoch.
       max_total_batches_per_epoch: 5
-      # Save a debug sample from a non-finite batch when true.
+      # Save a debug sample from a non-finite batch: `true` or `false`.
       save_bad_batch_sample: true
     # Check model parameters for non-finite values every N optimizer steps.
     check_params_every_steps: 50
 
 inference:
-  # Run inference after training/prepare.
+  # Run inference after training/prepare: `true` or `false`.
   enable: true
-  # Device used for inference.
+  # Torch device string for inference; common values are `cuda`, `cpu`, or `mps`.
   device: cuda
-  # Single-scene inference input; leave blank when using `input_dir`.
+  # Single-scene inference input path, or blank when using `input_dir`.
   input_tif: /home/mak/PycharmProjects/SegEdge/experiments/get_data_from_api/patches_mt/dop20_592000_5975000_1km_20cm.tif
-  # Directory inference input; leave blank when using `input_tif`.
+  # Directory inference input path, or blank when using `input_tif`.
   input_dir:
-  # Output GeoTIFF path for single-scene inference.
+  # Output GeoTIFF path for single-scene inference, or blank in directory mode.
   output_tif: /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/test/dop20_592000_5975000_1km_20cm_labels.tif
-  # Output directory used when `input_dir` is set.
+  # Output directory path used when `input_dir` is set, or blank otherwise.
   output_dir:
   # Filename suffix appended to predictions written into `output_dir`.
   output_suffix: _pred.tif
   # Glob used to discover input files inside `input_dir`.
   glob: "*.tif"
-  # Checkpoint path to load for inference; use the train artifact when left blank and available.
+  # Checkpoint path to load, or leave blank to reuse the current train artifact.
   checkpoint:
   # Inference tile size in pixels.
   tile_size: 512
   # Overlap fraction between adjacent inference windows.
   overlap: 0.25
   merge:
-    # Overlap merge mode used to blend window predictions.
+    # Overlap merge mode: `center_weighted` or `uniform`.
     mode: center_weighted
   tta:
-    # Enable horizontal-flip test-time augmentation.
+    # Enable horizontal-flip test-time augmentation: `true` or `false`.
     horizontal_flip: true
-    # Enable vertical-flip test-time augmentation.
+    # Enable vertical-flip test-time augmentation: `true` or `false`.
     vertical_flip: false
   explain:
-    # Enable unified scene-level explainability dashboards during inference.
+    # Enable scene-level explainability dashboards during inference: `true` or
+    # `false`.
     enable: true
     # Output directory for inference explainability figures.
     output_dir: plots
     # Foreground class index highlighted in inference explainability outputs.
     class_index: 1
-    # Dashboard subplot layout string.
+    # Dashboard subplot layout: `2x2` or `1x4`.
     dashboard_layout: "2x2"
-    # RGB overlay color used for predicted foreground.
+    # RGB overlay color as three integers in `[0, 255]`.
     pred_overlay_color: [120, 190, 255]
     # Overlay opacity used for predicted foreground masks.
     pred_overlay_alpha: 0.28
-    # Save tile-level debug figures in addition to scene dashboards when true.
+    # Save tile-level debug figures in addition to scene dashboards: `true` or
+    # `false`.
     tile_debug_enable: false
     # Render one debug figure every N processed tiles.
     plot_every_n: 10
   vector:
-    # Export cumulative foreground polygons as a shapefile when true.
+    # Export cumulative foreground polygons as a shapefile: `true` or `false`.
     enable: true
     # EPSG code used for vector export reprojection.
     target_epsg: 4326
-    # Append new scene polygons to an existing shapefile when true.
+    # Append new scene polygons to an existing shapefile: `true` or `false`.
     append: true
     # Class id treated as foreground for vector export.
     foreground_class: 1
