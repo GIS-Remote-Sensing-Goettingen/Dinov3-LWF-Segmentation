@@ -30,13 +30,13 @@ paths:
   # Full raster label path read during prepare when tiles are built or rebuilt.
   label_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/final_labels_1m.tif
   # Base cache root for generated `.pt` tiles; training reads cached tiles here.
-  processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_2_2/
+  processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_2_3/
 
 dataset:
   # Cache DINO features inside `.pt` tiles: `true` or `false`.
   cache_features: false
   # Tile cap for prepare/train sampling: `0` or any positive integer.
-  max_tiles: 5000
+  max_tiles: 8000
   tile_filter:
     # Enable prepare-time filtering: `true` or `false`.
     enabled: true
