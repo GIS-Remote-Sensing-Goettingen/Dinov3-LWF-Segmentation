@@ -133,15 +133,6 @@ model:
     norm_type: batchnorm
     # Group count used only when `norm_type: groupnorm`.
     groupnorm_groups: 32
-  segdino_light:
-    # Projection width used by the SegDINO-style lightweight head.
-    proj_dim: 128
-    # Activation function for SegDINO projections: `gelu` or `relu`.
-    activation: gelu
-    # Dropout rate inside the SegDINO-style head.
-    dropout: 0.0
-    # Require the feature count to match `len(model.layers)`: `true` or `false`.
-    strict_layers: true
   fusion:
     # Enable learned multi-layer fusion for compatible heads: `true` or `false`.
     enable: true

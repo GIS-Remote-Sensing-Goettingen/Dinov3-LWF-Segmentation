@@ -132,11 +132,6 @@ model:
   dense_probe:
     norm_type: batchnorm # batchnorm | syncbn | groupnorm | none
     groupnorm_groups: 32
-  segdino_light:
-    proj_dim: 128
-    activation: gelu      # gelu | relu
-    dropout: 0.0
-    strict_layers: true
   fusion:
     enable: true
     hidden: 64
@@ -313,7 +308,7 @@ The `model.head` key selects one of the decoders registered under `models/`:
 | Head        | File             | Highlights                                                        |
 |-------------|------------------|-------------------------------------------------------------------|
 | `dino_dense_probe` | `models/dino_dense_probe.py` | Dense linear-probe baseline on last-layer DINO tokens (`norm -> 1x1 conv -> upsample`). |
-| `dino_segdino_light` | `models/dino_segdino_light.py` | SegDINO-style lightweight multi-layer fusion head (`per-layer 1x1 -> align -> concat -> fuse`). |
+| `dino_segdino_light` | `models/dino_segdino_light.py` | Fixed paper-like lightweight SegDINO decoder (`reform -> align -> concat -> MLP`). |
 | `unet`      | `models/unet.py` | Standard image-only U-Net baseline (64/128/256/512 encoder, 1024 bottleneck, transpose-conv decoder); ignores `model.layers`. |
 | `unet_v2`   | `models/unet_v2.py` | Adds Spatial Prior Module + Fidelity-Aware projections + deep supervision. |
 | `unet_lite` | `models/UnetLite.py` | Lightweight DinoUNet variant with reduced channels for faster training/inference. |

@@ -62,6 +62,18 @@ def test_standard_unet_is_image_only_and_has_no_aux_logits() -> None:
     )
 
 
+def test_dino_baseline_heads_do_not_claim_aux_logits() -> None:
+    """Dense-probe and SegDINO-light baselines should not require aux logits.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    assert not head_supports_aux_logits("dino_dense_probe")
+    assert not head_supports_aux_logits("dino_segdino_light")
+
+
 def test_standard_unet_forward_ignores_feature_list() -> None:
     """The standard U-Net head should segment directly from the image tensor.
 

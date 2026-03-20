@@ -144,7 +144,9 @@ MLflow-compatible artifacts for research workflows.
   64/128/256/512-contracting path, 1024-channel bottleneck, and symmetric
   transpose-convolution decoder.
   `dino_dense_probe` is the minimal dense-probe head over last-layer DINO
-  tokens, and `dino_segdino_light` is a SegDINO-style multi-layer fusion head.
+  tokens, and `dino_segdino_light` is a fixed paper-like lightweight SegDINO
+  decoder that reforms selected DINO layers, concatenates them on one token
+  grid, and predicts logits with a minimal per-pixel MLP.
   `unet_nano` keeps the deep path tiny, adds RGB priors only in late decoder
   stages (H/4, H/2), and can run with 1-4 selected DINO layers by dropping
   missing shallow skip connections, while `unet_nano_fapm` adds low-rank

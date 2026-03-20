@@ -111,17 +111,21 @@ def build_head(
             groupnorm_groups=int(dense_cfg.get("groupnorm_groups", 32)),
         )
     if name == "dino_segdino_light":
-        seg_cfg = _subcfg(cfg, "segdino_light")
+        if "segdino_light" in cfg:
+            raise ValueError(
+                "model.segdino_light is no longer supported. "
+                "The dino_segdino_light head now uses fixed paper-like defaults "
+                "and is configured only by model.layers."
+            )
         layers = cfg.get("layers", [])
-        layer_count = len(layers) if isinstance(layers, list) and layers else 1
+        if not isinstance(layers, list) or not layers:
+            raise ValueError(
+                "dino_segdino_light requires a non-empty model.layers list."
+            )
         return DinoSegDinoLightHead(
             num_classes=num_classes,
             dino_channels=dino_channels,
-            num_layers=int(layer_count),
-            proj_dim=int(seg_cfg.get("proj_dim", 128)),
-            activation=str(seg_cfg.get("activation", "gelu")).strip().lower(),
-            dropout=float(seg_cfg.get("dropout", 0.0)),
-            strict_layers=bool(seg_cfg.get("strict_layers", True)),
+            num_layers=int(len(layers)),
         )
     if name == "unet_topo_fusion":
         fusion_cfg = _subcfg(cfg, "fusion")

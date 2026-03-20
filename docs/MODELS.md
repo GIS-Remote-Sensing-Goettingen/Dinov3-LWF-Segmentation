@@ -159,7 +159,7 @@ using:
 | head | total params | trainable params | frozen params |
 | --- | ---: | ---: | ---: |
 | `dino_dense_probe` | 4,098 | 4,098 | 0 |
-| `dino_segdino_light` | 591,362 | 591,362 | 0 |
+| `dino_segdino_light` | 590,722 | 590,722 | 0 |
 | `maskformer` | 4,768,512 | 4,768,512 | 0 |
 | `unet` | 31,031,810 | 31,031,810 | 0 |
 | `unet_lite` | 778,500 | 778,500 | 0 |

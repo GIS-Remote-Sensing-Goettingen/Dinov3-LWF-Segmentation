@@ -53,9 +53,9 @@ def test_dense_probe_build_and_forward_shape() -> None:
 
 
 def test_segdino_light_build_and_forward_shape() -> None:
-    """Validate SegDINO-light forward output shape.
+    """Validate the paper-like SegDINO-light forward output shape.
 
-    The fused logits must be resized to the input image grid.
+    The decoded logits must be resized to the input image grid.
 
     Examples:
         >>> True
@@ -66,15 +66,7 @@ def test_segdino_light_build_and_forward_shape() -> None:
         "dino_segdino_light",
         num_classes=2,
         dino_channels=64,
-        model_cfg={
-            "layers": [5, 11, 17, 23],
-            "segdino_light": {
-                "proj_dim": 32,
-                "activation": "gelu",
-                "dropout": 0.0,
-                "strict_layers": True,
-            },
-        },
+        model_cfg={"layers": [5, 11, 17, 23]},
     )
     image = torch.randn(2, 3, 128, 128)
     features = [torch.randn(2, 64, 8, 8) for _ in range(4)]
@@ -82,8 +74,8 @@ def test_segdino_light_build_and_forward_shape() -> None:
     assert tuple(logits.shape) == (2, 2, 128, 128)
 
 
-def test_segdino_light_strict_layer_mismatch_raises() -> None:
-    """Validate strict feature-count enforcement for SegDINO-light.
+def test_segdino_light_feature_count_mismatch_raises() -> None:
+    """Validate exact feature-count enforcement for SegDINO-light.
 
     Mismatch between extracted features and configured layers should raise.
 
@@ -96,10 +88,7 @@ def test_segdino_light_strict_layer_mismatch_raises() -> None:
         "dino_segdino_light",
         num_classes=2,
         dino_channels=64,
-        model_cfg={
-            "layers": [5, 11, 17, 23],
-            "segdino_light": {"strict_layers": True},
-        },
+        model_cfg={"layers": [5, 11, 17, 23]},
     )
     image = torch.randn(1, 3, 64, 64)
     bad_features = [torch.randn(1, 64, 4, 4) for _ in range(3)]
@@ -107,29 +96,45 @@ def test_segdino_light_strict_layer_mismatch_raises() -> None:
         _ = model(image, bad_features)
 
 
-def test_segdino_light_initial_logits_are_conservative() -> None:
-    """Validate conservative initial logits for SegDINO-light.
+def test_segdino_light_legacy_config_block_raises() -> None:
+    """Validate removal of the legacy SegDINO-light config block.
 
-    The output classifier is initialized near zero to avoid early saturation.
+    Old YAMLs should fail clearly instead of silently using ignored settings.
 
     Examples:
         >>> True
         True
     """
 
-    model = build_head(
-        "dino_segdino_light",
-        num_classes=2,
-        dino_channels=64,
-        model_cfg={
-            "layers": [5, 11, 17, 23],
-            "segdino_light": {"strict_layers": True},
-        },
-    )
-    image = torch.randn(1, 3, 64, 64)
-    features = [torch.randn(1, 64, 4, 4) for _ in range(4)]
-    logits = model(image, features)
-    assert float(logits.abs().max().item()) < 1e-6
+    with pytest.raises(ValueError, match="model.segdino_light is no longer supported"):
+        _ = build_head(
+            "dino_segdino_light",
+            num_classes=2,
+            dino_channels=64,
+            model_cfg={
+                "layers": [5, 11, 17, 23],
+                "segdino_light": {"proj_dim": 32},
+            },
+        )
+
+
+def test_segdino_light_requires_model_layers() -> None:
+    """Validate that SegDINO-light requires explicit selected DINO layers.
+
+    The fixed head should not guess a layer count when `model.layers` is absent.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    with pytest.raises(ValueError, match="requires a non-empty model.layers list"):
+        _ = build_head(
+            "dino_segdino_light",
+            num_classes=2,
+            dino_channels=64,
+            model_cfg={},
+        )
 
 
 def test_existing_head_build_path_still_works() -> None:

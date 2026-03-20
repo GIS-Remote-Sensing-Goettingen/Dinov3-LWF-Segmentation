@@ -25,8 +25,6 @@ _ADAMW_ONLY_HEADS: frozenset[str] = frozenset(
 _IMAGE_ONLY_HEADS: frozenset[str] = frozenset({"unet"})
 _AUX_LOGIT_HEADS: frozenset[str] = frozenset(
     {
-        "dino_dense_probe",
-        "dino_segdino_light",
         "unet_v2",
         "unet_lite",
         "unet_lite_plus",

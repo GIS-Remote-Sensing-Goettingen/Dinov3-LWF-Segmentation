@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 ### Changed
+- Fix baseline-head aux-supervision capability detection so
+  `dino_dense_probe` and `dino_segdino_light` no longer claim auxiliary logits
+  they do not return; training now ignores `aux_weight` for those heads
+  instead of failing on the first forward pass
+  (`pipeline/train_utils.py`, `test/test_train_utils_safety.py`).
+- Rebuild `dino_segdino_light` as a fixed paper-like lightweight SegDINO
+  decoder (`reform -> align -> concat -> MLP`), remove the old
+  `model.segdino_light.*` config block from shipped examples, and make older
+  configs fail fast with a targeted error instead of silently using ignored
+  per-head knobs (`models/dino_segdino_light.py`, `models/__init__.py`,
+  `configs/config_*.yml`, `README.md`, `test/test_dino_baselines.py`,
+  `docs/ARCHITECTURE.md`).
 - Make prepare reuse compatible no-feature caches when they already satisfy
   `dataset.max_tiles`, and count existing tiles toward the remaining top-up
   budget instead of rescanning imagery from zero on every run
