@@ -12,7 +12,9 @@
   no longer requires auxiliary logits. Train/validation dataloaders now also
   pad mixed-size cached image/label/feature tensors per batch so native
   label-grid caches from scenes with different scale factors can still be
-  batched safely
+  batched safely. The standard `unet` baseline now also uses the AdamW-only
+  optimizer path instead of the Muon+AdamW split to avoid unstable high-logit
+  divergence under the previous Muon learning-rate defaults
   (`models/unet.py`, `pipeline/train_utils.py`, `pipeline/data_splits.py`,
   `pipeline/phases/prepare.py`, `pipeline/phases/train.py`,
   `pipeline/phases/train_batches.py`, `pipeline/phases/train_xai.py`,

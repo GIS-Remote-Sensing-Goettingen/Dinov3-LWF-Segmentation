@@ -43,6 +43,7 @@ def test_use_adamw_only_for_baseline_heads() -> None:
 
     assert use_adamw_only_for_head("dino_dense_probe")
     assert use_adamw_only_for_head("dino_segdino_light")
+    assert use_adamw_only_for_head("unet")
     assert not use_adamw_only_for_head("unet_lite")
 
 
