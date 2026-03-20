@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, TextIO
 
-LEVEL_MAP = {"error": 0, "info": 1, "debug": 2}
+LEVEL_MAP = {"error": 0, "warning": 1, "info": 2, "debug": 3}
 
 
 @dataclass
@@ -19,6 +19,8 @@ class VerbosityLogger:
     >>> logger = VerbosityLogger(level="info", timestamps=False)
     >>> logger.info("hello world")
     [INFO] hello world
+    >>> logger.warning("careful")
+    [WARNING] careful
     >>> logger.debug("hidden")
     >>> logger.error("boom")
     [ERROR] boom
@@ -112,6 +114,20 @@ class VerbosityLogger:
         """
 
         self.log("info", message)
+
+    def warning(self, message: str) -> None:
+        """Convenience wrapper for warning-level logs.
+
+        Args:
+            message (str): Message text to emit.
+
+        Examples:
+            >>> logger = VerbosityLogger(level="info", timestamps=False)
+            >>> logger.warning("careful")
+            [WARNING] careful
+        """
+
+        self.log("warning", message)
 
     def debug(self, message: str) -> None:
         """Convenience wrapper for debug-level logs.

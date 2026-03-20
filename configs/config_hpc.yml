@@ -202,7 +202,7 @@ train:
   # Per-rank training batch size.
   batch_size: 4
   # Number of training epochs.
-  epochs: 20
+  epochs: 50
   # Muon learning rate for matrix-like parameter groups.
   muon_lr: 0.02
   # Optional explicit Muon weight decay; blank reuses `adamw_wd`.

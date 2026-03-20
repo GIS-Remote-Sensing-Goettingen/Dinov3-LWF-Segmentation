@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 ### Changed
+- Add `warning()` support to `VerbosityLogger` so train/inference warning sites
+  no longer crash phase execution when they emit crop or fallback diagnostics
+  (`utils/logging.py`).
 - Replace `head: unet` with a standard image-only U-Net (Ronneberger-style
   symmetric encoder/decoder with double 3x3 conv blocks, max-pooling, and
   transpose-convolution upsampling), and update prepare/train/inference/XAI so
