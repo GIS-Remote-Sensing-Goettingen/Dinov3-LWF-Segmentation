@@ -31,7 +31,7 @@ from utils.data.core import (  # noqa: E402
     read_label_window_for_image_bounds,
     resolve_cache_dir_for_prepare,
 )
-from utils.data.pipeline import PrecomputedDataset  # noqa: E402
+from utils.data.pipeline import PrecomputedDataset, prepare_data_tiles  # noqa: E402
 
 
 class _RecordingLogger:
@@ -269,6 +269,138 @@ def test_prepare_phase_propagates_rank_zero_failure(
 
     with pytest.raises(RuntimeError, match="Prepare phase failed on rank 0: disk full"):
         phase.execute(ctx)
+
+
+def test_prepare_data_tiles_skips_when_no_feature_cache_satisfies_max_tiles(
+    tmp_path: Path,
+) -> None:
+    """No-feature caches should satisfy max_tiles without rescanning imagery.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    logger = _RecordingLogger()
+    output_dir = tmp_path / "cache"
+    output_dir.mkdir()
+    for idx in range(3):
+        torch.save(
+            {"image": torch.zeros(1), "label": torch.zeros(1)},
+            output_dir / f"tile_{idx}.pt",
+        )
+
+    prepare_data_tiles(
+        img_dir=str(tmp_path / "missing_images"),
+        label_path=str(tmp_path / "missing_labels.tif"),
+        output_dir=str(output_dir),
+        model_name="demo-backbone",
+        layers=[5],
+        device=torch.device("cpu"),
+        tile_size=32,
+        cache_features=False,
+        workers=1,
+        max_tiles=2,
+        logger=logger,
+    )
+
+    assert len(list(output_dir.glob("*.pt"))) == 3
+    assert any(
+        "Compatible cache already satisfies max_tiles=2 with 3 tiles. Skipping tiling."
+        in message
+        for message in logger.info_messages
+    )
+
+
+def test_prepare_data_tiles_counts_existing_no_feature_tiles_toward_top_up_limit(
+    tmp_path: Path,
+) -> None:
+    """Prepare should top up from existing no-feature tiles instead of overshooting.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    logger = _RecordingLogger()
+    output_dir = tmp_path / "cache"
+    output_dir.mkdir()
+    for idx in range(2):
+        torch.save(
+            {"image": torch.zeros(1), "label": torch.zeros(1)},
+            output_dir / f"existing_{idx}.pt",
+        )
+    img_dir = tmp_path / "images"
+    img_dir.mkdir()
+    image_path = img_dir / "scene_a.tif"
+    label_path = tmp_path / "labels.tif"
+    transform = from_origin(0.0, 64.0, 1.0, 1.0)
+    rgb = np.full((64, 64, 3), 255, dtype=np.uint8)
+    labels = np.ones((64, 64), dtype=np.uint8)
+    _write_test_geotiff(image_path, rgb, transform=transform)
+    _write_test_geotiff(label_path, labels, transform=transform)
+
+    prepare_data_tiles(
+        img_dir=str(img_dir),
+        label_path=str(label_path),
+        output_dir=str(output_dir),
+        model_name="demo-backbone",
+        layers=[5],
+        device=torch.device("cpu"),
+        tile_size=32,
+        cache_features=False,
+        workers=1,
+        max_tiles=3,
+        logger=logger,
+    )
+
+    assert len(list(output_dir.glob("*.pt"))) == 3
+    assert any("Reached max tiles. Stopping tiling." in m for m in logger.info_messages)
+
+
+def test_prepare_phase_reports_zero_tiles_added_when_cache_already_satisfies_limit(
+    tmp_path: Path,
+) -> None:
+    """Prepare phase should succeed quickly when a compatible cache already exists.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    phase = PreparePhase()
+    ctx = _prepare_context(
+        tmp_path, DistContext(enabled=False, rank=0, world_size=1, local_rank=0)
+    )
+    ctx.config["dataset"]["max_tiles"] = 2
+    cache_dir = Path(
+        resolve_cache_dir_for_prepare(
+            str(tmp_path / "cache"),
+            tile_size=32,
+            cache_features=False,
+            model_name="demo-backbone",
+            layers=[5],
+        )
+    )
+    for idx in range(2):
+        torch.save(
+            {"image": torch.zeros(1), "label": torch.zeros(1)},
+            cache_dir / f"tile_{idx}.pt",
+        )
+
+    outcome = phase.execute(ctx)
+
+    assert outcome.metrics == {"tiles_total": 2.0, "tiles_added": 0.0}
+    assert outcome.artifacts["processed_dir"] == str(cache_dir)
 
 
 def test_resolve_cache_dir_for_prepare_accepts_requested_layer_subset(

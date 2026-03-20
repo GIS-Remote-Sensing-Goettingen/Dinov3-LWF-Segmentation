@@ -356,7 +356,10 @@ def save_epoch_xai_plot(
                 pred_title += (
                     f"\nI/D={float(img_importance):.2f}/{float(dino_importance):.2f}"
                     if paper_style
-                    else f"\nImp I/D={float(img_importance):.2f}/{float(dino_importance):.2f}"
+                    else (
+                        "\nImg/DINO="
+                        f"{float(img_importance):.2f}/{float(dino_importance):.2f}"
+                    )
                 )
             pred_ax.set_title(pred_title)
             pred_ax.axis("off")
@@ -812,7 +815,7 @@ def _save_branch_importance_trend_plot(
     history: list[dict[str, float]],
     paper_style: bool = False,
 ) -> None:
-    """Save per-epoch trend lines for image-vs-DINO branch importance.
+    """Save per-epoch trend lines for image-vs-DINO branch contribution.
 
     Args:
         output_path (str): Destination PNG path.
@@ -828,10 +831,6 @@ def _save_branch_importance_trend_plot(
     epochs = [int(row.get("epoch", idx + 1)) for idx, row in enumerate(history)]
     img_values = [float(row.get("img_importance_mean", 0.0)) for row in history]
     dino_values = [float(row.get("dino_importance_mean", 0.0)) for row in history]
-    balance_values = [
-        float(abs(img_val - dino_val))
-        for img_val, dino_val in zip(img_values, dino_values)
-    ]
 
     rc_params = _plot_rc_params(paper_style)
     with plt.rc_context(rc=rc_params):
@@ -842,7 +841,7 @@ def _save_branch_importance_trend_plot(
             marker="o",
             linewidth=2.0,
             color=PAPER_ORANGE if paper_style else "tab:orange",
-            label="Image importance (I)",
+            label="Image contribution",
         )
         ax.plot(
             epochs,
@@ -850,20 +849,11 @@ def _save_branch_importance_trend_plot(
             marker="o",
             linewidth=2.0,
             color=PAPER_TEAL if paper_style else "tab:blue",
-            label="DINO importance (D)",
-        )
-        ax.plot(
-            epochs,
-            balance_values,
-            marker="o",
-            linewidth=1.5,
-            linestyle="--",
-            color=PAPER_MUTED if paper_style else "black",
-            label="|I-D|",
+            label="DINO contribution",
         )
         ax.set_xlabel("Epoch")
-        ax.set_ylabel("Mean normalized importance")
-        ax.set_title("Validation branch-importance evolution")
+        ax.set_ylabel("Mean normalized contribution")
+        ax.set_title("Validation branch contribution over epochs")
         ax.set_ylim(0.0, 1.0)
         ax.grid(True, axis="y")
         ax.legend(loc="best")
@@ -876,7 +866,7 @@ def summarize_branch_importance_epoch(
     img_importances: list[float],
     dino_importances: list[float],
 ) -> dict[str, float]:
-    """Aggregate branch-importance values for one validation epoch.
+    """Aggregate branch-contribution values for one validation epoch.
 
     Args:
         img_importances (list[float]): Per-sample image branch importances.

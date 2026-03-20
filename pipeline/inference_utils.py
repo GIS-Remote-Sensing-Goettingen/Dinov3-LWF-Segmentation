@@ -9,6 +9,73 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .train_utils import normalize_forward_output
+
+
+def _gradcam_result(
+    zero_map: np.ndarray,
+    *,
+    selected_layer: int | None,
+    success: bool,
+    failure_stage: str | None = None,
+    failure_reason: str | None = None,
+    cam_map: np.ndarray | None = None,
+    top_indices: list[int] | None = None,
+    top_scores: list[float] | None = None,
+    top_maps: list[np.ndarray] | None = None,
+) -> dict[str, Any]:
+    """Build one standardized Grad-CAM result payload.
+
+    Args:
+        zero_map (np.ndarray): Fallback CAM map shape template.
+        selected_layer (int | None): Requested CAM layer id.
+        success (bool): Whether extraction succeeded.
+        failure_stage (str | None): Failure stage identifier.
+        failure_reason (str | None): Human-readable failure reason.
+        cam_map (np.ndarray | None): Computed Grad-CAM map.
+        top_indices (list[int] | None): Top channel indices.
+        top_scores (list[float] | None): Top channel scores.
+        top_maps (list[np.ndarray] | None): Top channel activation maps.
+
+    Returns:
+        dict[str, Any]: Standardized Grad-CAM result payload.
+    """
+
+    return {
+        "success": bool(success),
+        "failure_stage": failure_stage,
+        "failure_reason": failure_reason,
+        "selected_layer": selected_layer,
+        "cam_map": np.asarray(
+            cam_map if cam_map is not None else zero_map, dtype=np.float32
+        ),
+        "top_indices": list(top_indices or []),
+        "top_scores": [float(score) for score in (top_scores or [])],
+        "top_maps": [
+            np.asarray(top_map, dtype=np.float32) for top_map in (top_maps or [])
+        ],
+    }
+
+
+def _log_gradcam_failure(
+    logger: Any | None,
+    *,
+    failure_stage: str,
+    failure_reason: str,
+) -> None:
+    """Emit one Grad-CAM failure message when a logger is available.
+
+    Args:
+        logger (Any | None): Optional logger.
+        failure_stage (str): Failure stage identifier.
+        failure_reason (str): Human-readable failure reason.
+    """
+
+    if logger:
+        logger.info(
+            "Grad-CAM extraction failed at %s: %s" % (failure_stage, failure_reason)
+        )
+
 
 class TTATransform:
     """Test-time augmentation transform wrapper.
@@ -553,8 +620,9 @@ def compute_gradcam_map(
     layers: list[int],
     ps: int,
     class_index: int,
+    cam_layer: int | None = None,
     logger: Any | None = None,
-) -> np.ndarray:
+) -> dict[str, Any]:
     """Compute a Grad-CAM map using the DINO backbone and head.
 
     Args:
@@ -566,13 +634,14 @@ def compute_gradcam_map(
         layers (list[int]): Backbone layers used by the head.
         ps (int): Patch size for the backbone.
         class_index (int): Target class index for Grad-CAM.
+        cam_layer (int | None): Explicit layer index for CAM extraction.
         logger (Any | None): Optional logger for errors.
 
     Returns:
-        np.ndarray: Grad-CAM map in [0, 1].
+        dict[str, Any]: Structured Grad-CAM result payload.
     """
 
-    result = compute_gradcam_with_topk_channels(
+    return compute_gradcam_with_topk_channels(
         image_hw3=image_hw3,
         backbone=backbone,
         head=head,
@@ -582,10 +651,9 @@ def compute_gradcam_map(
         ps=ps,
         class_index=class_index,
         topk_channels=1,
-        cam_layer=None,
+        cam_layer=cam_layer,
         logger=logger,
     )
-    return result["cam_map"]
 
 
 def compute_branch_importance(
@@ -794,8 +862,9 @@ def compute_gradcam_with_topk_channels(
         logger (Any | None): Optional logger for errors.
 
     Returns:
-        dict[str, Any]: Dict with keys `cam_map`, `top_indices`, `top_scores`,
-        and `top_maps`.
+        dict[str, Any]: Dict with keys `success`, `failure_stage`,
+        `failure_reason`, `selected_layer`, `cam_map`, `top_indices`,
+        `top_scores`, and `top_maps`.
 
     Examples:
         >>> result = compute_gradcam_with_topk_channels(  # doctest: +SKIP
@@ -826,15 +895,33 @@ def compute_gradcam_with_topk_channels(
     zero_map = np.zeros((hp, wp), dtype=np.float32)
     topk = max(1, int(topk_channels))
     if not layers:
-        if logger:
-            logger.info("No backbone layers configured for Grad-CAM; using zeros.")
-        return {
-            "cam_map": zero_map,
-            "top_indices": [],
-            "top_scores": [],
-            "top_maps": [],
-        }
+        reason = "No backbone layers configured for Grad-CAM."
+        _log_gradcam_failure(logger, failure_stage="no_layers", failure_reason=reason)
+        return _gradcam_result(
+            zero_map,
+            selected_layer=None,
+            success=False,
+            failure_stage="no_layers",
+            failure_reason=reason,
+        )
     selected_layer = cam_layer if cam_layer is not None else layers[-1]
+    if selected_layer not in {int(layer_id) for layer_id in layers}:
+        reason = (
+            f"Requested CAM layer {selected_layer} is not present in configured "
+            f"layers {list(layers)}."
+        )
+        _log_gradcam_failure(
+            logger,
+            failure_stage="selected_layer_missing",
+            failure_reason=reason,
+        )
+        return _gradcam_result(
+            zero_map,
+            selected_layer=selected_layer,
+            success=False,
+            failure_stage="selected_layer_missing",
+            failure_reason=reason,
+        )
     try:
         with torch.enable_grad():
             backbone.zero_grad(set_to_none=True)
@@ -847,20 +934,31 @@ def compute_gradcam_with_topk_channels(
                 layer_output = hidden_states[layer_idx]
                 patch_tokens = layer_output[:, 1 + r_tokens :, :]
                 feats = patch_tokens.reshape(1, hp, wp, -1).permute(0, 3, 1, 2)
+                if not feats.requires_grad:
+                    feats = feats.requires_grad_()
                 if layer_idx == selected_layer:
                     cam_feature = feats
                     cam_feature.retain_grad()
                 feat_maps.append(feats)
             if cam_feature is None:
-                if logger:
-                    logger.info("Grad-CAM layer not found; using zeros.")
-                return {
-                    "cam_map": zero_map,
-                    "top_indices": [],
-                    "top_scores": [],
-                    "top_maps": [],
-                }
-            logits = head(img_t, feat_maps)
+                reason = (
+                    f"Selected CAM layer {selected_layer} was not found in the "
+                    "backbone hidden states."
+                )
+                _log_gradcam_failure(
+                    logger,
+                    failure_stage="selected_layer_missing",
+                    failure_reason=reason,
+                )
+                return _gradcam_result(
+                    zero_map,
+                    selected_layer=selected_layer,
+                    success=False,
+                    failure_stage="selected_layer_missing",
+                    failure_reason=reason,
+                )
+            payload = normalize_forward_output(head(img_t, feat_maps))
+            logits = payload["logits"]
             if logits.dim() == 4 and 0 <= class_index < int(logits.shape[1]):
                 target = logits[:, class_index].mean()
             else:
@@ -868,14 +966,19 @@ def compute_gradcam_with_topk_channels(
             target.backward()
             grads = cam_feature.grad
             if grads is None:
-                if logger:
-                    logger.info("Grad-CAM gradients missing; using zeros.")
-                return {
-                    "cam_map": zero_map,
-                    "top_indices": [],
-                    "top_scores": [],
-                    "top_maps": [],
-                }
+                reason = "Gradients were not retained for the selected CAM feature map."
+                _log_gradcam_failure(
+                    logger,
+                    failure_stage="missing_gradients",
+                    failure_reason=reason,
+                )
+                return _gradcam_result(
+                    zero_map,
+                    selected_layer=selected_layer,
+                    success=False,
+                    failure_stage="missing_gradients",
+                    failure_reason=reason,
+                )
             weights = grads.mean(dim=(2, 3), keepdim=True)
             weighted_feature = weights * cam_feature
             cam = torch.relu(weighted_feature.sum(dim=1))
@@ -884,12 +987,12 @@ def compute_gradcam_with_topk_channels(
             channel_count = int(channel_scores.shape[0])
             keep = min(topk, channel_count)
             if keep <= 0:
-                return {
-                    "cam_map": cam_map,
-                    "top_indices": [],
-                    "top_scores": [],
-                    "top_maps": [],
-                }
+                return _gradcam_result(
+                    zero_map,
+                    selected_layer=selected_layer,
+                    success=True,
+                    cam_map=cam_map,
+                )
             top_scores_t, top_indices_t = torch.topk(channel_scores, k=keep)
             top_indices = [int(idx) for idx in top_indices_t.tolist()]
             top_scores = [float(score) for score in top_scores_t.tolist()]
@@ -897,21 +1000,29 @@ def compute_gradcam_with_topk_channels(
             for idx in top_indices:
                 fmap = cam_feature[0, idx].detach().cpu().numpy()
                 top_maps.append(normalize_map(fmap))
-            return {
-                "cam_map": cam_map,
-                "top_indices": top_indices,
-                "top_scores": top_scores,
-                "top_maps": top_maps,
-            }
-    except Exception:
-        if logger:
-            logger.info("Grad-CAM extraction failed.")
-        return {
-            "cam_map": zero_map,
-            "top_indices": [],
-            "top_scores": [],
-            "top_maps": [],
-        }
+            return _gradcam_result(
+                zero_map,
+                selected_layer=selected_layer,
+                success=True,
+                cam_map=cam_map,
+                top_indices=top_indices,
+                top_scores=top_scores,
+                top_maps=top_maps,
+            )
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        _log_gradcam_failure(
+            logger,
+            failure_stage="exception",
+            failure_reason=reason,
+        )
+        return _gradcam_result(
+            zero_map,
+            selected_layer=selected_layer,
+            success=False,
+            failure_stage="exception",
+            failure_reason=reason,
+        )
 
 
 def build_dashboard(

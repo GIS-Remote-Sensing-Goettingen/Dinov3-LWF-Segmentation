@@ -41,6 +41,7 @@ from ..inference_utils import (
     upsample_map,
 )
 from ..phase_runner import Phase
+from ..plotting import resolve_cam_layer
 from ..train_utils import head_uses_backbone_features, resolve_model_patch_size
 from ..utils import get_model_config, resolve_path
 
@@ -146,6 +147,10 @@ class InferencePhase(Phase):
         if explain_enabled and context.mlflow_logger is not None:
             plots_dir = str(context.mlflow_logger.artifacts_dir / "plots" / "inference")
         class_index = int(explain_cfg.get("class_index", 1))
+        explain_cam_layer = resolve_cam_layer(
+            [int(layer_id) for layer_id in model_cfg["layers"]],
+            "last_requested_layer",
+        )
         layout = explain_cfg.get("dashboard_layout", "2x2")
         plot_every_n = explain_cfg.get("plot_every_n")
         tile_debug_enable = bool(explain_cfg.get("tile_debug_enable", False))
@@ -249,6 +254,10 @@ class InferencePhase(Phase):
             )
             weight_accum = np.zeros((output_height, output_width), dtype=np.float32)
             gradcam_accum = np.zeros((output_height, output_width), dtype=np.float32)
+            gradcam_tiles_attempted = 0
+            gradcam_tiles_succeeded = 0
+            gradcam_tiles_failed = 0
+            gradcam_first_failure = None
             weight_cache: dict[tuple[int, int], np.ndarray] = {}
             total_tiles = math.ceil(height / stride_eff) * math.ceil(width / stride_eff)
             context.logger.info(
@@ -339,21 +348,45 @@ class InferencePhase(Phase):
                         if explain_enabled:
                             if uses_backbone_features:
                                 assert backbone is not None and processor is not None
+                                gradcam_tiles_attempted += 1
+                                gradcam_result = compute_gradcam_map(
+                                    img_tile_raw.astype(np.float32),
+                                    backbone,
+                                    head,
+                                    processor,
+                                    device,
+                                    model_cfg["layers"],
+                                    ps,
+                                    class_index,
+                                    cam_layer=explain_cam_layer,
+                                    logger=None,
+                                )
                                 gradcam_tile = upsample_map(
-                                    compute_gradcam_map(
-                                        img_tile_raw.astype(np.float32),
-                                        backbone,
-                                        head,
-                                        processor,
-                                        device,
-                                        model_cfg["layers"],
-                                        ps,
-                                        class_index,
-                                        logger=context.logger,
+                                    np.asarray(
+                                        gradcam_result["cam_map"], dtype=np.float32
                                     ),
                                     orig_h,
                                     orig_w,
                                 )
+                                if bool(gradcam_result["success"]):
+                                    gradcam_tiles_succeeded += 1
+                                else:
+                                    gradcam_tiles_failed += 1
+                                    if gradcam_first_failure is None:
+                                        gradcam_first_failure = (
+                                            "scene=%s tile=%s layer=%s stage=%s reason=%s"
+                                            % (
+                                                os.path.basename(input_tif_path),
+                                                tile_counter,
+                                                gradcam_result.get("selected_layer"),
+                                                gradcam_result.get("failure_stage"),
+                                                gradcam_result.get("failure_reason"),
+                                            )
+                                        )
+                                        context.logger.warning(
+                                            "Grad-CAM fallback engaged; using zero maps. %s"
+                                            % gradcam_first_failure
+                                        )
                             else:
                                 gradcam_tile = np.zeros(
                                     (orig_h, orig_w), dtype=np.float32
@@ -512,6 +545,27 @@ class InferencePhase(Phase):
                 dst.write(pred_full, 1)
             context.logger.info(f"Saved prediction to {output_tif_path}")
             scene_metrics = {"tiles_total": float(total_tiles)}
+            if gradcam_tiles_attempted > 0:
+                scene_metrics["gradcam_tiles_attempted"] = float(
+                    gradcam_tiles_attempted
+                )
+                scene_metrics["gradcam_tiles_succeeded"] = float(
+                    gradcam_tiles_succeeded
+                )
+                scene_metrics["gradcam_tiles_failed"] = float(gradcam_tiles_failed)
+                summary_message = (
+                    "Grad-CAM summary for %s :: attempted=%s succeeded=%s failed=%s layer=%s"
+                    % (
+                        os.path.basename(input_tif_path),
+                        gradcam_tiles_attempted,
+                        gradcam_tiles_succeeded,
+                        gradcam_tiles_failed,
+                        explain_cam_layer,
+                    )
+                )
+                if gradcam_first_failure is not None:
+                    summary_message += " first_failure=" + gradcam_first_failure
+                context.logger.info(summary_message)
             if explain_enabled and scene_rgb is not None:
                 try:
                     gradcam_scene = normalize_map(gradcam_accum / weight_accum)
@@ -591,6 +645,9 @@ class InferencePhase(Phase):
             if not tile_files:
                 raise InferenceError(f"No input files found in {input_dir}")
             total_tiles = 0.0
+            total_gradcam_tiles_attempted = 0.0
+            total_gradcam_tiles_succeeded = 0.0
+            total_gradcam_tiles_failed = 0.0
             total_vector_features = 0.0
             for idx, tile_path in enumerate(tile_files, start=1):
                 base = os.path.splitext(os.path.basename(tile_path))[0]
@@ -605,10 +662,22 @@ class InferencePhase(Phase):
                     vector_output_path=vector_output_path,
                 )
                 total_tiles += float(file_metrics.get("tiles_total", 0.0))
+                total_gradcam_tiles_attempted += float(
+                    file_metrics.get("gradcam_tiles_attempted", 0.0)
+                )
+                total_gradcam_tiles_succeeded += float(
+                    file_metrics.get("gradcam_tiles_succeeded", 0.0)
+                )
+                total_gradcam_tiles_failed += float(
+                    file_metrics.get("gradcam_tiles_failed", 0.0)
+                )
                 total_vector_features += float(file_metrics.get("vector_features", 0.0))
             metrics = {
                 "files_total": float(len(tile_files)),
                 "tiles_total": total_tiles,
+                "gradcam_tiles_attempted": total_gradcam_tiles_attempted,
+                "gradcam_tiles_succeeded": total_gradcam_tiles_succeeded,
+                "gradcam_tiles_failed": total_gradcam_tiles_failed,
                 "vector_features": total_vector_features,
             }
             artifacts = {"output_dir": output_dir, "checkpoint": checkpoint}

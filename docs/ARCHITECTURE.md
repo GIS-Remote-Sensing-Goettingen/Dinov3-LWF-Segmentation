@@ -87,7 +87,15 @@ MLflow-compatible artifacts for research workflows.
   `PreparePhase` runs tiling/cache writes only on rank 0, then broadcasts the
   resulting metrics/artifacts or failure to the other ranks before later phases
   continue. Cached tile writes use unique temp files plus an atomic final claim
-  so concurrent jobs do not misclassify rename races as corrupted imagery.
+  so concurrent jobs do not misclassify rename races as corrupted imagery. When
+  a compatible cache directory already exists and already satisfies
+  `dataset.max_tiles`, prepare short-circuits instead of rescanning source
+  imagery; existing tiles also count toward any remaining top-up budget.
+- **Inference XAI failure policy:** scene/tile predictions remain the source of
+  truth for inference success, while Grad-CAM stays best-effort. Shared
+  Grad-CAM helpers now return structured failure metadata so training and
+  inference can report the concrete fallback reason instead of only logging a
+  generic extraction failure.
 - **Native label-grid supervision policy:** prepare caches paired tensors on two
   grids: image tiles stay on the finer image resolution while label masks stay
   on the native label raster grid. Training/evaluation treat the label grid as
@@ -111,7 +119,7 @@ MLflow-compatible artifacts for research workflows.
 - `artifacts/run_summary.json` for run metadata and phase outputs.
 - Epoch logging emits explicit validation aliases (mIoU/IoU/F1) plus decomposed
   train/validation loss components for richer MLflow dashboards.
-- Epoch XAI logging can emit branch-importance metrics (image-vs-DINO gradient
+- Epoch XAI logging can emit branch-contribution metrics (image-vs-DINO gradient
   sensitivity), per-layer DINO connection importance trends, Lite+ gate
   importance summaries, and epoch-wise DINO channel importance evolution
   artifacts (bar/trend/heatmap + JSON summaries). A module-specific XAI bundle

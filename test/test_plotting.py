@@ -7,12 +7,15 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
+import pytest
+from matplotlib.figure import Figure
 
 matplotlib.use("Agg")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.plotting import (  # noqa: E402
+    _save_branch_importance_trend_plot,
     save_epoch_plot,
     save_epoch_xai_plot,
     save_training_summary_plot,
@@ -136,3 +139,63 @@ def test_save_training_summary_plot_writes_png(tmp_path: Path) -> None:
     )
     assert out_path.is_file()
     assert out_path.stat().st_size > 0
+
+
+def test_branch_contribution_plot_renders_two_lines_with_updated_labels(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Branch trend plot should use two contribution lines and updated wording.
+
+    Examples:
+        >>> True
+        True
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+        tmp_path (Path): Temporary output directory.
+    """
+
+    captured: dict[str, object] = {}
+    original_savefig = Figure.savefig
+
+    def _capture_savefig(self: Figure, *args: object, **kwargs: object) -> None:
+        """Capture branch plot metadata before writing the file.
+
+        This keeps the regression focused on figure labels without changing how
+        the plot is actually written to disk.
+
+        Args:
+            self (Figure): Figure being saved.
+            args (object): Positional savefig arguments.
+            kwargs (object): Keyword savefig arguments.
+        """
+
+        ax = self.axes[0]
+        captured["title"] = ax.get_title()
+        captured["ylabel"] = ax.get_ylabel()
+        captured["line_count"] = len(ax.lines)
+        _, labels = ax.get_legend_handles_labels()
+        captured["legend_labels"] = labels
+        original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", _capture_savefig)
+
+    out_path = tmp_path / "branch_contribution.png"
+    _save_branch_importance_trend_plot(
+        str(out_path),
+        [
+            {"epoch": 1.0, "img_importance_mean": 0.4, "dino_importance_mean": 0.6},
+            {"epoch": 2.0, "img_importance_mean": 0.5, "dino_importance_mean": 0.5},
+        ],
+        paper_style=True,
+    )
+
+    assert out_path.is_file()
+    assert captured["title"] == "Validation branch contribution over epochs"
+    assert captured["ylabel"] == "Mean normalized contribution"
+    assert captured["line_count"] == 2
+    assert captured["legend_labels"] == [
+        "Image contribution",
+        "DINO contribution",
+    ]

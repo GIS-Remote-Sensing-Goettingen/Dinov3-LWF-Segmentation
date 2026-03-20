@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 ### Changed
+- Make prepare reuse compatible no-feature caches when they already satisfy
+  `dataset.max_tiles`, and count existing tiles toward the remaining top-up
+  budget instead of rescanning imagery from zero on every run
+  (`utils/data/pipeline.py`, `test/test_prepare_runtime.py`,
+  `docs/ARCHITECTURE.md`).
+- Simplify the branch XAI trend figure by dropping the third `|image-dino|`
+  balance curve and renaming the visible plot wording from branch
+  `importance` to branch `contribution` so the figure reads more cleanly in
+  paper-oriented outputs (`pipeline/plotting.py`, `test/test_plotting.py`,
+  `README.md`, `docs/ARCHITECTURE.md`).
 - Add `warning()` support to `VerbosityLogger` so train/inference warning sites
   no longer crash phase execution when they emit crop or fallback diagnostics
   (`utils/logging.py`).
@@ -46,6 +56,11 @@
   `cache_features: false`, so no-feature tile caches are reusable across layer
   config changes and new no-feature cache metadata no longer persists unused
   model/layer fields (`utils/data/core.py`, `test/test_prepare_runtime.py`).
+- Harden shared Grad-CAM extraction so training and inference now preserve the
+  real failure reason, support payload-style head outputs, and report
+  per-scene inference fallback counts instead of repeating opaque
+  `Grad-CAM extraction failed.` messages (`pipeline/inference_utils.py`,
+  `pipeline/phases/inference.py`, `test/test_inference_outputs.py`).
 - Make `unet_nano` accept 1-4 selected DINO layers by keeping the deepest
   available feature as the bottleneck input and dropping missing shallow DINO
   skip concatenations, while preserving the existing 4-layer path; add

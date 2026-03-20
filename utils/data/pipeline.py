@@ -300,8 +300,9 @@ def prepare_data_tiles(
     _log_info("--- PHASE 1: TILING & PRE-COMPUTING ---")
     os.makedirs(output_dir, exist_ok=True)
     existing = glob.glob(os.path.join(output_dir, "*.pt"))
+    existing_count = len(existing)
     if existing:
-        _log_info(f"[INFO] Found {len(existing)} existing tiles.")
+        _log_info(f"[INFO] Found {existing_count} existing tiles.")
     if max_tiles is not None and max_tiles <= 0:
         max_tiles = None
     tile_filter = _normalize_tile_filter_cfg(tile_filter_cfg)
@@ -310,11 +311,12 @@ def prepare_data_tiles(
             "Tile label filter enabled: mode=%s foreground_labels=%s"
             % (tile_filter["mode"], list(tile_filter["foreground_labels"]))
         )
-    count_existing = cache_features
-    if max_tiles is not None and count_existing and existing:
-        if len(existing) >= max_tiles:
-            _log_info("Max tiles already satisfied by existing cache. Skipping tiling.")
-            return
+    if max_tiles is not None and existing_count >= max_tiles:
+        _log_info(
+            "Compatible cache already satisfies max_tiles=%s with %s tiles. "
+            "Skipping tiling." % (max_tiles, existing_count)
+        )
+        return
     if workers is None:
         workers = 1
     if cache_features and workers > 1:
@@ -335,17 +337,30 @@ def prepare_data_tiles(
     )
     total_images = len(image_paths)
     start_time = time.time()
-    tiles_written = len(existing) if count_existing else 0
+    tiles_written = existing_count
+    shared_manager = None
+    shared_counter = None
+    shared_lock = None
+    shared_stop_event = None
+    if workers > 1 and not cache_features and max_tiles is not None:
+        try:
+            shared_manager = multiprocessing.Manager()
+            shared_counter = shared_manager.Value("i", tiles_written)
+            shared_lock = shared_manager.Lock()
+            shared_stop_event = shared_manager.Event()
+        except Exception as exc:
+            if shared_manager is not None:
+                shared_manager.shutdown()
+            _log_info(
+                "Multiprocessing manager unavailable; falling back to single-worker tiling. %s: %s"
+                % (type(exc).__name__, exc)
+            )
+            workers = 1
     if workers > 1 and not cache_features:
-        counter = None
-        lock = None
-        stop_event = None
-        manager = None
-        if max_tiles is not None:
-            manager = multiprocessing.Manager()
-            counter = manager.Value("i", tiles_written)
-            lock = manager.Lock()
-            stop_event = manager.Event()
+        counter = shared_counter
+        lock = shared_lock
+        stop_event = shared_stop_event
+        manager = shared_manager
 
         executor = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
         submit_idx = 0
