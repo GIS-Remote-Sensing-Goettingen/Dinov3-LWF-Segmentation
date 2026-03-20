@@ -650,6 +650,7 @@ class PrecomputedDataset(Dataset):
         augmentation_cfg: Optional[dict] = None,
         file_subset: Optional[List[str]] = None,
         validation_cfg: Optional[dict[str, Any]] = None,
+        requested_layers: Optional[Sequence[int]] = None,
     ) -> None:
         """
         Index every cached tile path.
@@ -659,6 +660,8 @@ class PrecomputedDataset(Dataset):
             augmentation_cfg (Optional[dict]): Augmentation configuration.
             file_subset (Optional[List[str]]): Optional subset of files.
             validation_cfg (Optional[dict[str, Any]]): Validation policy settings.
+            requested_layers (Optional[Sequence[int]]): Optional layer ids to
+                select from cached feature tensors.
 
         >>> import tempfile
         >>> tmpdir = tempfile.mkdtemp()
@@ -686,6 +689,12 @@ class PrecomputedDataset(Dataset):
             raise ValueError(f"No .pt files found in {processed_dir}.")
         self.augmentation_cfg = augmentation_cfg or {}
         self.validation_cfg = _normalize_dataset_validation_cfg(validation_cfg)
+        self.requested_layers = (
+            [int(layer_id) for layer_id in requested_layers]
+            if requested_layers is not None
+            else None
+        )
+        self.cached_layers = self._load_cached_layers(processed_dir)
 
     def __len__(self) -> int:
         """
@@ -741,6 +750,7 @@ class PrecomputedDataset(Dataset):
             feat if isinstance(feat, torch.Tensor) else torch.as_tensor(feat)
             for feat in data.get("features", [])
         ]
+        features = self._select_requested_features(features, self.processed_files[idx])
         label_raw = data["label"]
         if isinstance(label_raw, torch.Tensor):
             label_seg = label_raw.long()
@@ -751,6 +761,69 @@ class PrecomputedDataset(Dataset):
         )
         img, features, label_seg = self._apply_augmentations(img, features, label_seg)
         return img, features, label_seg
+
+    def _load_cached_layers(self, processed_dir: str) -> list[int] | None:
+        """Load cached layer ids from cache metadata when available.
+
+        Args:
+            processed_dir (str): Directory containing cached tiles.
+
+        Returns:
+            list[int] | None: Cached layer ids, or `None` if metadata is absent.
+        """
+
+        meta_path = os.path.join(processed_dir, "cache_meta.json")
+        if not os.path.exists(meta_path):
+            return None
+        try:
+            import json
+
+            with open(meta_path, "r", encoding="utf-8") as handle:
+                meta = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            return None
+        layers = meta.get("layers")
+        if not isinstance(layers, list):
+            return None
+        try:
+            return [int(layer_id) for layer_id in layers]
+        except (TypeError, ValueError):
+            return None
+
+    def _select_requested_features(
+        self,
+        features: List[torch.Tensor],
+        source: str,
+    ) -> List[torch.Tensor]:
+        """Return cached features filtered to the requested layer ids.
+
+        Args:
+            features (List[torch.Tensor]): Cached feature tensors.
+            source (str): Source tile path for clearer error messages.
+
+        Returns:
+            List[torch.Tensor]: Requested feature tensors in requested-layer order.
+        """
+
+        if not features or self.requested_layers is None:
+            return features
+        if self.cached_layers is None:
+            raise ValueError(
+                "Requested cached-layer selection but cache metadata does not "
+                f"declare layer ids for {source}."
+            )
+        index_by_layer = {
+            int(layer_id): idx for idx, layer_id in enumerate(self.cached_layers)
+        }
+        selected: List[torch.Tensor] = []
+        for layer_id in self.requested_layers:
+            if layer_id not in index_by_layer:
+                raise ValueError(
+                    f"Cached features in {source} do not include requested layer "
+                    f"{layer_id}; available layers: {self.cached_layers}"
+                )
+            selected.append(features[index_by_layer[layer_id]])
+        return selected
 
     def _validate_sample(
         self,

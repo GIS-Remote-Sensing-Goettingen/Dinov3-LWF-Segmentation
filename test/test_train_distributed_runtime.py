@@ -203,7 +203,7 @@ def test_non_main_rank_uses_broadcast_xai_metrics(
         dist_ctx=DistContext(enabled=True, rank=1, world_size=2, local_rank=1),
         logger=_RecordingLogger(),
     )
-    plot_cfg = SimpleNamespace(enabled=True)
+    plot_cfg = SimpleNamespace(enabled=True, paper_enable=False)
     expected_payload = {
         "xai_epoch_metrics": {"xai_img_importance_mean": 0.4},
         "xai_duration_s": 31.5,
@@ -232,6 +232,8 @@ def test_non_main_rank_uses_broadcast_xai_metrics(
         plot_cfg=plot_cfg,
         plot_metrics_dir="plots/metrics",
         plot_xai_dir="plots/xai",
+        plot_metrics_paper_dir="plots/metrics/paper",
+        plot_xai_paper_dir="plots/xai/paper",
         plot_xai_cam_layer=None,
         plot_xai_pca_layer=None,
         model_layer_ids=[1, 2],

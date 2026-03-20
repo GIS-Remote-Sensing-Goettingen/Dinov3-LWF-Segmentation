@@ -42,6 +42,9 @@ MLflow-compatible artifacts for research workflows.
 - **Training config schema:** `train.plots` now groups all epoch/XAI plotting options,
   `train.loss` groups main/focal/boundary loss terms, and `train.topology` groups
   skeleton/clDice settings so class indices and weights are not mixed in one block.
+  A nested `train.plots.paper` profile can additionally emit curated
+  publication-oriented copies of the training/XAI figures without disabling
+  the full diagnostic artifacts.
 - **Model config schema:** topology-fusion controls are grouped under
   `model.fusion`, `model.lora`, and `model.boundary_gate` (with legacy flat-key
   compatibility for existing configs).
@@ -111,6 +114,12 @@ MLflow-compatible artifacts for research workflows.
   under `artifacts/plots/xai/module`.
 - Plot artifacts are grouped per run under `artifacts/plots/metrics`,
   `artifacts/plots/xai`, and `artifacts/plots/inference` to reduce clutter.
+- When `train.plots.paper.enable` is on, training also emits a compact
+  `artifacts/plots/metrics/training_summary.png` and curated paper copies under
+  `artifacts/plots/metrics/paper` and `artifacts/plots/xai/paper`. These
+  variants use lower-density layouts, contour overlays, error maps, and calmer
+  trend styling so paper-candidate figures are separated from exhaustive debug
+  dashboards.
 - When MLflow is active, plots are written directly into these run subfolders;
   local plot directories are used only as a fallback when MLflow logging is disabled.
 - Decoder family includes lightweight baselines and compact variants

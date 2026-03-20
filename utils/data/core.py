@@ -810,6 +810,7 @@ def _validate_cache_metadata(
     cache_features: bool | None,
     model_name: str | None,
     layers: Sequence[int] | None,
+    allow_layer_subset: bool = False,
 ) -> None:
     """Validate cache metadata against expected settings.
 
@@ -819,6 +820,8 @@ def _validate_cache_metadata(
         cache_features (bool | None): Expected cache_features setting.
         model_name (str | None): Expected model name.
         layers (Sequence[int] | None): Expected backbone layers.
+        allow_layer_subset (bool): Allow the requested layer list to be a subset
+            of the cached layer list.
 
     Raises:
         ValueError: If a metadata value does not match expectations.
@@ -833,8 +836,23 @@ def _validate_cache_metadata(
         )
     if model_name is not None and meta.get("model_name") != model_name:
         mismatches.append(f"model_name={meta.get('model_name')} expected {model_name}")
-    if layers is not None and meta.get("layers") != list(layers):
-        mismatches.append(f"layers={meta.get('layers')} expected {list(layers)}")
+    if layers is not None:
+        cached_layers = meta.get("layers")
+        expected_layers = [int(layer_id) for layer_id in layers]
+        if allow_layer_subset:
+            cached_layer_ids = (
+                [int(layer_id) for layer_id in cached_layers]
+                if isinstance(cached_layers, list)
+                else None
+            )
+            if cached_layer_ids is None or any(
+                layer_id not in cached_layer_ids for layer_id in expected_layers
+            ):
+                mismatches.append(
+                    f"layers={meta.get('layers')} expected superset of {expected_layers}"
+                )
+        elif cached_layers != expected_layers:
+            mismatches.append(f"layers={meta.get('layers')} expected {expected_layers}")
     if meta.get("supervision_grid_mode") != SUPERVISION_GRID_MODE:
         mismatches.append(
             "supervision_grid_mode="
@@ -868,14 +886,28 @@ def resolve_cache_dir_for_prepare(
 
     meta = _load_cache_metadata(base_dir)
     if meta is not None:
-        _validate_cache_metadata(meta, tile_size, cache_features, model_name, layers)
+        _validate_cache_metadata(
+            meta,
+            tile_size,
+            cache_features,
+            model_name,
+            layers,
+            allow_layer_subset=bool(cache_features),
+        )
         return base_dir
 
     cache_dir = os.path.join(base_dir, _cache_subdir_name(tile_size, cache_features))
     os.makedirs(cache_dir, exist_ok=True)
     meta = _load_cache_metadata(cache_dir)
     if meta is not None:
-        _validate_cache_metadata(meta, tile_size, cache_features, model_name, layers)
+        _validate_cache_metadata(
+            meta,
+            tile_size,
+            cache_features,
+            model_name,
+            layers,
+            allow_layer_subset=bool(cache_features),
+        )
     else:
         _write_cache_metadata(cache_dir, tile_size, cache_features, model_name, layers)
     if logger and glob.glob(os.path.join(base_dir, "*.pt")):

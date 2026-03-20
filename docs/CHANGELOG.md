@@ -5,6 +5,23 @@
 
 ## [Unreleased]
 ### Changed
+- Add a `train.plots.paper` profile that emits curated paper-oriented copies of
+  epoch metric/XAI figures under `artifacts/plots/*/paper`, adds a compact
+  `training_summary.png` cross-epoch plot, and restyles the paper variants with
+  contour overlays, error maps, fewer qualitative panels, and calmer
+  branch/layer/channel summaries while keeping the existing full diagnostic
+  artifacts (`pipeline/plotting.py`, `pipeline/phases/train.py`,
+  `pipeline/phases/train_xai.py`, `pipeline/train_config.py`,
+  `configs/config_*.yml`, `test/test_plotting.py`,
+  `test/test_config_integrity.py`, `test/test_train_distributed_runtime.py`,
+  `docs/ARCHITECTURE.md`).
+- Allow cached feature directories prepared with a superset of DINO layers to
+  be reused by narrower runs (for example cached `[5, 11, 17, 23]` with
+  requested `[23]`) by accepting subset layer metadata during prepare and
+  selecting only the requested cached feature tensors at dataset load time
+  (`utils/data/core.py`, `utils/data/pipeline.py`,
+  `pipeline/data_splits.py`, `pipeline/phases/train.py`,
+  `test/test_prepare_runtime.py`).
 - Make `unet_nano` accept 1-4 selected DINO layers by keeping the deepest
   available feature as the bottleneck input and dropping missing shallow DINO
   skip concatenations, while preserving the existing 4-layer path; add

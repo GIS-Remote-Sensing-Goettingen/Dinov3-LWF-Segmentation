@@ -250,6 +250,7 @@ def create_dataloaders(
     processed_dir: str,
     dataset_cfg: dict,
     train_cfg: dict,
+    model_cfg: dict,
     batch_size: int,
     logger: VerbosityLogger,
     dist_ctx: DistContext,
@@ -260,6 +261,7 @@ def create_dataloaders(
         processed_dir (str): Cached tile directory.
         dataset_cfg (dict): Dataset configuration block.
         train_cfg (dict): Training configuration block.
+        model_cfg (dict): Model configuration block.
         batch_size (int): Batch size for loaders.
         logger (VerbosityLogger): Logger for split information.
         dist_ctx (DistContext): Distributed execution context.
@@ -308,6 +310,7 @@ def create_dataloaders(
         augmentation_cfg=augment_cfg,
         file_subset=train_files,
         validation_cfg=validation_cfg,
+        requested_layers=model_cfg.get("layers"),
     )
     train_sampler = None
     if dist_ctx.enabled:
@@ -341,6 +344,7 @@ def create_dataloaders(
             augmentation_cfg={"enable": False},
             file_subset=val_files,
             validation_cfg=validation_cfg,
+            requested_layers=model_cfg.get("layers"),
         )
         val_workers = train_cfg.get("val_workers", max(1, num_workers // 2))
         val_loader = DataLoader(

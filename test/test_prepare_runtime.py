@@ -28,7 +28,9 @@ from utils.data.core import (  # noqa: E402
     build_tile_grid_layout,
     process_image_tiles_no_features,
     read_label_window_for_image_bounds,
+    resolve_cache_dir_for_prepare,
 )
+from utils.data.pipeline import PrecomputedDataset  # noqa: E402
 
 
 class _RecordingLogger:
@@ -266,6 +268,89 @@ def test_prepare_phase_propagates_rank_zero_failure(
 
     with pytest.raises(RuntimeError, match="Prepare phase failed on rank 0: disk full"):
         phase.execute(ctx)
+
+
+def test_resolve_cache_dir_for_prepare_accepts_requested_layer_subset(
+    tmp_path: Path,
+) -> None:
+    """Prepare should reuse a cached-feature directory when layers are a subset.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "cache_meta.json").write_text(
+        (
+            "{\n"
+            '  "cache_features": true,\n'
+            '  "layers": [5, 11, 17, 23],\n'
+            '  "model_name": "demo-backbone",\n'
+            '  "supervision_grid_mode": "native_label_grid",\n'
+            '  "tile_size": 512\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    resolved = resolve_cache_dir_for_prepare(
+        str(cache_dir),
+        tile_size=512,
+        cache_features=True,
+        model_name="demo-backbone",
+        layers=[23],
+    )
+
+    assert resolved == str(cache_dir)
+
+
+def test_precomputed_dataset_selects_requested_cached_layers(tmp_path: Path) -> None:
+    """Dataset should load only the requested cached feature tensors.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "cache_meta.json").write_text(
+        (
+            "{\n"
+            '  "cache_features": true,\n'
+            '  "layers": [5, 11, 17, 23],\n'
+            '  "model_name": "demo-backbone",\n'
+            '  "supervision_grid_mode": "native_label_grid",\n'
+            '  "tile_size": 512\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+    sample_path = cache_dir / "sample.pt"
+    torch.save(
+        {
+            "image": torch.zeros(4, 4, 3),
+            "features": [
+                torch.full((2, 2, 2), fill_value=float(idx)) for idx in range(4)
+            ],
+            "label": np.zeros((4, 4), dtype=np.uint8),
+        },
+        sample_path,
+    )
+
+    dataset = PrecomputedDataset(str(cache_dir), requested_layers=[23])
+    _, features, _ = dataset[0]
+
+    assert len(features) == 1
+    assert torch.all(features[0] == 3.0)
 
 
 def test_atomic_tile_writer_preserves_existing_cache(tmp_path: Path) -> None:

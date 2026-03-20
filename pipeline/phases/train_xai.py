@@ -83,6 +83,8 @@ def collect_epoch_xai_metrics(
     plot_cfg: Any,
     plot_metrics_dir: str,
     plot_xai_dir: str,
+    plot_metrics_paper_dir: str,
+    plot_xai_paper_dir: str,
     plot_xai_cam_layer: int | None,
     plot_xai_pca_layer: int | None,
     model_layer_ids: list[int],
@@ -106,6 +108,8 @@ def collect_epoch_xai_metrics(
         plot_cfg (Any): Parsed train plot configuration.
         plot_metrics_dir (str): Directory for validation metric panels.
         plot_xai_dir (str): Directory for XAI artifacts.
+        plot_metrics_paper_dir (str): Directory for curated paper metric plots.
+        plot_xai_paper_dir (str): Directory for curated paper XAI plots.
         plot_xai_cam_layer (int | None): Layer index used for CAM extraction.
         plot_xai_pca_layer (int | None): Layer index used for PCA visualization.
         model_layer_ids (list[int]): Requested DINO layer ids.
@@ -128,6 +132,10 @@ def collect_epoch_xai_metrics(
     os.makedirs(plot_metrics_dir, exist_ok=True)
     if plot_cfg.xai_enable:
         os.makedirs(plot_xai_dir, exist_ok=True)
+    if plot_cfg.paper_enable:
+        os.makedirs(plot_metrics_paper_dir, exist_ok=True)
+        if plot_cfg.xai_enable:
+            os.makedirs(plot_xai_paper_dir, exist_ok=True)
     val_count = len(val_loader.dataset)
     if val_count <= 0:
         context.logger.error(
@@ -192,7 +200,23 @@ def collect_epoch_xai_metrics(
         return xai_epoch_metrics, backbone, processor
 
     out_path = os.path.join(plot_metrics_dir, f"epoch_{epoch + 1:04d}.png")
-    save_epoch_plot(out_path, sample_plots, plot_cfg.cmap)
+    save_epoch_plot(
+        out_path,
+        sample_plots,
+        plot_cfg.cmap,
+        class_index=plot_cfg.metric_class_index,
+    )
+    if plot_cfg.paper_enable:
+        paper_metric_path = os.path.join(
+            plot_metrics_paper_dir, f"epoch_{epoch + 1:04d}.png"
+        )
+        save_epoch_plot(
+            paper_metric_path,
+            sample_plots[: plot_cfg.paper_pairs],
+            plot_cfg.cmap,
+            class_index=plot_cfg.metric_class_index,
+            paper_style=True,
+        )
     if not plot_cfg.xai_enable:
         return xai_epoch_metrics, backbone, processor
 
@@ -204,7 +228,22 @@ def collect_epoch_xai_metrics(
         topk_channels=plot_cfg.xai_topk_channels,
         render_rollout=plot_cfg.xai_render_rollout,
         render_pca=plot_cfg.xai_pca_enable,
+        class_index=plot_cfg.xai_class_index,
     )
+    if plot_cfg.paper_enable:
+        paper_xai_path = os.path.join(
+            plot_xai_paper_dir, f"epoch_{epoch + 1:04d}_xai.png"
+        )
+        save_epoch_xai_plot(
+            paper_xai_path,
+            sample_plots[: plot_cfg.paper_pairs],
+            cmap=plot_cfg.cmap,
+            topk_channels=plot_cfg.paper_xai_topk_channels,
+            render_rollout=plot_cfg.paper_render_rollout,
+            render_pca=plot_cfg.paper_render_pca,
+            class_index=plot_cfg.xai_class_index,
+            paper_style=True,
+        )
     branch_summary = summarize_branch_importance_epoch(
         branch_img_importances, branch_dino_importances
     )
@@ -222,6 +261,12 @@ def collect_epoch_xai_metrics(
         _save_branch_importance_trend_plot(
             branch_trend_path, histories["branch_importance_history"]
         )
+        if plot_cfg.paper_enable:
+            _save_branch_importance_trend_plot(
+                os.path.join(plot_xai_paper_dir, "branch_importance_trends.png"),
+                histories["branch_importance_history"],
+                paper_style=True,
+            )
         xai_epoch_metrics.update(branch_summary)
 
     layer_means, layer_metrics = summarize_dino_layer_importance_epoch(
@@ -240,6 +285,13 @@ def collect_epoch_xai_metrics(
             histories["dino_layer_importance_history"],
             model_layer_ids,
         )
+        if plot_cfg.paper_enable:
+            _save_dino_layer_importance_trend_plot(
+                os.path.join(plot_xai_paper_dir, "dino_layer_importance_trends.png"),
+                histories["dino_layer_importance_history"],
+                model_layer_ids,
+                paper_style=True,
+            )
         xai_epoch_metrics.update(layer_metrics)
 
     xai_epoch_metrics.update(
@@ -259,6 +311,7 @@ def collect_epoch_xai_metrics(
             epoch=epoch,
             plot_cfg=plot_cfg,
             plot_xai_dir=plot_xai_dir,
+            plot_xai_paper_dir=plot_xai_paper_dir,
             channel_importance_samples=channel_importance_samples,
             channel_importance_history=histories["channel_importance_history"],
         )
@@ -611,6 +664,7 @@ def _update_channel_importance_artifacts(
     epoch: int,
     plot_cfg: Any,
     plot_xai_dir: str,
+    plot_xai_paper_dir: str,
     channel_importance_samples: list[dict[str, Any]],
     channel_importance_history: list[dict[str, Any]],
 ) -> dict[str, float]:
@@ -620,6 +674,7 @@ def _update_channel_importance_artifacts(
         epoch (int): Zero-based epoch index.
         plot_cfg (Any): Parsed train plot configuration.
         plot_xai_dir (str): XAI output directory.
+        plot_xai_paper_dir (str): Paper-output XAI directory.
         channel_importance_samples (list[dict[str, Any]]): Per-sample channel stats.
         channel_importance_history (list[dict[str, Any]]): Running epoch summaries.
 
@@ -662,6 +717,30 @@ def _update_channel_importance_artifacts(
     _save_channel_importance_heatmap(
         heatmap_path, channel_importance_history, stable_channels
     )
+    if plot_cfg.paper_enable:
+        paper_channels = stable_channels[: plot_cfg.paper_channel_top_n_stable]
+        _save_channel_importance_bar_plot(
+            os.path.join(
+                plot_xai_paper_dir, f"epoch_{epoch + 1:04d}_channel_importance_bar.png"
+            ),
+            epoch=epoch + 1,
+            epoch_summary=epoch_channel_summary,
+            stable_channels=paper_channels,
+            paper_style=True,
+        )
+        _save_channel_importance_trend_plot(
+            os.path.join(plot_xai_paper_dir, "channel_importance_trends.png"),
+            channel_importance_history,
+            paper_channels,
+            paper_style=True,
+        )
+        if plot_cfg.paper_include_channel_heatmap:
+            _save_channel_importance_heatmap(
+                os.path.join(plot_xai_paper_dir, "channel_importance_heatmap.png"),
+                channel_importance_history,
+                paper_channels,
+                paper_style=True,
+            )
     if plot_cfg.xai_channel_save_json:
         channel_json_path = os.path.join(
             plot_xai_dir,

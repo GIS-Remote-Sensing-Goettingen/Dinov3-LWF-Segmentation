@@ -243,6 +243,21 @@ train:
       seed_offset: 1000
       # Class id used for per-tile metric overlays in plots.
       metric_class_index: 1
+    paper:
+      # Emit curated paper-oriented copies under `artifacts/plots/*/paper`: `true` or `false`.
+      enable: true
+      # Number of qualitative validation samples kept in paper copies.
+      pairs: 3
+      # Number of top channels shown in paper XAI panels.
+      xai_topk_channels: 2
+      # Render attention-rollout panels in paper XAI copies: `true` or `false`.
+      render_attn_rollout: false
+      # Render PCA panels in paper XAI copies: `true` or `false`.
+      render_pca: false
+      # Number of stable channels shown in paper trend/bar summaries.
+      channel_top_n_stable: 6
+      # Keep the channel-importance heatmap in paper copies: `true` or `false`.
+      include_channel_heatmap: false
     xai:
       # Enable epoch-level explainability artifacts: `true` or `false`.
       enable: true

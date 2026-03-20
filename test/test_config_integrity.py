@@ -165,6 +165,8 @@ def test_train_parsers_accept_all_configs() -> None:
         assert resolved_loss.dice_weight >= 0.0
         assert resolved_loss.ce_weight >= 0.0
         assert resolved_plot.pairs >= 1
+        assert resolved_plot.paper_pairs >= 1
+        assert resolved_plot.paper_xai_topk_channels >= 1
 
 
 def test_core_model_values_are_viable() -> None:

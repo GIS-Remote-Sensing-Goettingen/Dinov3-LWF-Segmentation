@@ -10,12 +10,156 @@ import numpy as np
 
 from .inference_utils import overlay_heatmap
 
+PAPER_FG = "#21313c"
+PAPER_MUTED = "#5e6f79"
+PAPER_BG = "#f5f1ea"
+PAPER_GRID = "#d8d0c5"
+PAPER_ORANGE = "#c46b26"
+PAPER_TEAL = "#0f766e"
+PAPER_RED = "#b6463a"
+PAPER_GREEN = "#3d7a57"
+PAPER_GOLD = "#b98b2f"
+
+
+def _plot_rc_params(paper_style: bool) -> dict[str, Any]:
+    """Build Matplotlib rcParams for diagnostic or paper-ready plots.
+
+    Args:
+        paper_style (bool): Whether paper-oriented styling is enabled.
+    """
+
+    if not paper_style:
+        return {}
+    return {
+        "axes.facecolor": PAPER_BG,
+        "figure.facecolor": PAPER_BG,
+        "axes.edgecolor": PAPER_MUTED,
+        "axes.labelcolor": PAPER_FG,
+        "axes.titlecolor": PAPER_FG,
+        "axes.titlesize": 11,
+        "axes.titleweight": "semibold",
+        "axes.labelsize": 9,
+        "xtick.color": PAPER_MUTED,
+        "ytick.color": PAPER_MUTED,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "grid.color": PAPER_GRID,
+        "grid.alpha": 0.55,
+        "legend.frameon": False,
+        "text.color": PAPER_FG,
+        "savefig.facecolor": PAPER_BG,
+        "savefig.edgecolor": PAPER_BG,
+    }
+
+
+def _draw_mask_contour(
+    ax: Any,
+    mask: np.ndarray,
+    *,
+    class_index: int,
+    color: str,
+) -> None:
+    """Draw one class contour only when the mask contains that class.
+
+    Args:
+        ax (Any): Matplotlib axes object receiving the contour.
+        mask (np.ndarray): Segmentation mask to contour.
+        class_index (int): Foreground class to isolate before contouring.
+        color (str): Matplotlib-compatible contour color.
+    """
+
+    class_mask = np.asarray(mask == int(class_index), dtype=np.uint8)
+    if np.any(class_mask):
+        ax.contour(class_mask, levels=[0.5], colors=[color], linewidths=1.7)
+
+
+def _make_error_map(
+    gt_mask: np.ndarray,
+    pred_mask: np.ndarray,
+    *,
+    class_index: int,
+) -> np.ndarray:
+    """Render a TP/FP/FN map for one target class.
+
+    Args:
+        gt_mask (np.ndarray): Ground-truth segmentation mask.
+        pred_mask (np.ndarray): Predicted segmentation mask.
+        class_index (int): Foreground class treated as positive.
+    """
+
+    gt_pos = np.asarray(gt_mask == int(class_index), dtype=bool)
+    pred_pos = np.asarray(pred_mask == int(class_index), dtype=bool)
+    background = np.full(gt_pos.shape + (3,), 0.96, dtype=np.float32)
+    background[gt_pos & pred_pos] = np.asarray((61, 122, 87), dtype=np.float32) / 255.0
+    background[~gt_pos & pred_pos] = np.asarray((182, 70, 58), dtype=np.float32) / 255.0
+    background[gt_pos & ~pred_pos] = (
+        np.asarray((185, 139, 47), dtype=np.float32) / 255.0
+    )
+    return background
+
+
+def save_training_summary_plot(
+    output_path: str,
+    history: list[dict[str, float]],
+    *,
+    paper_style: bool = False,
+) -> None:
+    """Save cross-epoch training summary trends.
+
+    Args:
+        output_path (str): PNG output path.
+        history (list[dict[str, float]]): Ordered epoch metric summaries.
+        paper_style (bool): Render a publication-oriented style when true.
+    """
+
+    import matplotlib.pyplot as plt
+
+    if not history:
+        return
+    rc_params = _plot_rc_params(paper_style)
+    with plt.rc_context(rc=rc_params):
+        epochs = [int(row.get("epoch", idx + 1)) for idx, row in enumerate(history)]
+        train_loss = [float(row.get("train_loss", 0.0)) for row in history]
+        val_loss = [float(row.get("val_loss", 0.0)) for row in history]
+        val_miou = [float(row.get("miou", 0.0)) for row in history]
+        val_f1 = [float(row.get("f1", 0.0)) for row in history]
+
+        fig, axes = plt.subplots(1, 2, figsize=(10.4, 3.9))
+        loss_ax, qual_ax = np.asarray(axes, dtype=object)
+
+        loss_ax.plot(
+            epochs, train_loss, color=PAPER_ORANGE, linewidth=2.0, label="Train"
+        )
+        loss_ax.plot(
+            epochs, val_loss, color=PAPER_TEAL, linewidth=2.0, label="Validation"
+        )
+        loss_ax.set_title("Optimization")
+        loss_ax.set_xlabel("Epoch")
+        loss_ax.set_ylabel("Loss")
+        loss_ax.grid(True, axis="y")
+        loss_ax.legend(loc="best")
+
+        qual_ax.plot(epochs, val_miou, color=PAPER_GREEN, linewidth=2.0, label="mIoU")
+        qual_ax.plot(epochs, val_f1, color=PAPER_GOLD, linewidth=2.0, label="F1")
+        qual_ax.set_title("Validation Quality")
+        qual_ax.set_xlabel("Epoch")
+        qual_ax.set_ylabel("Score")
+        qual_ax.set_ylim(0.0, 1.0)
+        qual_ax.grid(True, axis="y")
+        qual_ax.legend(loc="best")
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180 if paper_style else 150)
+        plt.close(fig)
+
 
 def save_epoch_plot(
     output_path: str,
     samples: list[dict[str, Any]],
     cmap: str,
     gt_overlay_alpha: float = 0.35,
+    class_index: int = 1,
+    paper_style: bool = False,
 ) -> None:
     """Save a per-epoch validation comparison grid.
 
@@ -24,6 +168,8 @@ def save_epoch_plot(
         samples (list[dict[str, Any]]): Validation sample payloads.
         cmap (str): Matplotlib colormap used for segmentation masks.
         gt_overlay_alpha (float): Alpha for the GT overlay on RGB.
+        class_index (int): Foreground class highlighted for paper overlays.
+        paper_style (bool): Render a publication-oriented layout when true.
     """
 
     import matplotlib.pyplot as plt
@@ -31,29 +177,69 @@ def save_epoch_plot(
     rows = len(samples)
     if rows == 0:
         return
-    fig, axes = plt.subplots(rows, 2, figsize=(10, rows * 3.6))
-    if rows == 1:
-        axes = np.expand_dims(axes, axis=0)
-    axes_arr = np.asarray(axes, dtype=object)
-    for row_idx, sample in enumerate(samples):
-        rgb = sample["rgb"]
-        gt_mask = sample["gt_mask"]
-        pred_mask = sample["pred_mask"]
-        iou = float(sample["iou"])
-        f1 = float(sample["f1"])
-        left_ax = axes_arr[row_idx, 0]
-        right_ax = axes_arr[row_idx, 1]
-        left_ax.imshow(rgb)
-        gt_overlay = np.ma.masked_where(gt_mask == 0, gt_mask)
-        left_ax.imshow(gt_overlay, cmap=cmap, alpha=gt_overlay_alpha)
-        left_ax.set_title(f"Tile {row_idx + 1} | GT overlay")
-        left_ax.axis("off")
-        right_ax.imshow(pred_mask, cmap=cmap)
-        right_ax.set_title(f"Tile {row_idx + 1} | Pred IoU={iou:.3f} F1={f1:.3f}")
-        right_ax.axis("off")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+    cols = 3 if paper_style else 2
+    rc_params = _plot_rc_params(paper_style)
+    with plt.rc_context(rc=rc_params):
+        fig, axes = plt.subplots(
+            rows,
+            cols,
+            figsize=(
+                (11.0 if paper_style else 10.0),
+                rows * (3.1 if paper_style else 3.6),
+            ),
+        )
+        if rows == 1:
+            axes = np.expand_dims(axes, axis=0)
+        axes_arr = np.asarray(axes, dtype=object)
+        for row_idx, sample in enumerate(samples):
+            rgb = sample["rgb"]
+            gt_mask = sample["gt_mask"]
+            pred_mask = sample["pred_mask"]
+            iou = float(sample["iou"])
+            f1 = float(sample["f1"])
+            left_ax = axes_arr[row_idx, 0]
+            mid_ax = axes_arr[row_idx, 1]
+            left_ax.imshow(rgb)
+            if paper_style:
+                _draw_mask_contour(
+                    left_ax,
+                    gt_mask,
+                    class_index=class_index,
+                    color=PAPER_ORANGE,
+                )
+                left_ax.set_title(f"Sample {row_idx + 1} | GT context")
+            else:
+                gt_overlay = np.ma.masked_where(gt_mask == 0, gt_mask)
+                left_ax.imshow(gt_overlay, cmap=cmap, alpha=gt_overlay_alpha)
+                left_ax.set_title(f"Tile {row_idx + 1} | GT overlay")
+            left_ax.axis("off")
+
+            if paper_style:
+                mid_ax.imshow(rgb)
+                _draw_mask_contour(
+                    mid_ax,
+                    pred_mask,
+                    class_index=class_index,
+                    color=PAPER_TEAL,
+                )
+                mid_ax.set_title(f"Prediction | IoU {iou:.3f} | F1 {f1:.3f}")
+                error_ax = axes_arr[row_idx, 2]
+                error_ax.imshow(
+                    _make_error_map(
+                        gt_mask,
+                        pred_mask,
+                        class_index=class_index,
+                    )
+                )
+                error_ax.set_title("Error map | TP green, FP red, FN amber")
+                error_ax.axis("off")
+            else:
+                mid_ax.imshow(pred_mask, cmap=cmap)
+                mid_ax.set_title(f"Tile {row_idx + 1} | Pred IoU={iou:.3f} F1={f1:.3f}")
+            mid_ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180 if paper_style else 150)
+        plt.close(fig)
 
 
 def save_epoch_xai_plot(
@@ -64,6 +250,8 @@ def save_epoch_xai_plot(
     render_rollout: bool = True,
     render_pca: bool = True,
     gt_overlay_alpha: float = 0.35,
+    class_index: int = 1,
+    paper_style: bool = False,
 ) -> None:
     """Save a per-epoch explainability grid for sampled validation tiles.
 
@@ -75,6 +263,8 @@ def save_epoch_xai_plot(
         render_rollout (bool): Whether to include attention rollout panel.
         render_pca (bool): Whether to include a PCA feature panel.
         gt_overlay_alpha (float): Alpha for GT overlay on RGB.
+        class_index (int): Foreground class highlighted for paper overlays.
+        paper_style (bool): Render a publication-oriented layout when true.
     """
 
     import matplotlib.pyplot as plt
@@ -83,108 +273,156 @@ def save_epoch_xai_plot(
     if rows == 0:
         return
     topk = max(1, int(topk_channels))
-    base_cols = 5 if render_rollout else 4
+    base_cols = 4 if paper_style else (5 if render_rollout else 4)
+    if render_rollout and paper_style:
+        base_cols += 1
     if render_pca:
         base_cols += 1
     cols = base_cols + topk
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.1))
-    if rows == 1:
-        axes = np.expand_dims(axes, axis=0)
-    axes_arr = np.asarray(axes, dtype=object)
-    for row_idx, sample in enumerate(samples):
-        rgb = sample["rgb"]
-        gt_mask = sample["gt_mask"]
-        pred_mask = sample["pred_mask"]
-        iou = float(sample["iou"])
-        f1 = float(sample["f1"])
-        img_importance = sample.get("img_importance")
-        dino_importance = sample.get("dino_importance")
-        gate_importance = sample.get("gate_importance")
-        zero_map = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
-        attn_cls = np.asarray(sample.get("attn_cls", zero_map), dtype=np.float32)
-        attn_rollout = np.asarray(
-            sample.get("attn_rollout", zero_map), dtype=np.float32
+    rc_params = _plot_rc_params(paper_style)
+    with plt.rc_context(rc=rc_params):
+        fig, axes = plt.subplots(
+            rows,
+            cols,
+            figsize=(
+                cols * (2.9 if paper_style else 3.2),
+                rows * (2.9 if paper_style else 3.1),
+            ),
         )
-        gradcam = np.asarray(sample.get("gradcam", zero_map), dtype=np.float32)
-        zero_rgb = np.zeros((rgb.shape[0], rgb.shape[1], 3), dtype=np.float32)
-        pca_rgb = np.asarray(sample.get("pca_rgb", zero_rgb), dtype=np.float32)
-        if pca_rgb.ndim != 3 or pca_rgb.shape[2] != 3:
-            pca_rgb = zero_rgb
-        top_maps = [
-            np.asarray(map_data, dtype=np.float32)
-            for map_data in sample.get("top_maps", [])
-        ]
-        top_indices = [int(idx) for idx in sample.get("top_channels", [])]
-        top_scores = [float(score) for score in sample.get("top_scores", [])]
-
-        col_idx = 0
-        gt_ax = axes_arr[row_idx, col_idx]
-        gt_ax.imshow(rgb)
-        gt_overlay = np.ma.masked_where(gt_mask == 0, gt_mask)
-        gt_ax.imshow(gt_overlay, cmap=cmap, alpha=gt_overlay_alpha)
-        gt_ax.set_title(f"Tile {row_idx + 1} | GT overlay")
-        gt_ax.axis("off")
-        col_idx += 1
-
-        pred_ax = axes_arr[row_idx, col_idx]
-        pred_ax.imshow(pred_mask, cmap=cmap)
-        pred_title = f"Pred IoU={iou:.3f} F1={f1:.3f}"
-        if img_importance is not None and dino_importance is not None:
-            pred_title += (
-                f"\nImp I/D={float(img_importance):.2f}/{float(dino_importance):.2f}"
+        if rows == 1:
+            axes = np.expand_dims(axes, axis=0)
+        axes_arr = np.asarray(axes, dtype=object)
+        for row_idx, sample in enumerate(samples):
+            rgb = sample["rgb"]
+            gt_mask = sample["gt_mask"]
+            pred_mask = sample["pred_mask"]
+            iou = float(sample["iou"])
+            f1 = float(sample["f1"])
+            img_importance = sample.get("img_importance")
+            dino_importance = sample.get("dino_importance")
+            gate_importance = sample.get("gate_importance")
+            zero_map = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
+            attn_cls = np.asarray(sample.get("attn_cls", zero_map), dtype=np.float32)
+            attn_rollout = np.asarray(
+                sample.get("attn_rollout", zero_map), dtype=np.float32
             )
-        pred_ax.set_title(pred_title)
-        pred_ax.axis("off")
-        col_idx += 1
+            gradcam = np.asarray(sample.get("gradcam", zero_map), dtype=np.float32)
+            zero_rgb = np.zeros((rgb.shape[0], rgb.shape[1], 3), dtype=np.float32)
+            pca_rgb = np.asarray(sample.get("pca_rgb", zero_rgb), dtype=np.float32)
+            if pca_rgb.ndim != 3 or pca_rgb.shape[2] != 3:
+                pca_rgb = zero_rgb
+            top_maps = [
+                np.asarray(map_data, dtype=np.float32)
+                for map_data in sample.get("top_maps", [])
+            ]
+            top_indices = [int(idx) for idx in sample.get("top_channels", [])]
+            top_scores = [float(score) for score in sample.get("top_scores", [])]
 
-        cls_ax = axes_arr[row_idx, col_idx]
-        cls_ax.imshow(overlay_heatmap(rgb, attn_cls, cmap="viridis", alpha=0.45))
-        cls_ax.set_title("DINO CLS focus")
-        cls_ax.axis("off")
-        col_idx += 1
-
-        if render_rollout:
-            rollout_ax = axes_arr[row_idx, col_idx]
-            rollout_ax.imshow(
-                overlay_heatmap(rgb, attn_rollout, cmap="viridis", alpha=0.45)
-            )
-            rollout_ax.set_title("DINO rollout")
-            rollout_ax.axis("off")
-            col_idx += 1
-
-        cam_ax = axes_arr[row_idx, col_idx]
-        cam_ax.imshow(overlay_heatmap(rgb, gradcam, cmap="magma", alpha=0.5))
-        cam_title = "Grad-CAM"
-        if gate_importance is not None and math.isfinite(float(gate_importance)):
-            cam_title += f"\nGate={float(gate_importance):.2f}"
-        cam_ax.set_title(cam_title)
-        cam_ax.axis("off")
-        col_idx += 1
-
-        if render_pca:
-            pca_ax = axes_arr[row_idx, col_idx]
-            pca_ax.imshow(np.clip(pca_rgb, 0.0, 1.0))
-            pca_ax.set_title("DINO PCA (PC1-3)")
-            pca_ax.axis("off")
-            col_idx += 1
-
-        for top_idx in range(topk):
-            top_ax = axes_arr[row_idx, col_idx + top_idx]
-            if top_idx < len(top_maps):
-                map_data = top_maps[top_idx]
-                channel_id = (
-                    str(top_indices[top_idx]) if top_idx < len(top_indices) else "?"
+            col_idx = 0
+            gt_ax = axes_arr[row_idx, col_idx]
+            gt_ax.imshow(rgb)
+            if paper_style:
+                _draw_mask_contour(
+                    gt_ax,
+                    gt_mask,
+                    class_index=class_index,
+                    color=PAPER_ORANGE,
                 )
-                score = top_scores[top_idx] if top_idx < len(top_scores) else 0.0
-                top_ax.imshow(overlay_heatmap(rgb, map_data, cmap="plasma", alpha=0.45))
-                top_ax.set_title(f"Top {top_idx + 1} ch={channel_id} w={score:.3g}")
+                gt_ax.set_title(f"Sample {row_idx + 1} | GT context")
             else:
-                top_ax.imshow(rgb)
-                top_ax.set_title(f"Top {top_idx + 1} unavailable")
-            top_ax.axis("off")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+                gt_overlay = np.ma.masked_where(gt_mask == 0, gt_mask)
+                gt_ax.imshow(gt_overlay, cmap=cmap, alpha=gt_overlay_alpha)
+                gt_ax.set_title(f"Tile {row_idx + 1} | GT overlay")
+            gt_ax.axis("off")
+            col_idx += 1
+
+            pred_ax = axes_arr[row_idx, col_idx]
+            if paper_style:
+                pred_ax.imshow(rgb)
+                _draw_mask_contour(
+                    pred_ax,
+                    pred_mask,
+                    class_index=class_index,
+                    color=PAPER_TEAL,
+                )
+            else:
+                pred_ax.imshow(pred_mask, cmap=cmap)
+            pred_title = (
+                f"Pred | IoU {iou:.3f} | F1 {f1:.3f}"
+                if paper_style
+                else f"Pred IoU={iou:.3f} F1={f1:.3f}"
+            )
+            if img_importance is not None and dino_importance is not None:
+                pred_title += (
+                    f"\nI/D={float(img_importance):.2f}/{float(dino_importance):.2f}"
+                    if paper_style
+                    else f"\nImp I/D={float(img_importance):.2f}/{float(dino_importance):.2f}"
+                )
+            pred_ax.set_title(pred_title)
+            pred_ax.axis("off")
+            col_idx += 1
+
+            cam_ax = axes_arr[row_idx, col_idx]
+            cam_ax.imshow(overlay_heatmap(rgb, gradcam, cmap="magma", alpha=0.5))
+            cam_title = "Grad-CAM"
+            if gate_importance is not None and math.isfinite(float(gate_importance)):
+                cam_title += f"\nGate={float(gate_importance):.2f}"
+            cam_ax.set_title(cam_title)
+            cam_ax.axis("off")
+            col_idx += 1
+
+            cls_ax = axes_arr[row_idx, col_idx]
+            cls_ax.imshow(overlay_heatmap(rgb, attn_cls, cmap="viridis", alpha=0.45))
+            cls_ax.set_title("DINO CLS focus")
+            cls_ax.axis("off")
+            col_idx += 1
+
+            if render_rollout:
+                rollout_ax = axes_arr[row_idx, col_idx]
+                rollout_ax.imshow(
+                    overlay_heatmap(rgb, attn_rollout, cmap="viridis", alpha=0.45)
+                )
+                rollout_ax.set_title("DINO rollout")
+                rollout_ax.axis("off")
+                col_idx += 1
+
+            if render_pca:
+                pca_ax = axes_arr[row_idx, col_idx]
+                pca_ax.imshow(np.clip(pca_rgb, 0.0, 1.0))
+                pca_ax.set_title("DINO PCA (PC1-3)")
+                pca_ax.axis("off")
+                col_idx += 1
+
+            for top_idx in range(topk):
+                top_ax = axes_arr[row_idx, col_idx + top_idx]
+                if top_idx < len(top_maps):
+                    map_data = top_maps[top_idx]
+                    channel_id = (
+                        str(top_indices[top_idx]) if top_idx < len(top_indices) else "?"
+                    )
+                    score = top_scores[top_idx] if top_idx < len(top_scores) else 0.0
+                    top_ax.imshow(
+                        overlay_heatmap(rgb, map_data, cmap="plasma", alpha=0.45)
+                    )
+                    if paper_style:
+                        top_ax.set_title(
+                            f"Top {top_idx + 1} | ch{channel_id} | {score:.2f}"
+                        )
+                    else:
+                        top_ax.set_title(
+                            f"Top {top_idx + 1} ch={channel_id} w={score:.3g}"
+                        )
+                else:
+                    top_ax.imshow(rgb)
+                    top_ax.set_title(
+                        f"Top {top_idx + 1} unavailable"
+                        if not paper_style
+                        else f"Top {top_idx + 1} unavailable"
+                    )
+                top_ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180 if paper_style else 150)
+        plt.close(fig)
 
 
 def _normalized_channel_pairs(sample: dict[str, Any]) -> list[tuple[int, float]]:
@@ -380,6 +618,7 @@ def _save_channel_importance_bar_plot(
     epoch: int,
     epoch_summary: dict[str, Any],
     stable_channels: list[int],
+    paper_style: bool = False,
 ) -> None:
     """Save a grouped bar chart for one epoch.
 
@@ -388,6 +627,7 @@ def _save_channel_importance_bar_plot(
         epoch (int): 1-based epoch index.
         epoch_summary (dict[str, Any]): Per-epoch channel summary.
         stable_channels (list[int]): Stable channel ids for grouping.
+        paper_style (bool): Render a publication-oriented style when true.
     """
 
     import matplotlib.pyplot as plt
@@ -395,24 +635,40 @@ def _save_channel_importance_bar_plot(
     labels, values = _grouped_importance_values(epoch_summary, stable_channels)
     if not labels:
         return
-    fig, ax = plt.subplots(figsize=(max(8.0, len(labels) * 0.85), 4.2))
-    x = np.arange(len(labels))
-    ax.bar(x, values, color="tab:blue")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_ylabel("Mean normalized importance")
-    ax.set_title(f"Epoch {epoch} DINO channel importance (grouped)")
-    ax.set_ylim(0.0, max(0.1, float(max(values, default=0.0)) * 1.2))
-    ax.grid(axis="y", alpha=0.2)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+    rc_params = _plot_rc_params(paper_style)
+    with plt.rc_context(rc=rc_params):
+        if paper_style:
+            fig, ax = plt.subplots(figsize=(7.4, max(3.6, len(labels) * 0.52)))
+            y = np.arange(len(labels))
+            colors = [PAPER_TEAL] * max(0, len(labels) - 1) + [PAPER_MUTED]
+            ax.barh(y, values, color=colors)
+            ax.set_yticks(y)
+            ax.set_yticklabels(labels)
+            ax.invert_yaxis()
+            ax.set_xlabel("Mean normalized importance")
+            ax.set_title(f"Epoch {epoch} channel importance")
+            ax.set_xlim(0.0, max(0.1, float(max(values, default=0.0)) * 1.15))
+            ax.grid(axis="x")
+        else:
+            fig, ax = plt.subplots(figsize=(max(8.0, len(labels) * 0.85), 4.2))
+            x = np.arange(len(labels))
+            ax.bar(x, values, color="tab:blue")
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels, rotation=45, ha="right")
+            ax.set_ylabel("Mean normalized importance")
+            ax.set_title(f"Epoch {epoch} DINO channel importance (grouped)")
+            ax.set_ylim(0.0, max(0.1, float(max(values, default=0.0)) * 1.2))
+            ax.grid(axis="y", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180 if paper_style else 150)
+        plt.close(fig)
 
 
 def _save_channel_importance_trend_plot(
     output_path: str,
     history: list[dict[str, Any]],
     stable_channels: list[int],
+    paper_style: bool = False,
 ) -> None:
     """Save per-epoch line trends for stable channels and OTHER.
 
@@ -420,6 +676,7 @@ def _save_channel_importance_trend_plot(
         output_path (str): Destination PNG path.
         history (list[dict[str, Any]]): Ordered per-epoch summaries.
         stable_channels (list[int]): Stable channel ids for trend lines.
+        paper_style (bool): Render a publication-oriented style when true.
     """
 
     import matplotlib.pyplot as plt
@@ -429,50 +686,66 @@ def _save_channel_importance_trend_plot(
     epochs = [
         int(epoch_data.get("epoch", idx + 1)) for idx, epoch_data in enumerate(history)
     ]
-    fig, ax = plt.subplots(figsize=(11.0, 5.2))
-    for channel_id in stable_channels:
-        values = [
-            float(
-                cast(dict[int, float], epoch_data.get("mean_importance", {})).get(
-                    int(channel_id), 0.0
+    rc_params = _plot_rc_params(paper_style)
+    with plt.rc_context(rc=rc_params):
+        fig, ax = plt.subplots(
+            figsize=(10.2 if paper_style else 11.0, 4.6 if paper_style else 5.2)
+        )
+        for idx, channel_id in enumerate(stable_channels):
+            values = [
+                float(
+                    cast(dict[int, float], epoch_data.get("mean_importance", {})).get(
+                        int(channel_id), 0.0
+                    )
+                )
+                for epoch_data in history
+            ]
+            color = f"C{idx % 10}" if not paper_style else None
+            ax.plot(
+                epochs,
+                values,
+                marker="o",
+                linewidth=2.0 if paper_style else 1.8,
+                markersize=4 if paper_style else 5,
+                label=f"ch{channel_id}",
+                color=color,
+            )
+        other_values: list[float] = []
+        for epoch_data in history:
+            mean_importance = cast(
+                dict[int, float], epoch_data.get("mean_importance", {})
+            )
+            stable_mass = float(
+                sum(
+                    float(mean_importance.get(int(channel_id), 0.0))
+                    for channel_id in stable_channels
                 )
             )
-            for epoch_data in history
-        ]
-        ax.plot(epochs, values, marker="o", linewidth=1.8, label=f"ch{channel_id}")
-    other_values: list[float] = []
-    for epoch_data in history:
-        mean_importance = cast(dict[int, float], epoch_data.get("mean_importance", {}))
-        stable_mass = float(
-            sum(
-                float(mean_importance.get(int(channel_id), 0.0))
-                for channel_id in stable_channels
-            )
+            other_values.append(max(0.0, 1.0 - stable_mass))
+        ax.plot(
+            epochs,
+            other_values,
+            marker="o",
+            linewidth=1.8,
+            linestyle="--",
+            color=PAPER_MUTED if paper_style else "black",
+            label="OTHER",
         )
-        other_values.append(max(0.0, 1.0 - stable_mass))
-    ax.plot(
-        epochs,
-        other_values,
-        marker="o",
-        linewidth=1.8,
-        linestyle="--",
-        color="black",
-        label="OTHER",
-    )
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Mean normalized importance")
-    ax.set_title("DINO channel-importance evolution")
-    ax.grid(alpha=0.25)
-    ax.legend(loc="best", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Mean normalized importance")
+        ax.set_title("DINO channel-importance evolution")
+        ax.grid(True, axis="y")
+        ax.legend(loc="upper center", ncol=3 if paper_style else 1, fontsize=8)
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180 if paper_style else 150)
+        plt.close(fig)
 
 
 def _save_channel_importance_heatmap(
     output_path: str,
     history: list[dict[str, Any]],
     stable_channels: list[int],
+    paper_style: bool = False,
 ) -> None:
     """Save an epoch-by-channel importance heatmap.
 
@@ -480,6 +753,7 @@ def _save_channel_importance_heatmap(
         output_path (str): Destination PNG path.
         history (list[dict[str, Any]]): Ordered per-epoch summaries.
         stable_channels (list[int]): Stable channel ids for heatmap columns.
+        paper_style (bool): Render a publication-oriented style when true.
     """
 
     import matplotlib.pyplot as plt
@@ -500,35 +774,43 @@ def _save_channel_importance_heatmap(
         ],
         dtype=np.float32,
     )
-    fig, ax = plt.subplots(
-        figsize=(max(6.0, len(stable_channels) * 0.85), max(4.0, len(history) * 0.35))
-    )
-    image = ax.imshow(matrix, cmap="magma", aspect="auto")
-    ax.set_xticks(np.arange(len(stable_channels)))
-    ax.set_xticklabels(
-        [f"ch{channel_id}" for channel_id in stable_channels],
-        rotation=45,
-        ha="right",
-    )
-    ax.set_yticks(np.arange(len(history)))
-    ax.set_yticklabels(
-        [
-            str(int(epoch_data.get("epoch", idx + 1)))
-            for idx, epoch_data in enumerate(history)
-        ]
-    )
-    ax.set_xlabel("Stable channels")
-    ax.set_ylabel("Epoch")
-    ax.set_title("Validation mean DINO channel importance")
-    fig.colorbar(image, ax=ax, label="Mean normalized importance")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+    rc_params = _plot_rc_params(paper_style)
+    with plt.rc_context(rc=rc_params):
+        fig, ax = plt.subplots(
+            figsize=(
+                max(6.2, len(stable_channels) * 0.72),
+                max(3.8, len(history) * 0.32),
+            )
+        )
+        image = ax.imshow(
+            matrix, cmap="cividis" if paper_style else "magma", aspect="auto"
+        )
+        ax.set_xticks(np.arange(len(stable_channels)))
+        ax.set_xticklabels(
+            [f"ch{channel_id}" for channel_id in stable_channels],
+            rotation=45,
+            ha="right",
+        )
+        ax.set_yticks(np.arange(len(history)))
+        ax.set_yticklabels(
+            [
+                str(int(epoch_data.get("epoch", idx + 1)))
+                for idx, epoch_data in enumerate(history)
+            ]
+        )
+        ax.set_xlabel("Stable channels")
+        ax.set_ylabel("Epoch")
+        ax.set_title("Validation mean DINO channel importance")
+        fig.colorbar(image, ax=ax, label="Mean normalized importance")
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180 if paper_style else 150)
+        plt.close(fig)
 
 
 def _save_branch_importance_trend_plot(
     output_path: str,
     history: list[dict[str, float]],
+    paper_style: bool = False,
 ) -> None:
     """Save per-epoch trend lines for image-vs-DINO branch importance.
 
@@ -536,6 +818,7 @@ def _save_branch_importance_trend_plot(
         output_path (str): Destination PNG path.
         history (list[dict[str, float]]): Ordered per-epoch branch summaries with
             `epoch`, `img_importance_mean`, and `dino_importance_mean`.
+        paper_style (bool): Render a publication-oriented style when true.
     """
 
     import matplotlib.pyplot as plt
@@ -550,41 +833,43 @@ def _save_branch_importance_trend_plot(
         for img_val, dino_val in zip(img_values, dino_values)
     ]
 
-    fig, ax = plt.subplots(figsize=(9.5, 4.8))
-    ax.plot(
-        epochs,
-        img_values,
-        marker="o",
-        linewidth=1.9,
-        color="tab:orange",
-        label="Image importance (I)",
-    )
-    ax.plot(
-        epochs,
-        dino_values,
-        marker="o",
-        linewidth=1.9,
-        color="tab:blue",
-        label="DINO importance (D)",
-    )
-    ax.plot(
-        epochs,
-        balance_values,
-        marker="o",
-        linewidth=1.4,
-        linestyle="--",
-        color="black",
-        label="|I-D|",
-    )
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Mean normalized importance")
-    ax.set_title("Validation branch-importance evolution")
-    ax.set_ylim(0.0, 1.0)
-    ax.grid(alpha=0.25)
-    ax.legend(loc="best")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+    rc_params = _plot_rc_params(paper_style)
+    with plt.rc_context(rc=rc_params):
+        fig, ax = plt.subplots(figsize=(9.2, 4.4 if paper_style else 4.8))
+        ax.plot(
+            epochs,
+            img_values,
+            marker="o",
+            linewidth=2.0,
+            color=PAPER_ORANGE if paper_style else "tab:orange",
+            label="Image importance (I)",
+        )
+        ax.plot(
+            epochs,
+            dino_values,
+            marker="o",
+            linewidth=2.0,
+            color=PAPER_TEAL if paper_style else "tab:blue",
+            label="DINO importance (D)",
+        )
+        ax.plot(
+            epochs,
+            balance_values,
+            marker="o",
+            linewidth=1.5,
+            linestyle="--",
+            color=PAPER_MUTED if paper_style else "black",
+            label="|I-D|",
+        )
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Mean normalized importance")
+        ax.set_title("Validation branch-importance evolution")
+        ax.set_ylim(0.0, 1.0)
+        ax.grid(True, axis="y")
+        ax.legend(loc="best")
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180 if paper_style else 150)
+        plt.close(fig)
 
 
 def summarize_branch_importance_epoch(
@@ -661,6 +946,7 @@ def _save_dino_layer_importance_trend_plot(
     output_path: str,
     history: list[dict[str, Any]],
     layer_ids: list[int],
+    paper_style: bool = False,
 ) -> None:
     """Save per-epoch trend lines for DINO connection-layer importance.
 
@@ -668,6 +954,7 @@ def _save_dino_layer_importance_trend_plot(
         output_path (str): Destination PNG path.
         history (list[dict[str, Any]]): Ordered per-epoch layer summaries.
         layer_ids (list[int]): DINO layer ids corresponding to decoder connections.
+        paper_style (bool): Render a publication-oriented style when true.
     """
 
     import matplotlib.pyplot as plt
@@ -675,28 +962,32 @@ def _save_dino_layer_importance_trend_plot(
     if not history or not layer_ids:
         return
     epochs = [int(row.get("epoch", idx + 1)) for idx, row in enumerate(history)]
-    fig, ax = plt.subplots(figsize=(10.0, 5.0))
-    for layer_id in layer_ids:
-        values = [
-            float(row.get("mean_importance", {}).get(int(layer_id), 0.0))
-            for row in history
-        ]
-        ax.plot(
-            epochs,
-            values,
-            marker="o",
-            linewidth=1.8,
-            label=f"layer {int(layer_id)}",
+    rc_params = _plot_rc_params(paper_style)
+    with plt.rc_context(rc=rc_params):
+        fig, ax = plt.subplots(
+            figsize=(9.6 if paper_style else 10.0, 4.5 if paper_style else 5.0)
         )
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Mean normalized importance")
-    ax.set_title("DINO connection-layer importance evolution")
-    ax.set_ylim(0.0, 1.0)
-    ax.grid(alpha=0.25)
-    ax.legend(loc="best", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+        for layer_id in layer_ids:
+            values = [
+                float(row.get("mean_importance", {}).get(int(layer_id), 0.0))
+                for row in history
+            ]
+            ax.plot(
+                epochs,
+                values,
+                marker="o",
+                linewidth=2.0 if paper_style else 1.8,
+                label=f"layer {int(layer_id)}",
+            )
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Mean normalized importance")
+        ax.set_title("DINO connection-layer importance evolution")
+        ax.set_ylim(0.0, 1.0)
+        ax.grid(True, axis="y")
+        ax.legend(loc="upper center", ncol=3 if paper_style else 1, fontsize=8)
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=180 if paper_style else 150)
+        plt.close(fig)
 
 
 def _write_channel_importance_json(

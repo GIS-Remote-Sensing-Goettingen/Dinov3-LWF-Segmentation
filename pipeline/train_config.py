@@ -55,6 +55,13 @@ class ResolvedPlotConfig:
     xai_channel_top_n_stable: int
     xai_channel_min_presence: float
     xai_channel_save_json: bool
+    paper_enable: bool
+    paper_pairs: int
+    paper_xai_topk_channels: int
+    paper_render_rollout: bool
+    paper_render_pca: bool
+    paper_channel_top_n_stable: int
+    paper_include_channel_heatmap: bool
     xai_module_cfg: dict[str, Any]
 
 
@@ -176,11 +183,19 @@ def parse_train_plot_config(train_cfg: dict[str, Any]) -> ResolvedPlotConfig:
         ...     "plots": {
         ...         "epoch": {"enable": True, "pairs": 2},
         ...         "xai": {"enable": True, "module": {"enable": False}},
+        ...         "paper": {"enable": True, "pairs": 3},
         ...     }
         ... }
         >>> out = parse_train_plot_config(cfg)
-        >>> (out.enabled, out.pairs, out.xai_enable, out.xai_module_cfg["enable"])
-        (True, 2, True, False)
+        >>> (
+        ...     out.enabled,
+        ...     out.pairs,
+        ...     out.xai_enable,
+        ...     out.paper_enable,
+        ...     out.paper_pairs,
+        ...     out.xai_module_cfg["enable"],
+        ... )
+        (True, 2, True, True, 3, False)
     """
 
     plots_cfg = (
@@ -209,6 +224,11 @@ def parse_train_plot_config(train_cfg: dict[str, Any]) -> ResolvedPlotConfig:
     xai_channel_cfg = (
         xai_plot_cfg.get("channel_tracking", {})
         if isinstance(xai_plot_cfg.get("channel_tracking", {}), dict)
+        else {}
+    )
+    paper_plot_cfg = (
+        plots_cfg.get("paper", {})
+        if isinstance(plots_cfg.get("paper", {}), dict)
         else {}
     )
     xai_module_nested_cfg = (
@@ -383,6 +403,56 @@ def parse_train_plot_config(train_cfg: dict[str, Any]) -> ResolvedPlotConfig:
             xai_channel_cfg.get(
                 "save_json",
                 train_cfg.get("epoch_plot_xai_channel_save_json", True),
+            )
+        ),
+        paper_enable=bool(
+            paper_plot_cfg.get(
+                "enable", train_cfg.get("epoch_plot_paper_enable", False)
+            )
+        ),
+        paper_pairs=max(
+            1,
+            int(
+                paper_plot_cfg.get(
+                    "pairs",
+                    train_cfg.get("epoch_plot_paper_pairs", 3),
+                )
+            ),
+        ),
+        paper_xai_topk_channels=max(
+            1,
+            int(
+                paper_plot_cfg.get(
+                    "xai_topk_channels",
+                    train_cfg.get("epoch_plot_paper_xai_topk_channels", 2),
+                )
+            ),
+        ),
+        paper_render_rollout=bool(
+            paper_plot_cfg.get(
+                "render_attn_rollout",
+                train_cfg.get("epoch_plot_paper_render_attn_rollout", False),
+            )
+        ),
+        paper_render_pca=bool(
+            paper_plot_cfg.get(
+                "render_pca",
+                train_cfg.get("epoch_plot_paper_render_pca", False),
+            )
+        ),
+        paper_channel_top_n_stable=max(
+            1,
+            int(
+                paper_plot_cfg.get(
+                    "channel_top_n_stable",
+                    train_cfg.get("epoch_plot_paper_channel_top_n_stable", 6),
+                )
+            ),
+        ),
+        paper_include_channel_heatmap=bool(
+            paper_plot_cfg.get(
+                "include_channel_heatmap",
+                train_cfg.get("epoch_plot_paper_include_channel_heatmap", False),
             )
         ),
         xai_module_cfg=xai_module_cfg,

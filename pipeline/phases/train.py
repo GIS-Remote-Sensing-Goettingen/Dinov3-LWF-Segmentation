@@ -26,7 +26,7 @@ from ..constants import DEFAULT_DEVICE, DEFAULT_PROCESSED_DIR
 from ..context import PhaseOutcome, RunContext, TrainingError
 from ..data_splits import create_dataloaders, dataset_size
 from ..phase_runner import Phase
-from ..plotting import resolve_cam_layer
+from ..plotting import resolve_cam_layer, save_training_summary_plot
 from ..train_config import parse_train_loss_config, parse_train_plot_config
 from ..train_utils import (
     ModelEMA,
@@ -339,6 +339,8 @@ def _resolve_epoch_xai_state(
     plot_cfg: Any,
     plot_metrics_dir: str,
     plot_xai_dir: str,
+    plot_metrics_paper_dir: str,
+    plot_xai_paper_dir: str,
     plot_xai_cam_layer: int | None,
     plot_xai_pca_layer: int | None,
     model_layer_ids: list[int],
@@ -365,6 +367,8 @@ def _resolve_epoch_xai_state(
         plot_cfg (Any): Parsed plotting/XAI configuration.
         plot_metrics_dir (str): Directory for validation metric plots.
         plot_xai_dir (str): Directory for XAI artifacts.
+        plot_metrics_paper_dir (str): Directory for curated paper metric plots.
+        plot_xai_paper_dir (str): Directory for curated paper XAI plots.
         plot_xai_cam_layer (int | None): CAM layer id.
         plot_xai_pca_layer (int | None): PCA layer id.
         model_layer_ids (list[int]): Requested DINO layer ids.
@@ -398,6 +402,8 @@ def _resolve_epoch_xai_state(
             plot_cfg=plot_cfg,
             plot_metrics_dir=plot_metrics_dir,
             plot_xai_dir=plot_xai_dir,
+            plot_metrics_paper_dir=plot_metrics_paper_dir,
+            plot_xai_paper_dir=plot_xai_paper_dir,
             plot_xai_cam_layer=plot_xai_cam_layer,
             plot_xai_pca_layer=plot_xai_pca_layer,
             model_layer_ids=model_layer_ids,
@@ -524,6 +530,7 @@ class TrainPhase(Phase):
             processed_dir,
             dataset_cfg,
             section,
+            model_cfg,
             batch_size,
             context.logger,
             context.dist_ctx,
@@ -652,6 +659,8 @@ class TrainPhase(Phase):
             plot_root_dir = str(context.mlflow_logger.artifacts_dir / "plots")
         plot_metrics_dir = os.path.join(plot_root_dir, "metrics")
         plot_xai_dir = os.path.join(plot_root_dir, "xai")
+        plot_metrics_paper_dir = os.path.join(plot_metrics_dir, "paper")
+        plot_xai_paper_dir = os.path.join(plot_xai_dir, "paper")
         plot_xai_cam_layer = resolve_cam_layer(
             model_cfg["layers"], plot_cfg.xai_cam_layer_mode
         )
@@ -665,6 +674,7 @@ class TrainPhase(Phase):
 
         model_layer_ids = [int(layer_id) for layer_id in model_cfg["layers"]]
         histories: dict[str, Any] = {
+            "metric_history": [],
             "channel_importance_history": [],
             "branch_importance_history": [],
             "dino_layer_importance_history": [],
@@ -799,6 +809,8 @@ class TrainPhase(Phase):
                         plot_cfg=plot_cfg,
                         plot_metrics_dir=plot_metrics_dir,
                         plot_xai_dir=plot_xai_dir,
+                        plot_metrics_paper_dir=plot_metrics_paper_dir,
+                        plot_xai_paper_dir=plot_xai_paper_dir,
                         plot_xai_cam_layer=plot_xai_cam_layer,
                         plot_xai_pca_layer=plot_xai_pca_layer,
                         model_layer_ids=model_layer_ids,
@@ -838,6 +850,29 @@ class TrainPhase(Phase):
                         avg_train_loss_components=avg_train_loss_components,
                         xai_epoch_metrics=xai_epoch_metrics,
                     )
+                    histories["metric_history"].append(
+                        {
+                            "epoch": float(epoch + 1),
+                            "train_loss": float(avg_train_loss),
+                            "val_loss": float(val_loss),
+                            "miou": float(val_metrics.get("miou", 0.0)),
+                            "f1": float(val_metrics.get("f1", 0.0)),
+                        }
+                    )
+                    os.makedirs(plot_metrics_dir, exist_ok=True)
+                    save_training_summary_plot(
+                        os.path.join(plot_metrics_dir, "training_summary.png"),
+                        histories["metric_history"],
+                    )
+                    if plot_cfg.paper_enable:
+                        os.makedirs(plot_metrics_paper_dir, exist_ok=True)
+                        save_training_summary_plot(
+                            os.path.join(
+                                plot_metrics_paper_dir, "training_summary.png"
+                            ),
+                            histories["metric_history"],
+                            paper_style=True,
+                        )
                     if (
                         epoch_metrics["optimizer_steps"]
                         != epoch_metrics["scheduler_steps"]

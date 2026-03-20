@@ -3,3 +3,6 @@ __pycache__/
 .venv/
 .env/
 .idea/
+example_plots/
+new_labels.tif
+planet_labels_2022.tif
