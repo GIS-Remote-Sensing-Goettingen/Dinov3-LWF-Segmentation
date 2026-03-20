@@ -11,6 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pipeline.data_splits as data_splits_module  # noqa: E402
+from pipeline.context import DistContext  # noqa: E402
 from pipeline.data_splits import resolve_dataset_splits  # noqa: E402
 
 _TILE_SUFFIX_RE = re.compile(r"_y-?\d+_x-?\d+$")
@@ -172,4 +174,81 @@ def test_random_split_requires_two_source_groups(tmp_path: Path) -> None:
             val_fraction=0.2,
             max_tiles=None,
             logger=_NoopLogger(),
+        )
+
+
+def test_resolve_rank_consistent_splits_uses_rank0_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Distributed split resolution should reuse rank-0 file lists on workers.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    expected = {
+        "train_files": ["/tmp/train_a.pt", "/tmp/train_b.pt"],
+        "val_files": ["/tmp/val_a.pt"],
+    }
+    monkeypatch.setattr(
+        data_splits_module,
+        "resolve_dataset_splits",
+        lambda *args, **kwargs: pytest.fail(
+            "resolve_dataset_splits() should not run on non-main ranks"
+        ),
+    )
+    monkeypatch.setattr(
+        data_splits_module,
+        "broadcast_main_object",
+        lambda dist_ctx, payload: expected,
+    )
+
+    train_files, val_files = data_splits_module._resolve_rank_consistent_splits(
+        processed_dir="/tmp/cache",
+        split_cfg={},
+        val_fraction=0.2,
+        max_tiles=100,
+        logger=_NoopLogger(),
+        dist_ctx=DistContext(enabled=True, rank=1, world_size=2, local_rank=1),
+    )
+
+    assert train_files == expected["train_files"]
+    assert val_files == expected["val_files"]
+
+
+def test_validate_distributed_train_loader_shape_rejects_rank_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Distributed dataloader sanity check should fail on length mismatches.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    monkeypatch.setattr(
+        data_splits_module.dist,
+        "all_gather_object",
+        lambda gathered, local: gathered.__setitem__(
+            slice(None),
+            [
+                {"rank": 0, "dataset_len": 3685, "loader_len": 461},
+                {"rank": 1, "dataset_len": 3740, "loader_len": 468},
+            ],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Distributed train split mismatch"):
+        data_splits_module._validate_distributed_train_loader_shape(
+            train_dataset=[0] * 3685,
+            train_loader=[0] * 461,
+            logger=_NoopLogger(),
+            dist_ctx=DistContext(enabled=True, rank=0, world_size=2, local_rank=0),
         )

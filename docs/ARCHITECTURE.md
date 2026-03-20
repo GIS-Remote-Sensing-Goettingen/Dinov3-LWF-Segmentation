@@ -75,6 +75,11 @@ MLflow-compatible artifacts for research workflows.
   `resources.ddp_find_unused_parameters` so distributed runs can trade some
   performance for safer gradient synchronization while debugging intermittent
   graph/bucket mismatches.
+- **Distributed split policy:** under DDP, rank 0 resolves any random
+  `max_tiles` sampling and leakage-safe train/validation split once, broadcasts
+  the exact file lists to the other ranks before dataset construction, and
+  verifies that every rank sees the same train dataset and dataloader length
+  before epoch 1 begins.
 - **Distributed prepare policy:** when `resources.distributed` is enabled,
   `PreparePhase` runs tiling/cache writes only on rank 0, then broadcasts the
   resulting metrics/artifacts or failure to the other ranks before later phases

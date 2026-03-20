@@ -9,12 +9,14 @@ import re
 from collections import defaultdict
 from typing import Optional, Sized, cast
 
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from utils import PrecomputedDataset, VerbosityLogger
 
 from .context import DistContext
+from .utils import broadcast_main_object
 
 _TILE_SUFFIX_RE = re.compile(r"_y-?\d+_x-?\d+$")
 _AUGMENT_SUFFIXES = (
@@ -293,12 +295,13 @@ def create_dataloaders(
         )
     val_fraction = train_cfg.get("val_fraction", 0.2)
     max_tiles = dataset_cfg.get("max_tiles")
-    train_files, val_files = resolve_dataset_splits(
-        processed_dir,
-        split_cfg,
-        val_fraction,
-        max_tiles,
-        logger,
+    train_files, val_files = _resolve_rank_consistent_splits(
+        processed_dir=processed_dir,
+        split_cfg=split_cfg,
+        val_fraction=val_fraction,
+        max_tiles=max_tiles,
+        logger=logger,
+        dist_ctx=dist_ctx,
     )
     train_dataset = PrecomputedDataset(
         processed_dir,
@@ -325,6 +328,12 @@ def create_dataloaders(
         pin_memory=True,
         persistent_workers=num_workers > 0,
     )
+    _validate_distributed_train_loader_shape(
+        train_dataset=train_dataset,
+        train_loader=train_loader,
+        logger=logger,
+        dist_ctx=dist_ctx,
+    )
     val_loader = None
     if (not dist_ctx.enabled) or dist_ctx.is_main:
         val_dataset = PrecomputedDataset(
@@ -343,6 +352,108 @@ def create_dataloaders(
             persistent_workers=val_workers > 0,
         )
     return train_loader, train_sampler, val_loader
+
+
+def _resolve_rank_consistent_splits(
+    *,
+    processed_dir: str,
+    split_cfg: dict,
+    val_fraction: float,
+    max_tiles: int | None,
+    logger: VerbosityLogger,
+    dist_ctx: DistContext,
+) -> tuple[list[str], list[str]]:
+    """Resolve one train/validation split and share it across DDP ranks.
+
+    Args:
+        processed_dir (str): Cached tile directory.
+        split_cfg (dict): Dataset split configuration block.
+        val_fraction (float): Fraction reserved for validation.
+        max_tiles (int | None): Optional cap on total tiles.
+        logger (VerbosityLogger): Logger for split diagnostics.
+        dist_ctx (DistContext): Distributed execution context.
+
+    Returns:
+        tuple[list[str], list[str]]: Train and validation file lists shared by
+        every rank.
+
+    Examples:
+        >>> callable(_resolve_rank_consistent_splits)
+        True
+    """
+
+    payload: dict[str, list[str]] | None = None
+    if (not dist_ctx.enabled) or dist_ctx.is_main:
+        train_files, val_files = resolve_dataset_splits(
+            processed_dir,
+            split_cfg,
+            val_fraction,
+            max_tiles,
+            logger,
+        )
+        payload = {
+            "train_files": [str(path) for path in train_files],
+            "val_files": [str(path) for path in val_files],
+        }
+    if dist_ctx.enabled:
+        payload = cast(dict[str, list[str]], broadcast_main_object(dist_ctx, payload))
+    assert payload is not None
+    return list(payload["train_files"]), list(payload["val_files"])
+
+
+def _validate_distributed_train_loader_shape(
+    *,
+    train_dataset: Sized,
+    train_loader: Sized,
+    logger: VerbosityLogger,
+    dist_ctx: DistContext,
+) -> None:
+    """Fail fast when distributed ranks build different train loader sizes.
+
+    Args:
+        train_dataset (Sized): Training dataset for the current rank.
+        train_loader (Sized): Training loader for the current rank.
+        logger (VerbosityLogger): Logger for optional summary output.
+        dist_ctx (DistContext): Distributed execution context.
+
+    Raises:
+        ValueError: If dataset or loader sizes differ across ranks.
+
+    Examples:
+        >>> callable(_validate_distributed_train_loader_shape)
+        True
+    """
+
+    if not dist_ctx.enabled:
+        return
+    local_state = {
+        "rank": int(dist_ctx.rank),
+        "dataset_len": int(len(train_dataset)),
+        "loader_len": int(len(train_loader)),
+    }
+    gathered_states: list[dict[str, int] | None] = [None] * dist_ctx.world_size
+    dist.all_gather_object(gathered_states, local_state)
+    states = [
+        cast(dict[str, int], state) for state in gathered_states if state is not None
+    ]
+    dataset_lengths = {state["dataset_len"] for state in states}
+    loader_lengths = {state["loader_len"] for state in states}
+    if len(dataset_lengths) != 1 or len(loader_lengths) != 1:
+        raise ValueError(
+            "Distributed train split mismatch across ranks: "
+            f"{states}. Ensure train/validation file lists are broadcast once "
+            "before creating per-rank datasets and samplers."
+        )
+    if dist_ctx.is_main:
+        logger.info(
+            "Distributed train loader shape verified across %s ranks: "
+            "dataset_len=%s loader_len=%s"
+            % (
+                dist_ctx.world_size,
+                next(iter(dataset_lengths)),
+                next(iter(loader_lengths)),
+            )
+        )
 
 
 def dataset_size(dataset: object) -> int:

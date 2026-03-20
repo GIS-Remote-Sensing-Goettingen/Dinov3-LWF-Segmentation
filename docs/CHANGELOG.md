@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 ### Changed
+- Fix distributed train/validation split construction so rank 0 now resolves
+  the random `max_tiles` sample plus leakage-safe split once and broadcasts the
+  exact file lists to all other ranks before `DistributedSampler` is built;
+  also add a fail-fast cross-rank dataset/loader length check so mismatched
+  per-rank batch counts abort immediately instead of surfacing later as epoch-end
+  NCCL `BROADCAST` or train-step `ALLREDUCE` timeouts
+  (`pipeline/data_splits.py`, `test/test_data_splits_leakage.py`,
+  `docs/ARCHITECTURE.md`).
 - Add a second distributed-training hardening pass for last-batch NCCL
   allreduce hangs by exposing `resources.ddp_find_unused_parameters`, adding
   rank-aware batch-stage timing logs plus optional Slurm debug env toggles, and
