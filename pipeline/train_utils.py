@@ -385,6 +385,42 @@ def align_to_patch_grid(
     return image, labels
 
 
+def require_patch_grid_compatible(
+    image: torch.Tensor,
+    patch_size: int,
+    *,
+    source: str,
+) -> None:
+    """Fail fast when cached/training tensors are incompatible with DINO patches.
+
+    Args:
+        image (torch.Tensor): Image tensor shaped ``(B, C, H, W)``.
+        patch_size (int): Backbone patch size.
+        source (str): Error-message context.
+
+    Raises:
+        ValueError: If the spatial size is not patch-grid compatible.
+
+    Examples:
+        >>> require_patch_grid_compatible(torch.zeros(1, 3, 32, 32), 16, source="ok")
+        >>> require_patch_grid_compatible(torch.zeros(1, 3, 33, 32), 16, source="bad")
+        Traceback (most recent call last):
+        ...
+        ValueError: bad has image size 33x32, which is incompatible with DINO patch size 16. ...
+    """
+
+    if patch_size <= 1:
+        return
+    height = int(image.shape[-2])
+    width = int(image.shape[-1])
+    if (height % int(patch_size)) != 0 or (width % int(patch_size)) != 0:
+        raise ValueError(
+            f"{source} has image size {height}x{width}, which is incompatible with "
+            f"DINO patch size {int(patch_size)}. Rebuild the cache with "
+            "DINO-compatible tiling instead of relying on runtime cropping."
+        )
+
+
 def forward_with_optional_extras(
     model_call: Any,
     image: torch.Tensor,
@@ -786,7 +822,11 @@ def evaluate(
         for batch_idx, (img, features, y) in enumerate(loader, 1):
             img = img.to(device)
             y = y.to(device)
-            img, y = align_to_patch_grid(img, y, patch_size=ps, logger=logger)
+            require_patch_grid_compatible(
+                img,
+                ps,
+                source=f"Validation batch {batch_idx}",
+            )
             if not requires_backbone_features:
                 feats = []
             elif cache_features and features:

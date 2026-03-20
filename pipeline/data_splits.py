@@ -19,7 +19,7 @@ from torch.utils.data.distributed import DistributedSampler
 from utils import PrecomputedDataset, VerbosityLogger
 
 from .context import DistContext
-from .train_utils import head_uses_backbone_features
+from .train_utils import head_uses_backbone_features, resolve_model_patch_size
 from .utils import broadcast_main_object
 
 _TILE_SUFFIX_RE = re.compile(r"_y-?\d+_x-?\d+$")
@@ -398,6 +398,10 @@ def create_dataloaders(
         if head_uses_backbone_features(str(model_cfg.get("head", "")))
         else []
     )
+    expected_patch_size = resolve_model_patch_size(
+        str(model_cfg.get("backbone", "")),
+        str(model_cfg.get("head", "")),
+    )
     train_files, val_files = _resolve_rank_consistent_splits(
         processed_dir=processed_dir,
         split_cfg=split_cfg,
@@ -412,6 +416,7 @@ def create_dataloaders(
         file_subset=train_files,
         validation_cfg=validation_cfg,
         requested_layers=requested_layers,
+        expected_patch_size=expected_patch_size,
     )
     train_sampler = None
     if dist_ctx.enabled:
@@ -450,6 +455,7 @@ def create_dataloaders(
             file_subset=val_files,
             validation_cfg=validation_cfg,
             requested_layers=requested_layers,
+            expected_patch_size=expected_patch_size,
         )
         val_workers = train_cfg.get("val_workers", max(1, num_workers // 2))
         val_loader = DataLoader(

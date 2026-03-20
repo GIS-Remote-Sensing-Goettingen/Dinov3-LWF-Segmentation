@@ -91,13 +91,20 @@ MLflow-compatible artifacts for research workflows.
   a compatible cache directory already exists and already satisfies
   `dataset.max_tiles`, prepare short-circuits instead of rescanning source
   imagery; existing tiles also count toward any remaining top-up budget.
-  No-feature caches also record the effective patch-size compatibility
-  requirement so image-only caches are not silently reused by DINO heads that
-  require a different crop geometry.
+  DINO-oriented no-feature caches now use a hard `drop_partial` edge policy:
+  prepare writes only fully fitting native-label-grid tiles, never zero-fills
+  or shifts partial edge tiles inward, records the patch-size/edge-policy
+  contract in cache metadata, and stores per-tile geometry metadata inside each
+  payload so legacy `1020`-style caches fail closed instead of being reused.
 - **Training XAI padding policy:** epoch validation/XAI plots treat
   `ignore_index`-only bottom/right label regions as batch padding, crop RGB/GT/
   prediction/XAI maps back to the real tile footprint before saving artifacts,
   and therefore avoid showing black padding strips in training-time plots.
+- **DINO geometry safety policy:** train/validation no longer repair cached
+  DINO inputs by cropping them down to the nearest patch multiple at runtime.
+  Cached DINO tiles must already be patch-compatible and match their declared
+  per-tile geometry metadata, or the job fails immediately with a cache
+  geometry error.
 - **Inference XAI failure policy:** scene/tile predictions remain the source of
   truth for inference success, while Grad-CAM stays best-effort. Shared
   Grad-CAM helpers now return structured failure metadata so training and
@@ -111,6 +118,12 @@ MLflow-compatible artifacts for research workflows.
   grid when `label_path` is available, and train/validation dataloaders pad
   mixed-size cached tensors within a batch so scenes with different native
   scale factors remain batchable.
+- **Inference border policy:** scene inference keeps full coverage with
+  sliding-window starts computed from the effective DINO-compatible tile size
+  and requested stride/overlap, but the final window in each row/column shifts
+  inward so it lands exactly on the right/bottom border. Ordinary edge tiles
+  are therefore full-size by construction instead of relying on partial-window
+  reflect padding.
 - **Cache compatibility policy:** label-grid-supervised tiles live in
   cache directories suffixed with `_labelgrid`, and cache metadata records the
   supervision-grid mode so older image-grid caches are rejected instead of

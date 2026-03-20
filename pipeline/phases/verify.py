@@ -51,6 +51,7 @@ class VerifyPhase(Phase):
             tile_size,
             cache_features,
             patch_size=patch_size,
+            edge_policy="drop_partial",
             logger=context.logger,
         )
         before_count = len(glob.glob(os.path.join(processed_dir, "*.pt")))

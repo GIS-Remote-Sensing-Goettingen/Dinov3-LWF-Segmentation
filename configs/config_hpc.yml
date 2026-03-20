@@ -46,7 +46,7 @@ dataset:
     foreground_labels: [1]
   augmentations:
     # Master switch for train-time augmentations: `true` or `false`.
-    enable: true
+    enable: false
     # Random horizontal flip during training: `true` or `false`.
     hflip: true
     # Random vertical flip during training: `true` or `false`.
@@ -89,13 +89,13 @@ dataset:
       # Probability of applying ColorJitter to a sample.
       prob: 0.35
       # Brightness jitter strength.
-      brightness: 0.25
+      brightness: 0.3
       # Contrast jitter strength.
-      contrast: 0.25
+      contrast: 0.3
       # Saturation jitter strength.
-      saturation: 0.12
+      saturation: 0.3
       # Hue jitter strength.
-      hue: 0.04
+      hue: 0.1
   splits:
     # Explicit training tile list path, or blank for random split.
     train_list:
@@ -119,11 +119,11 @@ model:
   # Frozen DINO backbone checkpoint used to extract transformer features.
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   # Transformer block ids extracted from the backbone and passed to the head.
-  layers: [23]
+  layers: [7,13,19,24]
   # Segmentation head architecture: `dino_dense_probe`, `dino_segdino_light`,
   # `maskformer`, `unet`, `unet_v2`, `unet_lite`, `unet_lite_plus`,
   # `unet_nano`, `unet_nano_fapm`, or `unet_topo_fusion`.
-  head: dino_segdino_light
+  head: unet_topo_fusion
   # Number of semantic output classes.
   num_classes: 2
   # Channel count per selected DINO feature map.
@@ -193,7 +193,7 @@ train:
   # Per-rank training batch size.
   batch_size: 4
   # Number of training epochs.
-  epochs: 50
+  epochs: 60
   # Muon learning rate for matrix-like parameter groups.
   muon_lr: 0.02
   # Optional explicit Muon weight decay; blank reuses `adamw_wd`.

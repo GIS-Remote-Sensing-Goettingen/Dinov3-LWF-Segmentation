@@ -530,6 +530,7 @@ class TrainPhase(Phase):
             tile_size,
             cache_features,
             patch_size=ps,
+            edge_policy="drop_partial",
             logger=context.logger,
         )
         max_tiles = dataset_cfg.get("max_tiles")

@@ -70,6 +70,9 @@ class TileGridLayout:
     scale_factor: int
 
 
+EDGE_POLICY_DROP_PARTIAL = "drop_partial"
+
+
 def _pixel_size(transform: Affine) -> tuple[float, float]:
     """Return absolute pixel size from an affine transform.
 
@@ -161,28 +164,59 @@ def build_tile_grid_layout(
     )
 
 
-def _tile_window_positions(total_size: int, tile_size: int) -> list[int]:
-    """Return fixed-size tile starts that cover one raster dimension.
+def full_fit_window_positions(total_size: int, tile_size: int) -> list[int]:
+    """Return fixed-size starts whose full tiles fit inside one dimension.
 
     Args:
         total_size (int): Raster width or height in pixels.
         tile_size (int): Tile size in pixels.
 
     Returns:
-        list[int]: Start offsets for fixed-size windows.
+        list[int]: Start offsets for fully fitting windows.
 
     Examples:
-        >>> _tile_window_positions(8, 4)
+        >>> full_fit_window_positions(8, 4)
         [0, 4]
-        >>> _tile_window_positions(10, 4)
+        >>> full_fit_window_positions(10, 4)
+        [0, 4]
+        >>> full_fit_window_positions(3, 4)
+        []
+    """
+
+    if total_size < tile_size:
+        return []
+    return list(range(0, (total_size - tile_size) + 1, tile_size))
+
+
+def coverage_window_positions(
+    total_size: int, tile_size: int, stride: int
+) -> list[int]:
+    """Return sliding-window starts that cover one full dimension.
+
+    Args:
+        total_size (int): Raster width or height in pixels.
+        tile_size (int): Tile size in pixels.
+        stride (int): Sliding-window stride in pixels.
+
+    Returns:
+        list[int]: Start offsets whose last window aligns to the border.
+
+    Examples:
+        >>> coverage_window_positions(8, 4, 4)
+        [0, 4]
+        >>> coverage_window_positions(10, 4, 4)
         [0, 4, 6]
-        >>> _tile_window_positions(3, 4)
+        >>> coverage_window_positions(11, 4, 4)
+        [0, 4, 7]
+        >>> coverage_window_positions(3, 4, 4)
         [0]
     """
 
+    if stride <= 0:
+        raise ValueError("stride must be positive")
     if total_size <= tile_size:
         return [0]
-    positions = list(range(0, total_size, tile_size))
+    positions = list(range(0, total_size, stride))
     last_start = total_size - tile_size
     if positions[-1] != last_start:
         positions[-1] = last_start
@@ -191,6 +225,20 @@ def _tile_window_positions(total_size: int, tile_size: int) -> list[int]:
         if not deduped or deduped[-1] != pos:
             deduped.append(pos)
     return deduped
+
+
+def _tile_window_positions(total_size: int, tile_size: int) -> list[int]:
+    """Backward-compatible alias for coverage-style fixed-size tiling.
+
+    Args:
+        total_size (int): Raster width or height in pixels.
+        tile_size (int): Tile size in pixels.
+
+    Returns:
+        list[int]: Coverage-aligned start offsets.
+    """
+
+    return coverage_window_positions(total_size, tile_size, tile_size)
 
 
 def read_label_window_for_image_bounds(
@@ -716,6 +764,7 @@ def _cache_subdir_name(
     tile_size: int,
     cache_features: bool,
     patch_size: int | None = None,
+    edge_policy: str | None = None,
 ) -> str:
     """Build a cache subdirectory name for tile size and feature mode.
 
@@ -724,6 +773,8 @@ def _cache_subdir_name(
         cache_features (bool): Whether features are cached.
         patch_size (int | None): Effective patch-size compatibility requirement
             for no-feature caches.
+        edge_policy (str | None): Optional edge-window policy identifier for
+            no-feature caches.
 
     Returns:
         str: Subdirectory name.
@@ -731,13 +782,18 @@ def _cache_subdir_name(
     Examples:
         >>> _cache_subdir_name(512, True)
         'tiles_512_feat_labelgrid'
-        >>> _cache_subdir_name(1024, False, patch_size=16)
-        'tiles_1024_nofeat_ps16_labelgrid'
+        >>> _cache_subdir_name(1024, False, patch_size=16, edge_policy="drop_partial")
+        'tiles_1024_nofeat_ps16_drop_partial_labelgrid'
     """
 
     suffix = "feat" if cache_features else "nofeat"
     if not cache_features and patch_size is not None:
-        return f"tiles_{tile_size}_{suffix}_ps{int(patch_size)}_labelgrid"
+        edge_suffix = (
+            f"_{str(edge_policy).strip().lower()}" if edge_policy is not None else ""
+        )
+        return (
+            f"tiles_{tile_size}_{suffix}_ps{int(patch_size)}" f"{edge_suffix}_labelgrid"
+        )
     return f"tiles_{tile_size}_{suffix}_labelgrid"
 
 
@@ -786,6 +842,7 @@ def _write_cache_metadata(
     model_name: str | None,
     layers: Sequence[int] | None,
     patch_size: int | None,
+    edge_policy: str | None = None,
 ) -> None:
     """Write cache metadata for a tile directory.
 
@@ -796,6 +853,7 @@ def _write_cache_metadata(
         model_name (str | None): Backbone model name.
         layers (Sequence[int] | None): Backbone layer indices.
         patch_size (int | None): Effective patch-size compatibility requirement.
+        edge_policy (str | None): Optional edge-window policy identifier.
 
     Returns:
         None: Metadata is written to disk.
@@ -807,6 +865,7 @@ def _write_cache_metadata(
         "model_name": model_name,
         "layers": list(layers) if layers is not None else None,
         "patch_size": None if patch_size is None else int(patch_size),
+        "edge_policy": None if edge_policy is None else str(edge_policy),
         "supervision_grid_mode": SUPERVISION_GRID_MODE,
     }
     meta_path = _cache_meta_path(cache_dir)
@@ -822,6 +881,7 @@ def _validate_cache_metadata(
     model_name: str | None,
     layers: Sequence[int] | None,
     patch_size: int | None = None,
+    edge_policy: str | None = None,
     allow_layer_subset: bool = False,
 ) -> None:
     """Validate cache metadata against expected settings.
@@ -834,6 +894,7 @@ def _validate_cache_metadata(
         layers (Sequence[int] | None): Expected backbone layers.
         patch_size (int | None): Expected patch-size compatibility requirement
             for no-feature caches.
+        edge_policy (str | None): Expected prepare-time edge policy.
         allow_layer_subset (bool): Allow the requested layer list to be a subset
             of the cached layer list.
 
@@ -861,6 +922,10 @@ def _validate_cache_metadata(
             mismatches.append(
                 f"patch_size={cached_patch_size} expected {int(patch_size)}"
             )
+    if edge_policy is not None and meta.get("edge_policy") != edge_policy:
+        mismatches.append(
+            f"edge_policy={meta.get('edge_policy')} expected {edge_policy}"
+        )
     if layers is not None:
         cached_layers = meta.get("layers")
         expected_layers = [int(layer_id) for layer_id in layers]
@@ -894,6 +959,7 @@ def resolve_cache_dir_for_prepare(
     model_name: str,
     layers: Sequence[int],
     patch_size: int | None = None,
+    edge_policy: str | None = None,
     logger: Optional["VerbosityLogger"] = None,
 ) -> str:
     """Return the cache directory for prepare, creating it if needed.
@@ -906,6 +972,8 @@ def resolve_cache_dir_for_prepare(
         layers (Sequence[int]): Backbone layer indices.
         patch_size (int | None): Effective patch-size compatibility requirement
             for no-feature caches.
+        edge_policy (str | None): Expected prepare-time edge policy for
+            no-feature caches.
         logger (VerbosityLogger | None): Optional logger.
 
     Returns:
@@ -915,6 +983,7 @@ def resolve_cache_dir_for_prepare(
     expected_model_name = model_name if cache_features else None
     expected_layers = layers if cache_features else None
     expected_patch_size = None if cache_features else patch_size
+    expected_edge_policy = None if cache_features else edge_policy
     meta = _load_cache_metadata(base_dir)
     if meta is not None:
         _validate_cache_metadata(
@@ -924,6 +993,7 @@ def resolve_cache_dir_for_prepare(
             expected_model_name,
             expected_layers,
             patch_size=expected_patch_size,
+            edge_policy=expected_edge_policy,
             allow_layer_subset=bool(cache_features),
         )
         return base_dir
@@ -934,6 +1004,7 @@ def resolve_cache_dir_for_prepare(
             tile_size,
             cache_features,
             patch_size=expected_patch_size,
+            edge_policy=expected_edge_policy,
         ),
     )
     os.makedirs(cache_dir, exist_ok=True)
@@ -946,6 +1017,7 @@ def resolve_cache_dir_for_prepare(
             expected_model_name,
             expected_layers,
             patch_size=expected_patch_size,
+            edge_policy=expected_edge_policy,
             allow_layer_subset=bool(cache_features),
         )
     else:
@@ -956,6 +1028,7 @@ def resolve_cache_dir_for_prepare(
             expected_model_name,
             expected_layers,
             expected_patch_size,
+            expected_edge_policy,
         )
     if logger and glob.glob(os.path.join(base_dir, "*.pt")):
         logger.info(
@@ -970,6 +1043,7 @@ def resolve_cache_dir_for_train(
     tile_size: int | None,
     cache_features: bool | None,
     patch_size: int | None = None,
+    edge_policy: str | None = None,
     logger: Optional["VerbosityLogger"] = None,
 ) -> str:
     """Return the cache directory for training/verification.
@@ -980,6 +1054,8 @@ def resolve_cache_dir_for_train(
         cache_features (bool | None): Expected cache_features setting.
         patch_size (int | None): Effective patch-size compatibility requirement
             for no-feature caches.
+        edge_policy (str | None): Expected prepare-time edge policy for
+            no-feature caches.
         logger (VerbosityLogger | None): Optional logger.
 
     Returns:
@@ -990,6 +1066,7 @@ def resolve_cache_dir_for_train(
     """
 
     expected_patch_size = None if cache_features else patch_size
+    expected_edge_policy = None if cache_features else edge_policy
     meta = _load_cache_metadata(base_dir)
     if meta is not None:
         _validate_cache_metadata(
@@ -999,6 +1076,7 @@ def resolve_cache_dir_for_train(
             None,
             None,
             patch_size=expected_patch_size,
+            edge_policy=expected_edge_policy,
         )
         return base_dir
 
@@ -1010,6 +1088,7 @@ def resolve_cache_dir_for_train(
                 tile_size,
                 cache_features,
                 patch_size=expected_patch_size,
+                edge_policy=expected_edge_policy,
             ),
         )
         if os.path.exists(derived):
@@ -1022,6 +1101,7 @@ def resolve_cache_dir_for_train(
                     None,
                     None,
                     patch_size=expected_patch_size,
+                    edge_policy=expected_edge_policy,
                 )
             return derived
 
@@ -1041,6 +1121,7 @@ def resolve_cache_dir_for_train(
                     None,
                     None,
                     patch_size=expected_patch_size,
+                    edge_policy=expected_edge_policy,
                 )
             except ValueError:
                 continue
@@ -1058,12 +1139,51 @@ def resolve_cache_dir_for_train(
         if expected_patch_size is not None and int(expected_patch_size) > 1:
             raise ValueError(
                 "Legacy no-feature cached tiles in %s are missing patch-size "
-                "metadata required for patch_size=%s. Re-run prepare or point "
-                "processed_dir to a compatible cache directory."
+                "or edge-policy metadata required for patch_size=%s. Re-run "
+                "prepare or point processed_dir to a compatible cache directory."
                 % (base_dir, int(expected_patch_size))
             )
         return base_dir
     return derived or base_dir
+
+
+def build_tile_payload_metadata(
+    *,
+    requested_tile_size: int,
+    layout: TileGridLayout,
+    patch_size: int,
+    edge_policy: str = EDGE_POLICY_DROP_PARTIAL,
+) -> dict[str, int | str]:
+    """Build per-tile geometry metadata stored inside cached payloads.
+
+    Args:
+        requested_tile_size (int): Requested image tile size from config.
+        layout (TileGridLayout): Effective image/label tile layout.
+        patch_size (int): Backbone patch size.
+        edge_policy (str): Prepare-time edge policy identifier.
+
+    Returns:
+        dict[str, int | str]: Geometry metadata for one cached tile.
+
+    Examples:
+        >>> meta = build_tile_payload_metadata(
+        ...     requested_tile_size=512,
+        ...     layout=TileGridLayout(480, 96, 0.2, 1.0, 5),
+        ...     patch_size=16,
+        ... )
+        >>> (meta["image_tile_size"], meta["label_tile_size"], meta["patch_size"])
+        (480, 96, 16)
+    """
+
+    return {
+        "requested_tile_size": int(requested_tile_size),
+        "image_tile_size": int(layout.image_tile_size),
+        "label_tile_size": int(layout.label_tile_size),
+        "scale_factor": int(layout.scale_factor),
+        "patch_size": int(patch_size),
+        "edge_policy": str(edge_policy),
+        "supervision_grid_mode": SUPERVISION_GRID_MODE,
+    }
 
 
 def extract_multiscale_features(
@@ -1197,6 +1317,12 @@ def process_image_tiles_no_features(
         }
     tiles_written = 0
     skipped_no_foreground = 0
+    tile_meta = build_tile_payload_metadata(
+        requested_tile_size=tile_size,
+        layout=layout,
+        patch_size=patch_size,
+        edge_policy=EDGE_POLICY_DROP_PARTIAL,
+    )
     with rasterio.open(img_path) as src_img, rasterio.open(label_path) as src_lab:
         if src_img.crs != src_lab.crs:
             return {
@@ -1212,14 +1338,20 @@ def process_image_tiles_no_features(
             .round_offsets()
             .round_lengths()
         )
-        row_positions = _tile_window_positions(
+        row_positions = full_fit_window_positions(
             int(label_window.height),
             layout.label_tile_size,
         )
-        col_positions = _tile_window_positions(
+        col_positions = full_fit_window_positions(
             int(label_window.width),
             layout.label_tile_size,
         )
+        if not row_positions or not col_positions:
+            return {
+                "status": "ok",
+                "tiles_written": 0,
+                "skipped_no_foreground": 0,
+            }
         for row_off in row_positions:
             for col_off in col_positions:
                 if stop_event is not None and stop_event.is_set():
@@ -1291,6 +1423,7 @@ def process_image_tiles_no_features(
                     "image": torch.from_numpy(img_crop),
                     "features": [],
                     "label": lbl_crop,
+                    "tile_meta": tile_meta,
                 }
                 try:
                     wrote_tile = _write_tile_payload_atomic(payload, save_path)

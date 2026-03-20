@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import glob
-import math
 import os
 import traceback
 from contextlib import nullcontext
@@ -18,7 +17,11 @@ from transformers import AutoImageProcessor, AutoModel
 
 from models import build_head
 from utils import TimedBlock, extract_multiscale_features
-from utils.data.core import build_tile_grid_layout, read_label_window_for_image_bounds
+from utils.data.core import (
+    build_tile_grid_layout,
+    coverage_window_positions,
+    read_label_window_for_image_bounds,
+)
 
 from ..constants import DEFAULT_DEVICE
 from ..context import InferenceError, PhaseOutcome, RunContext
@@ -259,9 +262,12 @@ class InferencePhase(Phase):
             gradcam_tiles_failed = 0
             gradcam_first_failure = None
             weight_cache: dict[tuple[int, int], np.ndarray] = {}
-            total_tiles = math.ceil(height / stride_eff) * math.ceil(width / stride_eff)
+            y_positions = coverage_window_positions(height, tile_size_eff, stride_eff)
+            x_positions = coverage_window_positions(width, tile_size_eff, stride_eff)
+            total_tiles = len(y_positions) * len(x_positions)
             context.logger.info(
-                f"Running inference on {total_tiles} tiles with stride {stride_eff}."
+                "Running inference on %s tiles with stride %s and effective tile "
+                "size %s." % (total_tiles, stride_eff, tile_size_eff)
             )
             local_plot_every_n = plot_every_n
             if explain_enabled:
@@ -275,13 +281,13 @@ class InferencePhase(Phase):
                 rasterio.open(input_tif_path) as src,
                 TimedBlock(context.logger, phase_label),
             ):
-                for y in range(0, height, stride_eff):
-                    for x in range(0, width, stride_eff):
+                for y in y_positions:
+                    for x in x_positions:
                         tile_counter += 1
                         y_max = min(y + tile_size_eff, height)
                         x_max = min(x + tile_size_eff, width)
                         window = Window.from_slices((y, y_max), (x, x_max))
-                        img_tile = src.read(window=window, boundless=True)
+                        img_tile = src.read(window=window, boundless=False)
                         img_tile = np.transpose(img_tile, (1, 2, 0))
                         if np.max(img_tile) == 0:
                             continue
@@ -290,6 +296,18 @@ class InferencePhase(Phase):
                         pad_h = max(0, tile_size_eff - orig_h)
                         pad_w = max(0, tile_size_eff - orig_w)
                         if pad_h or pad_w:
+                            context.logger.info(
+                                "Scene %s is smaller than one full inference tile; "
+                                "reflect-padding %sx%s up to %sx%s for tile %s."
+                                % (
+                                    os.path.basename(input_tif_path),
+                                    orig_h,
+                                    orig_w,
+                                    tile_size_eff,
+                                    tile_size_eff,
+                                    tile_counter,
+                                )
+                            )
                             img_tile = np.pad(
                                 img_tile,
                                 ((0, pad_h), (0, pad_w), (0, 0)),

@@ -27,6 +27,8 @@ from pipeline.phases.prepare import PreparePhase  # noqa: E402
 from utils.data.core import (  # noqa: E402
     _write_tile_payload_atomic,
     build_tile_grid_layout,
+    coverage_window_positions,
+    full_fit_window_positions,
     process_image_tiles_no_features,
     read_label_window_for_image_bounds,
     resolve_cache_dir_for_prepare,
@@ -391,6 +393,7 @@ def test_prepare_phase_reports_zero_tiles_added_when_cache_already_satisfies_lim
             model_name="demo-backbone",
             layers=[5],
             patch_size=1,
+            edge_policy="drop_partial",
         )
     )
     for idx in range(2):
@@ -468,6 +471,7 @@ def test_resolve_cache_dir_for_prepare_ignores_layers_for_no_feature_cache(
             '  "layers": [5, 11, 17, 23],\n'
             '  "model_name": "old-backbone",\n'
             '  "patch_size": 1,\n'
+            '  "edge_policy": "drop_partial",\n'
             '  "supervision_grid_mode": "native_label_grid",\n'
             '  "tile_size": 512\n'
             "}\n"
@@ -482,6 +486,7 @@ def test_resolve_cache_dir_for_prepare_ignores_layers_for_no_feature_cache(
         model_name="new-backbone",
         layers=[23],
         patch_size=1,
+        edge_policy="drop_partial",
     )
 
     assert resolved == str(cache_dir)
@@ -509,6 +514,7 @@ def test_resolve_cache_dir_for_prepare_writes_no_feature_metadata_without_layers
         model_name="demo-backbone",
         layers=[23],
         patch_size=1,
+        edge_policy="drop_partial",
     )
 
     meta_path = Path(resolved) / "cache_meta.json"
@@ -517,6 +523,7 @@ def test_resolve_cache_dir_for_prepare_writes_no_feature_metadata_without_layers
     assert meta["layers"] is None
     assert meta["model_name"] is None
     assert meta["patch_size"] == 1
+    assert meta["edge_policy"] == "drop_partial"
 
 
 def test_resolve_cache_dir_for_train_reuses_matching_no_feature_patch_cache(
@@ -540,6 +547,7 @@ def test_resolve_cache_dir_for_train_reuses_matching_no_feature_patch_cache(
         model_name="demo-backbone",
         layers=[23],
         patch_size=16,
+        edge_policy="drop_partial",
     )
 
     resolved_train = resolve_cache_dir_for_train(
@@ -547,10 +555,11 @@ def test_resolve_cache_dir_for_train_reuses_matching_no_feature_patch_cache(
         tile_size=512,
         cache_features=False,
         patch_size=16,
+        edge_policy="drop_partial",
     )
 
     assert resolved_train == resolved_prepare
-    assert resolved_train.endswith("tiles_512_nofeat_ps16_labelgrid")
+    assert resolved_train.endswith("tiles_512_nofeat_ps16_drop_partial_labelgrid")
 
 
 def test_resolve_cache_dir_for_train_rejects_legacy_no_feature_cache_without_patch_size(
@@ -572,12 +581,13 @@ def test_resolve_cache_dir_for_train_rejects_legacy_no_feature_cache_without_pat
         {"image": torch.zeros(1), "label": torch.zeros(1)}, legacy_dir / "tile.pt"
     )
 
-    with pytest.raises(ValueError, match="missing patch-size metadata"):
+    with pytest.raises(ValueError, match="patch-size or edge-policy metadata"):
         resolve_cache_dir_for_train(
             str(legacy_dir),
             tile_size=512,
             cache_features=False,
             patch_size=16,
+            edge_policy="drop_partial",
         )
 
 
@@ -740,6 +750,20 @@ def test_build_tile_grid_layout_derives_native_label_supervision_sizes(
     assert layout.scale_factor == 5
 
 
+def test_window_position_helpers_split_prepare_and_inference_policies() -> None:
+    """Prepare should drop partial edges while inference keeps full coverage.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    assert full_fit_window_positions(10, 4) == [0, 4]
+    assert full_fit_window_positions(3, 4) == []
+    assert coverage_window_positions(10, 4, 4) == [0, 4, 6]
+    assert coverage_window_positions(11, 4, 4) == [0, 4, 7]
+
+
 def test_read_label_window_for_image_bounds_keeps_native_label_grid(
     tmp_path: Path,
 ) -> None:
@@ -813,6 +837,11 @@ def test_process_image_tiles_no_features_writes_smaller_label_grid_tiles(
     payload = torch.load(saved[0], weights_only=False, map_location="cpu")
     assert tuple(payload["image"].shape) == (32, 32, 3)
     assert np.asarray(payload["label"]).shape == (8, 8)
+    assert payload["tile_meta"]["requested_tile_size"] == 32
+    assert payload["tile_meta"]["image_tile_size"] == 32
+    assert payload["tile_meta"]["label_tile_size"] == 8
+    assert payload["tile_meta"]["patch_size"] == 4
+    assert payload["tile_meta"]["edge_policy"] == "drop_partial"
 
     save_path = tmp_path / "tile.pt"
 
@@ -834,6 +863,71 @@ def test_process_image_tiles_no_features_writes_smaller_label_grid_tiles(
 
     assert not save_path.exists()
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_process_image_tiles_no_features_drops_partial_edge_tiles(
+    tmp_path: Path,
+) -> None:
+    """Prepare should skip label-grid edge tiles that do not fully fit.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    image_path = tmp_path / "image.tif"
+    label_path = tmp_path / "labels.tif"
+    output_dir = tmp_path / "cache"
+    image = np.full((30, 30, 3), 10, dtype=np.uint8)
+    labels = np.ones((10, 10), dtype=np.uint8)
+    _write_test_geotiff(
+        image_path,
+        image,
+        transform=from_origin(0.0, 30.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        label_path,
+        labels,
+        transform=from_origin(0.0, 30.0, 3.0, 3.0),
+    )
+
+    result = process_image_tiles_no_features(
+        str(image_path),
+        str(label_path),
+        str(output_dir),
+        tile_size=12,
+        patch_size=2,
+    )
+
+    assert result["status"] == "ok"
+    saved = sorted(output_dir.glob("*.pt"))
+    assert len(saved) == 4
+    assert all("_y6_" not in path.name and "_x6" not in path.name for path in saved)
+
+
+def test_precomputed_dataset_rejects_legacy_dino_tile_without_geometry_metadata(
+    tmp_path: Path,
+) -> None:
+    """DINO runs should fail closed on legacy cached tiles without geometry metadata.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    torch.save(
+        {
+            "image": torch.zeros(960, 960, 3),
+            "features": [],
+            "label": np.zeros((192, 192), dtype=np.uint8),
+        },
+        cache_dir / "sample.pt",
+    )
+
+    ds = PrecomputedDataset(str(cache_dir), expected_patch_size=16)
+
+    with pytest.raises(ValueError, match="missing geometry metadata"):
+        _ = ds[0]
 
 
 def test_main_logs_failed_phase_summary(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -77,6 +77,7 @@ class PreparePhase(Phase):
             model_cfg["backbone"],
             model_cfg["layers"],
             patch_size=patch_size,
+            edge_policy="drop_partial",
             logger=context.logger,
         )
         before_count = len(glob.glob(os.path.join(output_dir, "*.pt")))

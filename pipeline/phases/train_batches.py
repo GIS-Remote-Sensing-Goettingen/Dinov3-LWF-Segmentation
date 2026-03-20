@@ -19,12 +19,12 @@ from ..context import RunContext, TrainingError
 from ..train_utils import (
     ModelEMA,
     align_logits_to_labels,
-    align_to_patch_grid,
     build_boundary_targets,
     count_nonfinite_parameters,
     extract_multiscale_features_batch,
     forward_with_optional_extras,
     move_features_to_device,
+    require_patch_grid_compatible,
     should_warn_high_logit,
 )
 
@@ -392,7 +392,11 @@ def run_train_epoch_batches(
         )
         img = img.to(device)
         y = y.to(device)
-        img, y = align_to_patch_grid(img, y, ps, context.logger)
+        require_patch_grid_compatible(
+            img,
+            ps,
+            source=f"Train epoch {epoch + 1} batch {batch_idx}",
+        )
         stage_name = "feature_extract"
         stage_started_at = time.time()
         try:

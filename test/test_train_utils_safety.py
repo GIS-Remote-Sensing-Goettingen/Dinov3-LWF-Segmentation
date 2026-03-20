@@ -26,6 +26,7 @@ from pipeline.train_utils import (  # noqa: E402
     forward_with_optional_extras,
     head_supports_aux_logits,
     head_uses_backbone_features,
+    require_patch_grid_compatible,
     resolve_lr_metrics,
     resolve_model_patch_size,
     should_warn_high_logit,
@@ -165,6 +166,24 @@ def test_build_plot_rgb_matches_native_label_grid_shape() -> None:
 
     assert rgb.shape == (2, 2, 3)
     assert rgb.dtype == np.uint8
+
+
+def test_require_patch_grid_compatible_rejects_invalid_dino_tiles() -> None:
+    """DINO batches should fail instead of silently cropping cached geometry.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    image = torch.zeros(1, 3, 1020, 1020)
+
+    with pytest.raises(ValueError, match="1020x1020"):
+        require_patch_grid_compatible(
+            image,
+            16,
+            source="Validation batch 1",
+        )
 
 
 def test_training_xai_crop_helpers_remove_bottom_right_padding() -> None:

@@ -19,6 +19,8 @@ from tqdm import tqdm
 from transformers import AutoImageProcessor, AutoModel
 
 from .core import (
+    EDGE_POLICY_DROP_PARTIAL,
+    SUPERVISION_GRID_MODE,
     _apply_color_jitter,
     _apply_cutout,
     _apply_gridmask,
@@ -29,7 +31,9 @@ from .core import (
     _tile_passes_label_filter,
     _write_tile_payload_atomic,
     build_tile_grid_layout,
+    build_tile_payload_metadata,
     extract_multiscale_features,
+    full_fit_window_positions,
     process_image_tiles_no_features,
     read_image_tile_for_label_bounds,
 )
@@ -532,6 +536,12 @@ def prepare_data_tiles(
             _log_debug(f"Skipping label alignment failure for {basename}: {exc}")
             continue
         skipped_no_foreground = 0
+        tile_meta = build_tile_payload_metadata(
+            requested_tile_size=tile_size,
+            layout=layout,
+            patch_size=ps,
+            edge_policy="drop_partial",
+        )
         with rasterio.open(img_path) as src_img, rasterio.open(label_path) as src_lab:
             if src_img.crs != src_lab.crs:
                 _log_debug(
@@ -547,32 +557,24 @@ def prepare_data_tiles(
                 .round_offsets()
                 .round_lengths()
             )
-            row_positions = range(
-                0,
-                max(int(label_window.height), 1),
+            row_positions = full_fit_window_positions(
+                int(label_window.height),
                 layout.label_tile_size,
             )
-            col_positions = range(
-                0,
-                max(int(label_window.width), 1),
+            col_positions = full_fit_window_positions(
+                int(label_window.width),
                 layout.label_tile_size,
             )
-            row_positions = list(row_positions) or [0]
-            col_positions = list(col_positions) or [0]
-            if row_positions[-1] != max(
-                int(label_window.height) - layout.label_tile_size, 0
-            ):
-                row_positions[-1] = max(
-                    int(label_window.height) - layout.label_tile_size, 0
+            if not row_positions or not col_positions:
+                _log_debug(
+                    "Skipping %s because no full %sx%s label-grid tiles fit inside the scene."
+                    % (
+                        basename,
+                        int(layout.label_tile_size),
+                        int(layout.label_tile_size),
+                    )
                 )
-            if col_positions[-1] != max(
-                int(label_window.width) - layout.label_tile_size, 0
-            ):
-                col_positions[-1] = max(
-                    int(label_window.width) - layout.label_tile_size, 0
-                )
-            row_positions = list(dict.fromkeys(row_positions))
-            col_positions = list(dict.fromkeys(col_positions))
+                continue
             for row_off in row_positions:
                 for col_off in col_positions:
                     if max_tiles is not None and tiles_written >= max_tiles:
@@ -635,6 +637,7 @@ def prepare_data_tiles(
                             "image": torch.from_numpy(img_crop),
                             "features": [f.cpu() for f in feats] if feats else [],
                             "label": lbl_crop,
+                            "tile_meta": tile_meta,
                         }
                         wrote_tile = _write_tile_payload_atomic(payload, save_path)
                         if not wrote_tile:
@@ -673,6 +676,7 @@ class PrecomputedDataset(Dataset):
         file_subset: Optional[List[str]] = None,
         validation_cfg: Optional[dict[str, Any]] = None,
         requested_layers: Optional[Sequence[int]] = None,
+        expected_patch_size: int | None = None,
     ) -> None:
         """
         Index every cached tile path.
@@ -684,6 +688,8 @@ class PrecomputedDataset(Dataset):
             validation_cfg (Optional[dict[str, Any]]): Validation policy settings.
             requested_layers (Optional[Sequence[int]]): Optional layer ids to
                 select from cached feature tensors.
+            expected_patch_size (int | None): Required DINO patch size when the
+                active head consumes backbone features.
 
         >>> import tempfile
         >>> tmpdir = tempfile.mkdtemp()
@@ -715,6 +721,9 @@ class PrecomputedDataset(Dataset):
             [int(layer_id) for layer_id in requested_layers]
             if requested_layers is not None
             else None
+        )
+        self.expected_patch_size = (
+            None if expected_patch_size is None else max(1, int(expected_patch_size))
         )
         self.cached_layers = self._load_cached_layers(processed_dir)
 
@@ -779,7 +788,11 @@ class PrecomputedDataset(Dataset):
         else:
             label_seg = torch.from_numpy(np.asarray(label_raw).astype(np.int64)).long()
         img, features, label_seg = self._validate_sample(
-            img, features, label_seg, self.processed_files[idx]
+            img,
+            features,
+            label_seg,
+            self.processed_files[idx],
+            data.get("tile_meta"),
         )
         img, features, label_seg = self._apply_augmentations(img, features, label_seg)
         return img, features, label_seg
@@ -855,6 +868,7 @@ class PrecomputedDataset(Dataset):
         features: List[torch.Tensor],
         label: torch.Tensor,
         source: str,
+        tile_meta: Any,
     ) -> tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
         """Validate finite values and label ranges for one sample.
 
@@ -863,6 +877,7 @@ class PrecomputedDataset(Dataset):
             features (List[torch.Tensor]): Feature tensors.
             label (torch.Tensor): Label tensor.
             source (str): Source tile path.
+            tile_meta (Any): Optional per-tile geometry metadata payload.
 
         Returns:
             tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]: Validated tensors.
@@ -881,6 +896,56 @@ class PrecomputedDataset(Dataset):
                     )
         if not torch.isfinite(label.float()).all():
             raise ValueError(f"Non-finite label values in {source}")
+        if self.expected_patch_size is not None and self.expected_patch_size > 1:
+            if not isinstance(tile_meta, dict):
+                raise ValueError(
+                    f"Legacy cached tile {source} is missing geometry metadata "
+                    f"required for DINO patch size {self.expected_patch_size}."
+                )
+            patch_size = tile_meta.get("patch_size")
+            if int(patch_size) != int(self.expected_patch_size):
+                raise ValueError(
+                    f"Cached tile {source} declares patch_size={patch_size}, "
+                    f"expected {self.expected_patch_size}."
+                )
+            if tile_meta.get("edge_policy") != EDGE_POLICY_DROP_PARTIAL:
+                raise ValueError(
+                    f"Cached tile {source} declares edge_policy="
+                    f"{tile_meta.get('edge_policy')}, expected "
+                    f"{EDGE_POLICY_DROP_PARTIAL}."
+                )
+            if tile_meta.get("supervision_grid_mode") != SUPERVISION_GRID_MODE:
+                raise ValueError(
+                    f"Cached tile {source} declares supervision_grid_mode="
+                    f"{tile_meta.get('supervision_grid_mode')}, expected "
+                    f"{SUPERVISION_GRID_MODE}."
+                )
+            image_tile_size = tile_meta.get("image_tile_size")
+            label_tile_size = tile_meta.get("label_tile_size")
+            if image_tile_size is not None and tuple(img.shape[-2:]) != (
+                int(image_tile_size),
+                int(image_tile_size),
+            ):
+                raise ValueError(
+                    f"Cached tile {source} image shape {tuple(img.shape[-2:])} does "
+                    f"not match declared image_tile_size={int(image_tile_size)}."
+                )
+            if label_tile_size is not None and tuple(label.shape[-2:]) != (
+                int(label_tile_size),
+                int(label_tile_size),
+            ):
+                raise ValueError(
+                    f"Cached tile {source} label shape {tuple(label.shape[-2:])} does "
+                    f"not match declared label_tile_size={int(label_tile_size)}."
+                )
+            if (
+                int(img.shape[-2]) % int(self.expected_patch_size) != 0
+                or int(img.shape[-1]) % int(self.expected_patch_size) != 0
+            ):
+                raise ValueError(
+                    f"Cached tile {source} image shape {tuple(img.shape[-2:])} is "
+                    f"not divisible by patch_size={self.expected_patch_size}."
+                )
         label = _sanitize_label_tensor(label, cfg, source)
         return img, features, label
 

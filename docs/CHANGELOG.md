@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Redesign DINO tiling so prepare drops partial edge tiles instead of shifting
+  or zero-filling them, inference uses border-aligned sliding windows instead
+  of partial reflected edge pads, cached tiles now carry per-tile geometry
+  metadata, and DINO train/validation paths fail fast on legacy or
+  patch-incompatible caches instead of cropping inputs at runtime
+  (`utils/data/core.py`, `utils/data/pipeline.py`, `pipeline/data_splits.py`,
+  `pipeline/phases/inference.py`, `pipeline/phases/train.py`,
+  `pipeline/phases/train_batches.py`, `pipeline/phases/prepare.py`,
+  `pipeline/phases/verify.py`, `pipeline/train_utils.py`,
+  `test/test_prepare_runtime.py`, `test/test_train_utils_safety.py`,
+  `docs/ARCHITECTURE.md`).
 - Make no-feature cache compatibility patch-size aware so DINO heads no longer
   silently reuse old image-only cache geometry, and crop training XAI/epoch
   plots to the real non-padded tile footprint instead of showing black
