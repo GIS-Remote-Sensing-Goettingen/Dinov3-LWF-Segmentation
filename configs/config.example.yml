@@ -11,6 +11,8 @@ resources:
   dist_backend: nccl
   # Collective timeout in minutes for DDP sync points such as rank-0 validation.
   dist_timeout_minutes: 30
+  # Ask DDP to tolerate intermittently unused parameters at some performance cost.
+  ddp_find_unused_parameters: true
 
 logging:
   # Console/file log verbosity: `error`, `info`, or `debug`.

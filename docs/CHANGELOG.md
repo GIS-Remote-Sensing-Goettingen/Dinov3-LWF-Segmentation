@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 ### Changed
+- Add a second distributed-training hardening pass for last-batch NCCL
+  allreduce hangs by exposing `resources.ddp_find_unused_parameters`, adding
+  rank-aware batch-stage timing logs plus optional Slurm debug env toggles, and
+  escalating local non-finite/batch failures to immediate distributed
+  stop-run behavior so ranks do not silently diverge
+  (`pipeline/phases/train.py`, `pipeline/phases/train_batches.py`,
+  `configs/config_*.yml`, `segmentation.sh`, `README.md`,
+  `test/test_train_distributed_runtime.py`, `docs/ARCHITECTURE.md`).
 - Harden distributed training against epoch-boundary NCCL timeouts by making
   validation and epoch-level XAI rank-0-only work that is synchronized back to
   the other ranks via explicit DDP summary broadcasts plus an end-of-epoch

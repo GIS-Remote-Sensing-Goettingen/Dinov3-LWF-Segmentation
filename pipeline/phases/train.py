@@ -157,6 +157,38 @@ def _compose_epoch_metrics(
     }
 
 
+def _wrap_model_for_training(
+    *,
+    model: torch.nn.Module,
+    context: RunContext,
+    resources_cfg: dict[str, Any],
+) -> torch.nn.Module:
+    """Wrap the train-time model for DDP when distributed mode is active.
+
+    Args:
+        model (torch.nn.Module): Train-time model adapter.
+        context (RunContext): Active run context.
+        resources_cfg (dict[str, Any]): Parsed resources configuration.
+
+    Returns:
+        torch.nn.Module: Original model or a DDP-wrapped model.
+
+    Examples:
+        >>> callable(_wrap_model_for_training)
+        True
+    """
+
+    if not context.dist_ctx.enabled:
+        return model
+    ddp_find_unused = bool(resources_cfg.get("ddp_find_unused_parameters", True))
+    return DDP(
+        model,
+        device_ids=[context.dist_ctx.local_rank],
+        output_device=context.dist_ctx.local_rank,
+        find_unused_parameters=ddp_find_unused,
+    )
+
+
 def _scalarize_validation_metrics(val_metrics: dict[str, Any]) -> dict[str, float]:
     """Convert the validation metric payload to broadcast-safe scalars.
 
@@ -457,6 +489,7 @@ class TrainPhase(Phase):
         section = context.config.get(self.config_key, {})
         dataset_cfg = context.config.get("dataset", {})
         prepare_cfg = context.config.get("prepare", {})
+        resources_cfg = context.config.get("resources", {})
         model_cfg = get_model_config(context.config)
         processed_dir = resolve_path(
             context.config, section, "processed_dir", DEFAULT_PROCESSED_DIR
@@ -510,12 +543,15 @@ class TrainPhase(Phase):
         model = NormalizedForwardAdapter(base_model).to(device)
         if section.get("compile", False) and hasattr(torch, "compile"):
             model = cast(torch.nn.Module, torch.compile(model))
+        model = _wrap_model_for_training(
+            model=cast(torch.nn.Module, model),
+            context=context,
+            resources_cfg=resources_cfg,
+        )
         if context.dist_ctx.enabled:
-            model = DDP(
-                model,
-                device_ids=[context.dist_ctx.local_rank],
-                output_device=context.dist_ctx.local_rank,
-                find_unused_parameters=False,
+            context.logger.info(
+                "DDP configured with find_unused_parameters=%s"
+                % bool(resources_cfg.get("ddp_find_unused_parameters", True))
             )
         total_params = sum(p.numel() for p in base_model.parameters())
         trainable_params = sum(

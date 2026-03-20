@@ -18,6 +18,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pipeline.phases.train as train_module  # noqa: E402
+import pipeline.phases.train_batches as train_batches_module  # noqa: E402
 import pipeline.utils as pipeline_utils  # noqa: E402
 from pipeline.context import DistContext  # noqa: E402
 
@@ -245,3 +246,154 @@ def test_non_main_rank_uses_broadcast_xai_metrics(
     assert xai_metrics == {"xai_img_importance_mean": 0.4}
     assert backbone is None
     assert processor is None
+
+
+def test_wrap_model_for_training_respects_find_unused_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DDP wrapping should forward the configured unused-parameter policy.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    captured: dict[str, object] = {}
+
+    def fake_ddp(model: torch.nn.Module, **kwargs: object) -> torch.nn.Module:
+        """Capture DDP kwargs and return the unwrapped model.
+
+        Args:
+            model (torch.nn.Module): Model being wrapped.
+            **kwargs (object): DDP keyword arguments.
+
+        Returns:
+            torch.nn.Module: Original model.
+        """
+
+        captured["model"] = model
+        captured.update(kwargs)
+        return model
+
+    monkeypatch.setattr(train_module, "DDP", fake_ddp)
+    context = SimpleNamespace(
+        dist_ctx=DistContext(enabled=True, rank=0, world_size=2, local_rank=0)
+    )
+    model = torch.nn.Linear(2, 2)
+
+    wrapped = train_module._wrap_model_for_training(
+        model=model,
+        context=context,
+        resources_cfg={"ddp_find_unused_parameters": True},
+    )
+
+    assert wrapped is model
+    assert captured["find_unused_parameters"] is True
+    assert captured["device_ids"] == [0]
+    assert captured["output_device"] == 0
+
+
+def test_handle_nonfinite_batch_escalates_under_distributed() -> None:
+    """Distributed mode should never continue past a local non-finite batch.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    context = SimpleNamespace(
+        dist_ctx=DistContext(enabled=True, rank=1, world_size=2, local_rank=1),
+        logger=_RecordingLogger(),
+    )
+    stability = SimpleNamespace(
+        save_bad_batch_sample=False,
+        nonfinite_max_consecutive_batches=99,
+        nonfinite_max_total_batches_per_epoch=99,
+        nonfinite_action="skip_batch",
+    )
+    epoch_health = {"nonfinite_batches": 0.0, "consecutive_nonfinite_batches": 0.0}
+
+    action = train_batches_module._handle_nonfinite_batch(
+        context=context,
+        epoch=0,
+        batch_idx=3,
+        train_loader=[1, 2, 3, 4],
+        epoch_health=epoch_health,
+        stability=stability,
+        weights_dir="weights",
+        reason="loss",
+    )
+
+    assert action == "raise"
+    assert any(
+        "escalates non-finite loss" in msg for msg in context.logger.error_messages
+    )
+
+
+def test_log_distributed_batch_stage_logs_last_batch() -> None:
+    """The DDP timing helper should log the last batch even when it is fast.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    context = SimpleNamespace(
+        dist_ctx=DistContext(enabled=True, rank=1, world_size=2, local_rank=1),
+        logger=_RecordingLogger(),
+    )
+
+    train_batches_module._log_distributed_batch_stage(
+        context=context,
+        epoch=0,
+        batch_idx=5,
+        total_batches=5,
+        stage="forward_loss",
+        duration_s=0.25,
+        batch_shape=(4, 3, 224, 224),
+        feature_count=4,
+        cache_features=False,
+    )
+
+    assert len(context.logger.info_messages) == 1
+    assert (
+        "Rank 1 epoch 1 batch 5/5 stage=forward_loss" in context.logger.info_messages[0]
+    )
+
+
+def test_raise_distributed_training_error_destroys_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Distributed fail-fast should tear down the process group before raising.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    destroyed: list[bool] = []
+    monkeypatch.setattr(train_batches_module.dist, "is_available", lambda: True)
+    monkeypatch.setattr(train_batches_module.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        train_batches_module.dist,
+        "destroy_process_group",
+        lambda: destroyed.append(True),
+    )
+    context = SimpleNamespace(
+        dist_ctx=DistContext(enabled=True, rank=0, world_size=2, local_rank=0),
+        logger=_RecordingLogger(),
+    )
+
+    with pytest.raises(train_batches_module.TrainingError, match="boom"):
+        train_batches_module._raise_distributed_training_error(
+            context=context,
+            message="boom",
+        )
+
+    assert destroyed == [True]

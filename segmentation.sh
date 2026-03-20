@@ -19,6 +19,13 @@ cd "${REPO_ROOT}"
 export HF_HUB_OFFLINE=1
 export PYTHONUNBUFFERED=1
 
+if [[ "${SEGEDGE_DDP_DEBUG:-0}" == "1" ]]; then
+  export TORCH_DISTRIBUTED_DEBUG="${TORCH_DISTRIBUTED_DEBUG:-DETAIL}"
+  export TORCH_NCCL_TRACE_BUFFER_SIZE="${TORCH_NCCL_TRACE_BUFFER_SIZE:-200000}"
+  export TORCH_NCCL_DUMP_ON_TIMEOUT="${TORCH_NCCL_DUMP_ON_TIMEOUT:-1}"
+  export TORCH_SHOW_CPP_STACKTRACES="${TORCH_SHOW_CPP_STACKTRACES:-1}"
+fi
+
 detect_allocated_gpus() {
   if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     local devices=()
@@ -66,6 +73,7 @@ echo "main_path=${MAIN_PATH}"
 echo "allocated_gpus=${ALLOCATED_GPUS}"
 echo "gpus_per_node=${GPUS_PER_NODE}"
 echo "master_port=${MASTER_PORT}"
+echo "segedge_ddp_debug=${SEGEDGE_DDP_DEBUG:-0}"
 python --version
 python - <<'PY'
 import torch

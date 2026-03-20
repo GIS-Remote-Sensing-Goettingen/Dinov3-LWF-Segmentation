@@ -8,6 +8,7 @@ import time
 from typing import Any, cast
 
 import torch
+import torch.distributed as dist
 from tqdm import tqdm
 from transformers import AutoImageProcessor, AutoModel
 
@@ -26,6 +27,146 @@ from ..train_utils import (
     move_features_to_device,
     should_warn_high_logit,
 )
+
+_DDP_STAGE_SLOW_SECONDS = 30.0
+
+
+def _should_log_distributed_batch_stage(
+    *,
+    context: RunContext,
+    batch_idx: int,
+    total_batches: int,
+    duration_s: float,
+    force: bool = False,
+) -> bool:
+    """Return whether one batch stage should emit a detailed timing log.
+
+    This keeps the additional DDP diagnostics high-signal by tracing the first
+    batch, the last batch, slow stages, and any caller-forced events.
+
+    Args:
+        context (RunContext): Active run context.
+        batch_idx (int): Current 1-based batch index.
+        total_batches (int): Total number of train batches in the epoch.
+        duration_s (float): Stage duration in seconds.
+        force (bool): Whether to force a log regardless of thresholds.
+
+    Returns:
+        bool: True when a detailed timing log should be emitted.
+
+    Examples:
+        >>> _should_log_distributed_batch_stage(
+        ...     context=cast(Any, RunContext),
+        ...     batch_idx=1,
+        ...     total_batches=10,
+        ...     duration_s=0.1,
+        ...     force=True,
+        ... )
+        True
+    """
+
+    if force:
+        return True
+    if not context.dist_ctx.enabled:
+        return False
+    return (
+        batch_idx == 1
+        or batch_idx == total_batches
+        or duration_s >= _DDP_STAGE_SLOW_SECONDS
+    )
+
+
+def _log_distributed_batch_stage(
+    *,
+    context: RunContext,
+    epoch: int,
+    batch_idx: int,
+    total_batches: int,
+    stage: str,
+    duration_s: float,
+    batch_shape: tuple[int, ...],
+    feature_count: int,
+    cache_features: bool,
+    force: bool = False,
+) -> None:
+    """Emit a rank-aware DDP batch-stage timing message when warranted.
+
+    Args:
+        context (RunContext): Active run context.
+        epoch (int): Zero-based epoch index.
+        batch_idx (int): Current 1-based batch index.
+        total_batches (int): Total number of train batches.
+        stage (str): Short stage name.
+        duration_s (float): Stage duration in seconds.
+        batch_shape (tuple[int, ...]): Local image batch shape.
+        feature_count (int): Number of feature tensors attached to the batch.
+        cache_features (bool): Whether the run reads cached features.
+        force (bool): Whether to log regardless of thresholds.
+
+    Examples:
+        >>> callable(_log_distributed_batch_stage)
+        True
+    """
+
+    if not _should_log_distributed_batch_stage(
+        context=context,
+        batch_idx=batch_idx,
+        total_batches=total_batches,
+        duration_s=duration_s,
+        force=force,
+    ):
+        return
+    context.logger.info(
+        "Rank %s epoch %s batch %s/%s stage=%s took %.2fs "
+        "img=%s feature_tensors=%s cache_features=%s"
+        % (
+            context.dist_ctx.rank,
+            epoch + 1,
+            batch_idx,
+            total_batches,
+            stage,
+            duration_s,
+            batch_shape,
+            feature_count,
+            cache_features,
+        )
+    )
+
+
+def _raise_distributed_training_error(
+    *,
+    context: RunContext,
+    message: str,
+    cause: BaseException | None = None,
+) -> None:
+    """Raise a train-loop failure and tear down DDP first when active.
+
+    Args:
+        context (RunContext): Active run context.
+        message (str): Human-readable failure message.
+        cause (BaseException | None): Optional originating exception.
+
+    Raises:
+        TrainingError: Always raised with the provided message.
+
+    Examples:
+        >>> callable(_raise_distributed_training_error)
+        True
+    """
+
+    if context.dist_ctx.enabled:
+        context.logger.error(
+            "Rank %s aborting distributed training: %s"
+            % (context.dist_ctx.rank, message)
+        )
+        if dist.is_available() and dist.is_initialized():
+            try:
+                dist.destroy_process_group()
+            except Exception:
+                pass
+    if cause is not None:
+        raise TrainingError(message) from cause
+    raise TrainingError(message)
 
 
 def _handle_nonfinite_batch(
@@ -92,6 +233,12 @@ def _handle_nonfinite_batch(
         >= stability.nonfinite_max_total_batches_per_epoch
     )
     if too_many:
+        return "raise"
+    if context.dist_ctx.enabled:
+        context.logger.error(
+            "Distributed mode escalates non-finite %s to stop_run to keep ranks in sync."
+            % reason
+        )
         return "raise"
     if stability.nonfinite_action == "skip_batch":
         return "continue"
@@ -209,6 +356,8 @@ def run_train_epoch_batches(
     train_loss_batches = 0
     train_loss_component_sums = {key: 0.0 for key in LOSS_COMPONENT_KEYS}
     optimizer.zero_grad()
+    total_batches = len(train_loader)
+    next_batch_wait_started_at = epoch_start
 
     pbar = tqdm(
         train_loader,
@@ -216,6 +365,9 @@ def run_train_epoch_batches(
         leave=False,
     )
     for batch_idx, (img, features, y) in enumerate(pbar, 1):
+        fetch_duration = time.time() - next_batch_wait_started_at
+        batch_shape = tuple(img.shape)
+        feature_count = len(features) if features is not None else 0
         if not first_batch_logged:
             first_batch_logged = True
             first_delay = time.time() - epoch_start
@@ -223,9 +375,22 @@ def run_train_epoch_batches(
                 f"Epoch {epoch + 1} first batch received after {first_delay:.2f}s"
             )
             last_log_time = time.time()
+        _log_distributed_batch_stage(
+            context=context,
+            epoch=epoch,
+            batch_idx=batch_idx,
+            total_batches=total_batches,
+            stage="fetch",
+            duration_s=fetch_duration,
+            batch_shape=batch_shape,
+            feature_count=feature_count,
+            cache_features=cache_features,
+        )
         img = img.to(device)
         y = y.to(device)
         img, y = align_to_patch_grid(img, y, ps, context.logger)
+        stage_name = "feature_extract"
+        stage_started_at = time.time()
         try:
             if cache_features and features:
                 feats = move_features_to_device(features, device)
@@ -241,6 +406,20 @@ def run_train_epoch_batches(
                     model_cfg["layers"],
                     ps,
                 )
+            feature_duration = time.time() - stage_started_at
+            _log_distributed_batch_stage(
+                context=context,
+                epoch=epoch,
+                batch_idx=batch_idx,
+                total_batches=total_batches,
+                stage=stage_name,
+                duration_s=feature_duration,
+                batch_shape=batch_shape,
+                feature_count=len(feats),
+                cache_features=cache_features,
+            )
+            stage_name = "forward_loss"
+            stage_started_at = time.time()
             with autocast:
                 logits, aux_logits, edge_logits, skeleton_logits, _ = (
                     forward_with_optional_extras(
@@ -289,18 +468,49 @@ def run_train_epoch_batches(
                     ),
                 )
                 loss = loss_components["loss_total"] / grad_accum
+            forward_duration = time.time() - stage_started_at
+            _log_distributed_batch_stage(
+                context=context,
+                epoch=epoch,
+                batch_idx=batch_idx,
+                total_batches=total_batches,
+                stage=stage_name,
+                duration_s=forward_duration,
+                batch_shape=batch_shape,
+                feature_count=len(feats),
+                cache_features=cache_features,
+            )
         except Exception as exc:
-            context.logger.info(
-                "Batch %s failed with %s; img=%s, features=%s, layers=%s"
+            failed_after = time.time() - stage_started_at
+            context.logger.error(
+                "Rank %s batch %s/%s failed at stage=%s after %.2fs; "
+                "img=%s, features=%s, layers=%s, error=%s"
                 % (
+                    context.dist_ctx.rank,
                     batch_idx,
-                    exc,
-                    tuple(img.shape),
-                    len(features) if features is not None else 0,
+                    total_batches,
+                    stage_name,
+                    failed_after,
+                    batch_shape,
+                    feature_count,
                     model_cfg["layers"],
+                    exc,
                 )
             )
-            raise
+            _raise_distributed_training_error(
+                context=context,
+                message=(
+                    "Rank %s failed at epoch %s batch %s/%s during %s"
+                    % (
+                        context.dist_ctx.rank,
+                        epoch + 1,
+                        batch_idx,
+                        total_batches,
+                        stage_name,
+                    )
+                ),
+                cause=exc,
+            )
 
         batch_max_abs_logit = float(
             torch.nan_to_num(
@@ -340,23 +550,41 @@ def run_train_epoch_batches(
             )
             optimizer.zero_grad()
             if action == "continue":
+                next_batch_wait_started_at = time.time()
                 continue
             if action == "break_epoch":
                 epoch_aborted = True
                 break
-            raise TrainingError(
-                f"Non-finite loss at epoch {epoch + 1} batch {batch_idx}"
+            _raise_distributed_training_error(
+                context=context,
+                message=(
+                    "Non-finite loss at epoch %s batch %s/%s"
+                    % (epoch + 1, batch_idx, total_batches)
+                ),
             )
         epoch_health["consecutive_nonfinite_batches"] = 0
+        backward_started_at = time.time()
         if scaler:
             scaler.scale(loss).backward()
         else:
             loss.backward()
+        _log_distributed_batch_stage(
+            context=context,
+            epoch=epoch,
+            batch_idx=batch_idx,
+            total_batches=total_batches,
+            stage="backward",
+            duration_s=time.time() - backward_started_at,
+            batch_shape=batch_shape,
+            feature_count=len(feats),
+            cache_features=cache_features,
+        )
 
         if batch_idx % grad_accum == 0 or batch_idx == len(train_loader):
             grads_ok = True
             if scaler:
                 scaler.unscale_(optimizer)
+            grad_clip_started_at = time.time()
             if stability.grad_clip_norm > 0:
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     base_model.parameters(),
@@ -370,6 +598,17 @@ def run_train_epoch_batches(
                 epoch_health["grad_norm"] = float(grad_norm_value)
                 if not math.isfinite(grad_norm_value):
                     grads_ok = False
+            _log_distributed_batch_stage(
+                context=context,
+                epoch=epoch,
+                batch_idx=batch_idx,
+                total_batches=total_batches,
+                stage="grad_clip",
+                duration_s=time.time() - grad_clip_started_at,
+                batch_shape=batch_shape,
+                feature_count=len(feats),
+                cache_features=cache_features,
+            )
             if not grads_ok:
                 action = _handle_nonfinite_batch(
                     context=context,
@@ -386,15 +625,21 @@ def run_train_epoch_batches(
                 )
                 optimizer.zero_grad()
                 if action == "continue":
+                    next_batch_wait_started_at = time.time()
                     continue
                 if action == "break_epoch":
                     epoch_aborted = True
                     break
-                raise TrainingError(
-                    f"Non-finite gradient norm at epoch {epoch + 1} batch {batch_idx}"
+                _raise_distributed_training_error(
+                    context=context,
+                    message=(
+                        "Non-finite gradient norm at epoch %s batch %s/%s"
+                        % (epoch + 1, batch_idx, total_batches)
+                    ),
                 )
 
             step_happened = False
+            optimizer_started_at = time.time()
             if scaler:
                 scale_before = scaler.get_scale()
                 scaler.step(optimizer)
@@ -405,6 +650,17 @@ def run_train_epoch_batches(
                 optimizer.step()
                 step_happened = True
             optimizer.zero_grad()
+            _log_distributed_batch_stage(
+                context=context,
+                epoch=epoch,
+                batch_idx=batch_idx,
+                total_batches=total_batches,
+                stage="optimizer_step",
+                duration_s=time.time() - optimizer_started_at,
+                batch_shape=batch_shape,
+                feature_count=len(feats),
+                cache_features=cache_features,
+            )
 
             if step_happened:
                 epoch_health["optimizer_steps"] += 1
@@ -437,13 +693,22 @@ def run_train_epoch_batches(
                         logit_tensor=logits,
                     )
                     if action == "continue":
+                        next_batch_wait_started_at = time.time()
                         continue
                     if action == "break_epoch":
                         epoch_aborted = True
                         break
-                    raise TrainingError(
-                        f"Detected {param_nonfinite_count} non-finite parameters at "
-                        f"epoch {epoch + 1} batch {batch_idx}"
+                    _raise_distributed_training_error(
+                        context=context,
+                        message=(
+                            "Detected %s non-finite parameters at epoch %s batch %s/%s"
+                            % (
+                                param_nonfinite_count,
+                                epoch + 1,
+                                batch_idx,
+                                total_batches,
+                            )
+                        ),
                     )
 
         train_loss += loss.item() * grad_accum
@@ -473,10 +738,11 @@ def run_train_epoch_batches(
             now = time.time()
             avg_batch = (now - last_log_time) / 10
             context.logger.info(
-                f"Epoch {epoch + 1} batch {batch_idx}/{len(train_loader)} "
+                f"Epoch {epoch + 1} batch {batch_idx}/{total_batches} "
                 f"avg batch time {avg_batch:.2f}s"
             )
             last_log_time = now
+        next_batch_wait_started_at = time.time()
 
     if train_loss_batches == 0:
         avg_train_loss = float("nan")

@@ -69,6 +69,12 @@ MLflow-compatible artifacts for research workflows.
   next epoch begins so one rank cannot enter the next DDP forward while rank 0
   is still finishing epoch-end diagnostics. The process-group timeout is also
   configurable through `resources.dist_timeout_minutes` for slower HPC runs.
+- **Distributed train-loop safety policy:** the train batch loop emits rank-aware
+  timing logs for first/last/slow stages, escalates local non-finite recovery
+  to a hard failure under DDP so ranks do not diverge, and exposes
+  `resources.ddp_find_unused_parameters` so distributed runs can trade some
+  performance for safer gradient synchronization while debugging intermittent
+  graph/bucket mismatches.
 - **Distributed prepare policy:** when `resources.distributed` is enabled,
   `PreparePhase` runs tiling/cache writes only on rank 0, then broadcasts the
   resulting metrics/artifacts or failure to the other ranks before later phases
