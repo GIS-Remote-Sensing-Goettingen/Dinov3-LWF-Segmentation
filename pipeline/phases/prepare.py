@@ -76,7 +76,8 @@ class PreparePhase(Phase):
             cache_features,
             model_cfg["backbone"],
             model_cfg["layers"],
-            context.logger,
+            patch_size=patch_size,
+            logger=context.logger,
         )
         before_count = len(glob.glob(os.path.join(output_dir, "*.pt")))
         max_tiles = dataset_cfg.get("max_tiles")

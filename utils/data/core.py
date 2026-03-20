@@ -712,12 +712,18 @@ def _apply_gridmask(img: torch.Tensor, cfg: dict[str, Any]) -> torch.Tensor:
     return torch.clamp(out, 0.0, 1.0)
 
 
-def _cache_subdir_name(tile_size: int, cache_features: bool) -> str:
+def _cache_subdir_name(
+    tile_size: int,
+    cache_features: bool,
+    patch_size: int | None = None,
+) -> str:
     """Build a cache subdirectory name for tile size and feature mode.
 
     Args:
         tile_size (int): Tile size in pixels.
         cache_features (bool): Whether features are cached.
+        patch_size (int | None): Effective patch-size compatibility requirement
+            for no-feature caches.
 
     Returns:
         str: Subdirectory name.
@@ -725,11 +731,13 @@ def _cache_subdir_name(tile_size: int, cache_features: bool) -> str:
     Examples:
         >>> _cache_subdir_name(512, True)
         'tiles_512_feat_labelgrid'
-        >>> _cache_subdir_name(1024, False)
-        'tiles_1024_nofeat_labelgrid'
+        >>> _cache_subdir_name(1024, False, patch_size=16)
+        'tiles_1024_nofeat_ps16_labelgrid'
     """
 
     suffix = "feat" if cache_features else "nofeat"
+    if not cache_features and patch_size is not None:
+        return f"tiles_{tile_size}_{suffix}_ps{int(patch_size)}_labelgrid"
     return f"tiles_{tile_size}_{suffix}_labelgrid"
 
 
@@ -777,6 +785,7 @@ def _write_cache_metadata(
     cache_features: bool,
     model_name: str | None,
     layers: Sequence[int] | None,
+    patch_size: int | None,
 ) -> None:
     """Write cache metadata for a tile directory.
 
@@ -786,6 +795,7 @@ def _write_cache_metadata(
         cache_features (bool): Whether features are cached.
         model_name (str | None): Backbone model name.
         layers (Sequence[int] | None): Backbone layer indices.
+        patch_size (int | None): Effective patch-size compatibility requirement.
 
     Returns:
         None: Metadata is written to disk.
@@ -796,6 +806,7 @@ def _write_cache_metadata(
         "cache_features": cache_features,
         "model_name": model_name,
         "layers": list(layers) if layers is not None else None,
+        "patch_size": None if patch_size is None else int(patch_size),
         "supervision_grid_mode": SUPERVISION_GRID_MODE,
     }
     meta_path = _cache_meta_path(cache_dir)
@@ -810,6 +821,7 @@ def _validate_cache_metadata(
     cache_features: bool | None,
     model_name: str | None,
     layers: Sequence[int] | None,
+    patch_size: int | None = None,
     allow_layer_subset: bool = False,
 ) -> None:
     """Validate cache metadata against expected settings.
@@ -820,6 +832,8 @@ def _validate_cache_metadata(
         cache_features (bool | None): Expected cache_features setting.
         model_name (str | None): Expected model name.
         layers (Sequence[int] | None): Expected backbone layers.
+        patch_size (int | None): Expected patch-size compatibility requirement
+            for no-feature caches.
         allow_layer_subset (bool): Allow the requested layer list to be a subset
             of the cached layer list.
 
@@ -836,6 +850,17 @@ def _validate_cache_metadata(
         )
     if model_name is not None and meta.get("model_name") != model_name:
         mismatches.append(f"model_name={meta.get('model_name')} expected {model_name}")
+    if patch_size is not None:
+        cached_patch_size = meta.get("patch_size")
+        if cached_patch_size is None:
+            if int(patch_size) != 1:
+                mismatches.append(
+                    f"patch_size={cached_patch_size} expected {int(patch_size)}"
+                )
+        elif int(cached_patch_size) != int(patch_size):
+            mismatches.append(
+                f"patch_size={cached_patch_size} expected {int(patch_size)}"
+            )
     if layers is not None:
         cached_layers = meta.get("layers")
         expected_layers = [int(layer_id) for layer_id in layers]
@@ -868,6 +893,7 @@ def resolve_cache_dir_for_prepare(
     cache_features: bool,
     model_name: str,
     layers: Sequence[int],
+    patch_size: int | None = None,
     logger: Optional["VerbosityLogger"] = None,
 ) -> str:
     """Return the cache directory for prepare, creating it if needed.
@@ -878,6 +904,8 @@ def resolve_cache_dir_for_prepare(
         cache_features (bool): Whether features are cached.
         model_name (str): Backbone model name.
         layers (Sequence[int]): Backbone layer indices.
+        patch_size (int | None): Effective patch-size compatibility requirement
+            for no-feature caches.
         logger (VerbosityLogger | None): Optional logger.
 
     Returns:
@@ -886,6 +914,7 @@ def resolve_cache_dir_for_prepare(
 
     expected_model_name = model_name if cache_features else None
     expected_layers = layers if cache_features else None
+    expected_patch_size = None if cache_features else patch_size
     meta = _load_cache_metadata(base_dir)
     if meta is not None:
         _validate_cache_metadata(
@@ -894,11 +923,19 @@ def resolve_cache_dir_for_prepare(
             cache_features,
             expected_model_name,
             expected_layers,
+            patch_size=expected_patch_size,
             allow_layer_subset=bool(cache_features),
         )
         return base_dir
 
-    cache_dir = os.path.join(base_dir, _cache_subdir_name(tile_size, cache_features))
+    cache_dir = os.path.join(
+        base_dir,
+        _cache_subdir_name(
+            tile_size,
+            cache_features,
+            patch_size=expected_patch_size,
+        ),
+    )
     os.makedirs(cache_dir, exist_ok=True)
     meta = _load_cache_metadata(cache_dir)
     if meta is not None:
@@ -908,6 +945,7 @@ def resolve_cache_dir_for_prepare(
             cache_features,
             expected_model_name,
             expected_layers,
+            patch_size=expected_patch_size,
             allow_layer_subset=bool(cache_features),
         )
     else:
@@ -917,6 +955,7 @@ def resolve_cache_dir_for_prepare(
             cache_features,
             expected_model_name,
             expected_layers,
+            expected_patch_size,
         )
     if logger and glob.glob(os.path.join(base_dir, "*.pt")):
         logger.info(
@@ -930,6 +969,7 @@ def resolve_cache_dir_for_train(
     base_dir: str,
     tile_size: int | None,
     cache_features: bool | None,
+    patch_size: int | None = None,
     logger: Optional["VerbosityLogger"] = None,
 ) -> str:
     """Return the cache directory for training/verification.
@@ -938,6 +978,8 @@ def resolve_cache_dir_for_train(
         base_dir (str): Base cache directory.
         tile_size (int | None): Expected tile size.
         cache_features (bool | None): Expected cache_features setting.
+        patch_size (int | None): Effective patch-size compatibility requirement
+            for no-feature caches.
         logger (VerbosityLogger | None): Optional logger.
 
     Returns:
@@ -947,18 +989,40 @@ def resolve_cache_dir_for_train(
         ValueError: If multiple matching cache directories are found.
     """
 
+    expected_patch_size = None if cache_features else patch_size
     meta = _load_cache_metadata(base_dir)
     if meta is not None:
-        _validate_cache_metadata(meta, tile_size, cache_features, None, None)
+        _validate_cache_metadata(
+            meta,
+            tile_size,
+            cache_features,
+            None,
+            None,
+            patch_size=expected_patch_size,
+        )
         return base_dir
 
     derived = None
     if tile_size is not None and cache_features is not None:
-        derived = os.path.join(base_dir, _cache_subdir_name(tile_size, cache_features))
+        derived = os.path.join(
+            base_dir,
+            _cache_subdir_name(
+                tile_size,
+                cache_features,
+                patch_size=expected_patch_size,
+            ),
+        )
         if os.path.exists(derived):
             meta = _load_cache_metadata(derived)
             if meta is not None:
-                _validate_cache_metadata(meta, tile_size, cache_features, None, None)
+                _validate_cache_metadata(
+                    meta,
+                    tile_size,
+                    cache_features,
+                    None,
+                    None,
+                    patch_size=expected_patch_size,
+                )
             return derived
 
     cache_dirs = []
@@ -969,12 +1033,16 @@ def resolve_cache_dir_for_train(
             meta = _load_cache_metadata(entry.path)
             if meta is None:
                 continue
-            if tile_size is not None and meta.get("tile_size") != tile_size:
-                continue
-            if (
-                cache_features is not None
-                and meta.get("cache_features") != cache_features
-            ):
+            try:
+                _validate_cache_metadata(
+                    meta,
+                    tile_size,
+                    cache_features,
+                    None,
+                    None,
+                    patch_size=expected_patch_size,
+                )
+            except ValueError:
                 continue
             cache_dirs.append(entry.path)
     if len(cache_dirs) == 1:
@@ -987,6 +1055,13 @@ def resolve_cache_dir_for_train(
             "or point processed_dir to a specific cache directory."
         )
     if glob.glob(os.path.join(base_dir, "*.pt")):
+        if expected_patch_size is not None and int(expected_patch_size) > 1:
+            raise ValueError(
+                "Legacy no-feature cached tiles in %s are missing patch-size "
+                "metadata required for patch_size=%s. Re-run prepare or point "
+                "processed_dir to a compatible cache directory."
+                % (base_dir, int(expected_patch_size))
+            )
         return base_dir
     return derived or base_dir
 

@@ -524,11 +524,13 @@ class TrainPhase(Phase):
                 % model_cfg["head"]
             )
         tile_size = dataset_cfg.get("tile_size", prepare_cfg.get("tile_size"))
+        ps = resolve_model_patch_size(model_cfg["backbone"], model_cfg["head"])
         processed_dir = resolve_cache_dir_for_train(
             processed_dir,
             tile_size,
             cache_features,
-            context.logger,
+            patch_size=ps,
+            logger=context.logger,
         )
         max_tiles = dataset_cfg.get("max_tiles")
         context.logger.info(
@@ -653,7 +655,6 @@ class TrainPhase(Phase):
                 % model_cfg["head"]
             )
 
-        ps = resolve_model_patch_size(model_cfg["backbone"], model_cfg["head"])
         stability = context.stability
         use_amp = device.type == "cuda"
         if stability.amp_enabled == "off":

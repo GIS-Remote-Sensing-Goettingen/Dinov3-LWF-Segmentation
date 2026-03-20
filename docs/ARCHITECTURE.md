@@ -91,6 +91,13 @@ MLflow-compatible artifacts for research workflows.
   a compatible cache directory already exists and already satisfies
   `dataset.max_tiles`, prepare short-circuits instead of rescanning source
   imagery; existing tiles also count toward any remaining top-up budget.
+  No-feature caches also record the effective patch-size compatibility
+  requirement so image-only caches are not silently reused by DINO heads that
+  require a different crop geometry.
+- **Training XAI padding policy:** epoch validation/XAI plots treat
+  `ignore_index`-only bottom/right label regions as batch padding, crop RGB/GT/
+  prediction/XAI maps back to the real tile footprint before saving artifacts,
+  and therefore avoid showing black padding strips in training-time plots.
 - **Inference XAI failure policy:** scene/tile predictions remain the source of
   truth for inference success, while Grad-CAM stays best-effort. Shared
   Grad-CAM helpers now return structured failure metadata so training and

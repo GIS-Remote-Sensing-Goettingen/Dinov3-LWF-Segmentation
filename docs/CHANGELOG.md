@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 ### Changed
+- Make no-feature cache compatibility patch-size aware so DINO heads no longer
+  silently reuse old image-only cache geometry, and crop training XAI/epoch
+  plots to the real non-padded tile footprint instead of showing black
+  bottom/right padding artifacts
+  (`utils/data/core.py`, `pipeline/phases/train_xai.py`,
+  `test/test_prepare_runtime.py`, `test/test_train_utils_safety.py`,
+  `docs/ARCHITECTURE.md`).
 - Fix baseline-head aux-supervision capability detection so
   `dino_dense_probe` and `dino_segdino_light` no longer claim auxiliary logits
   they do not return; training now ignores `aux_weight` for those heads

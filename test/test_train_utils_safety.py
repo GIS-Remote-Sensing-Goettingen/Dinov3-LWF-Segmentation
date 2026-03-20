@@ -14,7 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from models.unet import DinoUNetHead  # noqa: E402
 from models.unet_nano import DinoUNetNanoHead  # noqa: E402
 from models.unet_nano_fapm import DinoUNetNanoFAPMHead  # noqa: E402
-from pipeline.phases.train_xai import _build_plot_rgb  # noqa: E402
+from pipeline.phases.train_xai import (  # noqa: E402
+    _build_plot_rgb,
+    _crop_sample_payload_to_valid_region,
+    _resolve_valid_label_slices,
+)
 from pipeline.train_utils import (  # noqa: E402
     NormalizedForwardAdapter,
     align_logits_to_labels,
@@ -161,6 +165,39 @@ def test_build_plot_rgb_matches_native_label_grid_shape() -> None:
 
     assert rgb.shape == (2, 2, 3)
     assert rgb.dtype == np.uint8
+
+
+def test_training_xai_crop_helpers_remove_bottom_right_padding() -> None:
+    """Training XAI plots should exclude padded bottom/right label regions.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    sample_gt = torch.tensor([[[1, 1, 255], [1, 0, 255], [255, 255, 255]]])
+    row_slice, col_slice = _resolve_valid_label_slices(sample_gt, ignore_index=255)
+    payload = {
+        "rgb": np.ones((3, 3, 3), dtype=np.uint8),
+        "gt_mask": np.ones((3, 3), dtype=np.int64),
+        "pred_mask": np.ones((3, 3), dtype=np.int64),
+        "attn_cls": np.ones((3, 3), dtype=np.float32),
+        "attn_rollout": np.ones((3, 3), dtype=np.float32),
+        "gradcam": np.ones((3, 3), dtype=np.float32),
+        "pca_rgb": np.ones((3, 3, 3), dtype=np.float32),
+        "top_maps": [np.ones((3, 3), dtype=np.float32)],
+    }
+
+    cropped = _crop_sample_payload_to_valid_region(payload, row_slice, col_slice)
+
+    assert cropped["rgb"].shape == (2, 2, 3)
+    assert cropped["gt_mask"].shape == (2, 2)
+    assert cropped["pred_mask"].shape == (2, 2)
+    assert cropped["attn_cls"].shape == (2, 2)
+    assert cropped["attn_rollout"].shape == (2, 2)
+    assert cropped["gradcam"].shape == (2, 2)
+    assert cropped["pca_rgb"].shape == (2, 2, 3)
+    assert cropped["top_maps"][0].shape == (2, 2)
 
 
 def test_should_warn_high_logit_uses_batch_value() -> None:

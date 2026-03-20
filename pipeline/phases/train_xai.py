@@ -47,6 +47,96 @@ from ..xai.module_xai_epoch import update_module_xai_epoch
 from .train_batches import ensure_backbone_processor
 
 
+def _resolve_valid_label_slices(
+    sample_gt: torch.Tensor,
+    ignore_index: int | None,
+) -> tuple[slice, slice]:
+    """Resolve the non-padded bottom/right extent for one label-grid sample.
+
+    Args:
+        sample_gt (torch.Tensor): Label tensor shaped ``(1, H, W)`` or ``(H, W)``.
+        ignore_index (int | None): Ignore index used for padded label regions.
+
+    Returns:
+        tuple[slice, slice]: Row/column slices covering the valid tile area.
+    """
+
+    label = sample_gt.detach().cpu()
+    if label.ndim >= 3:
+        label = label[0]
+    height, width = int(label.shape[-2]), int(label.shape[-1])
+    if ignore_index is None:
+        return slice(0, height), slice(0, width)
+    valid_mask = label != int(ignore_index)
+    if not bool(valid_mask.any()):
+        return slice(0, height), slice(0, width)
+    valid_rows = torch.nonzero(valid_mask.any(dim=1), as_tuple=False).flatten()
+    valid_cols = torch.nonzero(valid_mask.any(dim=0), as_tuple=False).flatten()
+    return (
+        slice(0, int(valid_rows[-1].item()) + 1),
+        slice(0, int(valid_cols[-1].item()) + 1),
+    )
+
+
+def _crop_plot_array(
+    array: np.ndarray,
+    row_slice: slice,
+    col_slice: slice,
+) -> np.ndarray:
+    """Crop one plot/XAI array to the valid tile footprint.
+
+    Args:
+        array (np.ndarray): Array with leading spatial axes ``(H, W, ...)``.
+        row_slice (slice): Row slice describing the valid extent.
+        col_slice (slice): Column slice describing the valid extent.
+
+    Returns:
+        np.ndarray: Cropped array.
+    """
+
+    if array.ndim < 2:
+        return array
+    return np.asarray(array[row_slice, col_slice, ...])
+
+
+def _crop_sample_payload_to_valid_region(
+    sample_payload: dict[str, Any],
+    row_slice: slice,
+    col_slice: slice,
+) -> dict[str, Any]:
+    """Crop the training-XAI payload to the valid tile footprint.
+
+    Args:
+        sample_payload (dict[str, Any]): Plot/XAI sample payload.
+        row_slice (slice): Valid row extent.
+        col_slice (slice): Valid column extent.
+
+    Returns:
+        dict[str, Any]: Cropped payload.
+    """
+
+    cropped = dict(sample_payload)
+    for key in (
+        "rgb",
+        "gt_mask",
+        "pred_mask",
+        "attn_cls",
+        "attn_rollout",
+        "gradcam",
+        "pca_rgb",
+    ):
+        value = cropped.get(key)
+        if value is None:
+            continue
+        cropped[key] = _crop_plot_array(np.asarray(value), row_slice, col_slice)
+    if "top_maps" in cropped:
+        cropped["top_maps"] = [
+            _crop_plot_array(np.asarray(top_map), row_slice, col_slice)
+            for top_map in cropped.get("top_maps", [])
+        ]
+    return cropped
+
+
 def _build_plot_rgb(sample_img: torch.Tensor, sample_gt: torch.Tensor) -> np.ndarray:
     """Build a uint8 RGB preview aligned to the GT/pred label grid.
 
@@ -431,6 +521,9 @@ def _collect_epoch_xai_samples(
         for local_idx, wants_plot, wants_channel in wanted_local:
             sample_img = v_img[local_idx : local_idx + 1]
             sample_gt = v_y[local_idx : local_idx + 1]
+            valid_row_slice, valid_col_slice = _resolve_valid_label_slices(
+                sample_gt, loss_ignore_index
+            )
             rgb_input = sample_img.detach().cpu().numpy().transpose(0, 2, 3, 1)[0]
             rgb_input = np.clip(rgb_input * 255.0, 0, 255).astype(np.uint8)
             rgb = _build_plot_rgb(sample_img, sample_gt)
@@ -646,11 +739,21 @@ def _collect_epoch_xai_samples(
                     )
                     if pca_rgb_map is not None:
                         sample_payload["pca_rgb"] = pca_rgb_map
+                    sample_payload = _crop_sample_payload_to_valid_region(
+                        sample_payload,
+                        valid_row_slice,
+                        valid_col_slice,
+                    )
                 module_sample = build_module_xai_sample(sample_payload, sample_extras)
                 if plot_cfg.xai_enable and module_sample is not None:
                     module_xai_samples.append(module_sample)
 
             if wants_plot and sample_payload is not None:
+                sample_payload = _crop_sample_payload_to_valid_region(
+                    sample_payload,
+                    valid_row_slice,
+                    valid_col_slice,
+                )
                 sample_plots.append(sample_payload)
             if (
                 len(sample_plots) >= desired_pairs

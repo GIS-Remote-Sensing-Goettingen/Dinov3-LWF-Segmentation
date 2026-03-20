@@ -30,6 +30,7 @@ from utils.data.core import (  # noqa: E402
     process_image_tiles_no_features,
     read_label_window_for_image_bounds,
     resolve_cache_dir_for_prepare,
+    resolve_cache_dir_for_train,
 )
 from utils.data.pipeline import PrecomputedDataset, prepare_data_tiles  # noqa: E402
 
@@ -181,7 +182,7 @@ def test_prepare_phase_runs_only_on_main_rank(
     monkeypatch.setattr(
         prepare_module,
         "resolve_cache_dir_for_prepare",
-        lambda output_dir, *args: output_dir,
+        lambda output_dir, *args, **kwargs: output_dir,
     )
     monkeypatch.setattr(
         prepare_module, "broadcast_main_object", lambda dist_ctx, payload: payload
@@ -389,6 +390,7 @@ def test_prepare_phase_reports_zero_tiles_added_when_cache_already_satisfies_lim
             cache_features=False,
             model_name="demo-backbone",
             layers=[5],
+            patch_size=1,
         )
     )
     for idx in range(2):
@@ -424,6 +426,7 @@ def test_resolve_cache_dir_for_prepare_accepts_requested_layer_subset(
             '  "cache_features": true,\n'
             '  "layers": [5, 11, 17, 23],\n'
             '  "model_name": "demo-backbone",\n'
+            '  "patch_size": null,\n'
             '  "supervision_grid_mode": "native_label_grid",\n'
             '  "tile_size": 512\n'
             "}\n"
@@ -437,6 +440,7 @@ def test_resolve_cache_dir_for_prepare_accepts_requested_layer_subset(
         cache_features=True,
         model_name="demo-backbone",
         layers=[23],
+        patch_size=16,
     )
 
     assert resolved == str(cache_dir)
@@ -463,6 +467,7 @@ def test_resolve_cache_dir_for_prepare_ignores_layers_for_no_feature_cache(
             '  "cache_features": false,\n'
             '  "layers": [5, 11, 17, 23],\n'
             '  "model_name": "old-backbone",\n'
+            '  "patch_size": 1,\n'
             '  "supervision_grid_mode": "native_label_grid",\n'
             '  "tile_size": 512\n'
             "}\n"
@@ -476,6 +481,7 @@ def test_resolve_cache_dir_for_prepare_ignores_layers_for_no_feature_cache(
         cache_features=False,
         model_name="new-backbone",
         layers=[23],
+        patch_size=1,
     )
 
     assert resolved == str(cache_dir)
@@ -502,6 +508,7 @@ def test_resolve_cache_dir_for_prepare_writes_no_feature_metadata_without_layers
         cache_features=False,
         model_name="demo-backbone",
         layers=[23],
+        patch_size=1,
     )
 
     meta_path = Path(resolved) / "cache_meta.json"
@@ -509,6 +516,69 @@ def test_resolve_cache_dir_for_prepare_writes_no_feature_metadata_without_layers
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     assert meta["layers"] is None
     assert meta["model_name"] is None
+    assert meta["patch_size"] == 1
+
+
+def test_resolve_cache_dir_for_train_reuses_matching_no_feature_patch_cache(
+    tmp_path: Path,
+) -> None:
+    """Train should reuse a no-feature cache only when patch size matches.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    base_dir = tmp_path / "cache"
+    resolved_prepare = resolve_cache_dir_for_prepare(
+        str(base_dir),
+        tile_size=512,
+        cache_features=False,
+        model_name="demo-backbone",
+        layers=[23],
+        patch_size=16,
+    )
+
+    resolved_train = resolve_cache_dir_for_train(
+        str(base_dir),
+        tile_size=512,
+        cache_features=False,
+        patch_size=16,
+    )
+
+    assert resolved_train == resolved_prepare
+    assert resolved_train.endswith("tiles_512_nofeat_ps16_labelgrid")
+
+
+def test_resolve_cache_dir_for_train_rejects_legacy_no_feature_cache_without_patch_size(
+    tmp_path: Path,
+) -> None:
+    """Train should not silently reuse legacy no-feature caches for DINO heads.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    legacy_dir = tmp_path / "legacy_cache"
+    legacy_dir.mkdir()
+    torch.save(
+        {"image": torch.zeros(1), "label": torch.zeros(1)}, legacy_dir / "tile.pt"
+    )
+
+    with pytest.raises(ValueError, match="missing patch-size metadata"):
+        resolve_cache_dir_for_train(
+            str(legacy_dir),
+            tile_size=512,
+            cache_features=False,
+            patch_size=16,
+        )
 
 
 def test_precomputed_dataset_selects_requested_cached_layers(tmp_path: Path) -> None:

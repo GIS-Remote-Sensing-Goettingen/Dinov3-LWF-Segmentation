@@ -10,7 +10,8 @@ from utils import resolve_cache_dir_for_train, verify_and_clean_dataset_fast
 from ..constants import DEFAULT_PROCESSED_DIR
 from ..context import PhaseOutcome, RunContext
 from ..phase_runner import Phase
-from ..utils import resolve_path
+from ..train_utils import head_uses_backbone_features, resolve_model_patch_size
+from ..utils import get_model_config, resolve_path
 
 
 class VerifyPhase(Phase):
@@ -32,16 +33,25 @@ class VerifyPhase(Phase):
         section = context.config.get(self.config_key, {})
         dataset_cfg = context.config.get("dataset", {})
         prepare_cfg = context.config.get("prepare", {})
+        model_cfg = get_model_config(context.config)
         processed_dir = resolve_path(
             context.config, section, "processed_dir", DEFAULT_PROCESSED_DIR
         )
-        cache_features = dataset_cfg.get("cache_features")
+        requested_cache_features = dataset_cfg.get("cache_features")
+        requires_backbone_features = head_uses_backbone_features(model_cfg["head"])
+        cache_features = (
+            bool(requested_cache_features) and requires_backbone_features
+            if requested_cache_features is not None
+            else None
+        )
         tile_size = dataset_cfg.get("tile_size", prepare_cfg.get("tile_size"))
+        patch_size = resolve_model_patch_size(model_cfg["backbone"], model_cfg["head"])
         processed_dir = resolve_cache_dir_for_train(
             processed_dir,
             tile_size,
-            cache_features if cache_features is not None else None,
-            context.logger,
+            cache_features,
+            patch_size=patch_size,
+            logger=context.logger,
         )
         before_count = len(glob.glob(os.path.join(processed_dir, "*.pt")))
         verify_summary = verify_and_clean_dataset_fast(
