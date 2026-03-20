@@ -8,12 +8,16 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pipeline.data_splits as data_splits_module  # noqa: E402
 from pipeline.context import DistContext  # noqa: E402
-from pipeline.data_splits import resolve_dataset_splits  # noqa: E402
+from pipeline.data_splits import (  # noqa: E402
+    _collate_variable_tiles,
+    resolve_dataset_splits,
+)
 
 _TILE_SUFFIX_RE = re.compile(r"_y-?\d+_x-?\d+$")
 
@@ -252,3 +256,33 @@ def test_validate_distributed_train_loader_shape_rejects_rank_mismatch(
             logger=_NoopLogger(),
             dist_ctx=DistContext(enabled=True, rank=0, world_size=2, local_rank=0),
         )
+
+
+def test_collate_variable_tiles_pads_images_labels_and_features() -> None:
+    """Batch collation should pad mixed-size cached tiles safely.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    batch = [
+        (
+            torch.ones(3, 4, 5),
+            [torch.ones(2, 2, 3)],
+            torch.zeros(2, 3, dtype=torch.long),
+        ),
+        (
+            torch.ones(3, 6, 4),
+            [torch.ones(2, 3, 2) * 2],
+            torch.ones(3, 2, dtype=torch.long),
+        ),
+    ]
+
+    images, features, labels = _collate_variable_tiles(batch, label_ignore_index=255)
+
+    assert images.shape == (2, 3, 6, 5)
+    assert len(features) == 1
+    assert features[0].shape == (2, 2, 3, 3)
+    assert labels.shape == (2, 3, 3)
+    assert labels[0, -1, -1].item() == 255

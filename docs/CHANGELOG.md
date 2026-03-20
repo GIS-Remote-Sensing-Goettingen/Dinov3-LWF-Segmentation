@@ -9,12 +9,16 @@
   symmetric encoder/decoder with double 3x3 conv blocks, max-pooling, and
   transpose-convolution upsampling), and update prepare/train/inference/XAI so
   this head ignores `model.layers`, skips DINO feature caching/extraction, and
-  no longer requires auxiliary logits
+  no longer requires auxiliary logits. Train/validation dataloaders now also
+  pad mixed-size cached image/label/feature tensors per batch so native
+  label-grid caches from scenes with different scale factors can still be
+  batched safely
   (`models/unet.py`, `pipeline/train_utils.py`, `pipeline/data_splits.py`,
   `pipeline/phases/prepare.py`, `pipeline/phases/train.py`,
   `pipeline/phases/train_batches.py`, `pipeline/phases/train_xai.py`,
   `pipeline/phases/inference.py`, `utils/data/pipeline.py`,
   `test/test_train_utils_safety.py`, `test/test_prepare_runtime.py`,
+  `test/test_data_splits_leakage.py`,
   `README.md`, `docs/ARCHITECTURE.md`).
 - Add a `train.plots.paper` profile that emits curated paper-oriented copies of
   epoch metric/XAI figures under `artifacts/plots/*/paper`, adds a compact

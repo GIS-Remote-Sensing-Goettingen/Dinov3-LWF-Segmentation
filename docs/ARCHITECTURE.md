@@ -92,8 +92,10 @@ MLflow-compatible artifacts for research workflows.
   grids: image tiles stay on the finer image resolution while label masks stay
   on the native label raster grid. Training/evaluation treat the label grid as
   the supervision source of truth by resizing logits down to label space before
-  losses/metrics, and inference writes prediction rasters on the same label
-  grid when `label_path` is available.
+  losses/metrics, inference writes prediction rasters on the same label
+  grid when `label_path` is available, and train/validation dataloaders pad
+  mixed-size cached tensors within a batch so scenes with different native
+  scale factors remain batchable.
 - **Cache compatibility policy:** label-grid-supervised tiles live in
   cache directories suffixed with `_labelgrid`, and cache metadata records the
   supervision-grid mode so older image-grid caches are rejected instead of

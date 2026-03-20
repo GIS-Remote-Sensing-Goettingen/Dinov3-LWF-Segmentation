@@ -7,9 +7,12 @@ import os
 import random
 import re
 from collections import defaultdict
+from functools import partial
 from typing import Optional, Sized, cast
 
+import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -28,6 +31,96 @@ _AUGMENT_SUFFIXES = (
     "_rot180",
     "_rot270",
 )
+
+
+def _pad_spatial_tensor(
+    tensor: torch.Tensor,
+    target_hw: tuple[int, int],
+    fill_value: float | int = 0,
+) -> torch.Tensor:
+    """Pad one tensor on the bottom/right edges to a target spatial size.
+
+    Args:
+        tensor (torch.Tensor): Tensor with trailing ``(H, W)`` dimensions.
+        target_hw (tuple[int, int]): Target ``(height, width)``.
+        fill_value (float | int): Constant pad value.
+
+    Returns:
+        torch.Tensor: Tensor padded to ``target_hw``.
+    """
+
+    target_h, target_w = int(target_hw[0]), int(target_hw[1])
+    pad_h = max(0, target_h - int(tensor.shape[-2]))
+    pad_w = max(0, target_w - int(tensor.shape[-1]))
+    if pad_h == 0 and pad_w == 0:
+        return tensor
+    return F.pad(tensor, (0, pad_w, 0, pad_h), value=float(fill_value))
+
+
+def _collate_variable_tiles(
+    batch: list[tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]],
+    *,
+    label_ignore_index: int,
+) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
+    """Collate one batch of cached tiles with bottom/right padding.
+
+    This keeps batching valid when native label-grid tiling yields different
+    image or label shapes across scenes.
+
+    Args:
+        batch: Sequence of ``(image, features, label)`` samples.
+        label_ignore_index: Fill value for padded label regions.
+
+    Returns:
+        tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
+            Padded image batch, padded feature batches per layer, and padded
+            label batch.
+    """
+
+    if not batch:
+        raise ValueError("Cannot collate an empty batch.")
+
+    images, feature_lists, labels = zip(*batch)
+    image_target = (
+        max(int(image.shape[-2]) for image in images),
+        max(int(image.shape[-1]) for image in images),
+    )
+    label_target = (
+        max(int(label.shape[-2]) for label in labels),
+        max(int(label.shape[-1]) for label in labels),
+    )
+    padded_images = torch.stack(
+        [_pad_spatial_tensor(image, image_target, fill_value=0.0) for image in images],
+        dim=0,
+    )
+    padded_labels = torch.stack(
+        [
+            _pad_spatial_tensor(label, label_target, fill_value=label_ignore_index)
+            for label in labels
+        ],
+        dim=0,
+    )
+
+    feature_count = len(feature_lists[0])
+    if any(len(features) != feature_count for features in feature_lists):
+        raise ValueError("Feature-list length mismatch inside one batch.")
+    padded_feature_batches: list[torch.Tensor] = []
+    for layer_idx in range(feature_count):
+        layer_tensors = [features[layer_idx] for features in feature_lists]
+        layer_target = (
+            max(int(feat.shape[-2]) for feat in layer_tensors),
+            max(int(feat.shape[-1]) for feat in layer_tensors),
+        )
+        padded_feature_batches.append(
+            torch.stack(
+                [
+                    _pad_spatial_tensor(feat, layer_target, fill_value=0.0)
+                    for feat in layer_tensors
+                ],
+                dim=0,
+            )
+        )
+    return padded_images, padded_feature_batches, padded_labels
 
 
 def _file_stem(path: str) -> str:
@@ -278,6 +371,8 @@ def create_dataloaders(
 
     augment_cfg = dataset_cfg.get("augmentations", {})
     validation_cfg = dataset_cfg.get("validation", {})
+    raw_ignore_index = validation_cfg.get("ignore_index", 255)
+    label_ignore_index = 255 if raw_ignore_index is None else int(raw_ignore_index)
     split_cfg = dataset_cfg.get("splits", {})
     cache_features = bool(dataset_cfg.get("cache_features", False))
     allow_feature_mismatch = bool(augment_cfg.get("allow_feature_mismatch", False))
@@ -336,6 +431,10 @@ def create_dataloaders(
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
+        collate_fn=partial(
+            _collate_variable_tiles,
+            label_ignore_index=label_ignore_index,
+        ),
     )
     _validate_distributed_train_loader_shape(
         train_dataset=train_dataset,
@@ -360,6 +459,10 @@ def create_dataloaders(
             num_workers=val_workers,
             pin_memory=True,
             persistent_workers=val_workers > 0,
+            collate_fn=partial(
+                _collate_variable_tiles,
+                label_ignore_index=label_ignore_index,
+            ),
         )
     return train_loader, train_sampler, val_loader
 
