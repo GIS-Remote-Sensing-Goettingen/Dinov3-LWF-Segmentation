@@ -34,7 +34,10 @@ from ..train_utils import (
     build_autocast,
     count_nonfinite_parameters,
     evaluate,
+    head_supports_aux_logits,
+    head_uses_backbone_features,
     resolve_lr_metrics,
+    resolve_model_patch_size,
     split_params_for_muon,
     use_adamw_only_for_head,
 )
@@ -238,6 +241,8 @@ def _resolve_epoch_validation_state(
     stability: Any,
     boundary_kernel_size: int,
     early_stopping: EarlyStopping,
+    requires_backbone_features: bool = True,
+    require_aux_logits: bool = False,
 ) -> tuple[dict[str, Any], Any, Any]:
     """Run rank-0 validation and broadcast the epoch summary to all ranks.
 
@@ -255,6 +260,8 @@ def _resolve_epoch_validation_state(
         use_amp (bool): Whether AMP is enabled for validation.
         model_cfg (dict[str, Any]): Parsed model configuration.
         cache_features (bool): Whether cached DINO features are available.
+        requires_backbone_features (bool): Whether the head needs DINO features.
+        require_aux_logits (bool): Whether aux logits must be present.
         backbone (Any): Cached backbone handle for on-the-fly features.
         processor (Any): Cached processor handle for on-the-fly features.
         ps (int): Backbone patch size.
@@ -274,7 +281,7 @@ def _resolve_epoch_validation_state(
     payload: dict[str, Any] | None = None
     validation_started_at = time.time()
     if (not context.dist_ctx.enabled) or context.dist_ctx.is_main:
-        if not cache_features:
+        if requires_backbone_features and not cache_features:
             backbone, processor = ensure_backbone_processor(
                 backbone,
                 processor,
@@ -296,6 +303,8 @@ def _resolve_epoch_validation_state(
             ps=ps,
             stability=stability,
             boundary_kernel_size=boundary_kernel_size,
+            requires_backbone_features=requires_backbone_features,
+            require_aux_logits=require_aux_logits,
         )
         validation_duration = time.time() - validation_started_at
         context.logger.info(
@@ -506,7 +515,14 @@ class TrainPhase(Phase):
         if context.dist_ctx.enabled:
             device = torch.device(f"cuda:{context.dist_ctx.local_rank}")
         batch_size = section.get("batch_size", 4)
-        cache_features = bool(dataset_cfg.get("cache_features", True))
+        requested_cache_features = bool(dataset_cfg.get("cache_features", True))
+        requires_backbone_features = head_uses_backbone_features(model_cfg["head"])
+        cache_features = requested_cache_features and requires_backbone_features
+        if requested_cache_features and not requires_backbone_features:
+            context.logger.info(
+                "Head '%s' is image-only; train will ignore cached DINO features."
+                % model_cfg["head"]
+            )
         tile_size = dataset_cfg.get("tile_size", prepare_cfg.get("tile_size"))
         processed_dir = resolve_cache_dir_for_train(
             processed_dir,
@@ -628,8 +644,16 @@ class TrainPhase(Phase):
             topology_on_aux=resolved_loss.topology_on_aux,
             topology_downsample=resolved_loss.topology_downsample,
         ).to(device)
+        require_aux_logits = float(
+            resolved_loss.aux_weight
+        ) > 0.0 and head_supports_aux_logits(model_cfg["head"])
+        if float(resolved_loss.aux_weight) > 0.0 and not require_aux_logits:
+            context.logger.info(
+                "Head '%s' does not expose auxiliary logits; aux supervision is ignored."
+                % model_cfg["head"]
+            )
 
-        ps = 14 if "vitl14" in model_cfg["backbone"] else 16
+        ps = resolve_model_patch_size(model_cfg["backbone"], model_cfg["head"])
         stability = context.stability
         use_amp = device.type == "cuda"
         if stability.amp_enabled == "off":
@@ -722,6 +746,8 @@ class TrainPhase(Phase):
                         processor=processor,
                         autocast=autocast,
                         scaler=scaler,
+                        requires_backbone_features=requires_backbone_features,
+                        require_aux_logits=require_aux_logits,
                         grad_accum=grad_accum,
                         stability=stability,
                         boundary_kernel_size=boundary_kernel_size,
@@ -749,6 +775,8 @@ class TrainPhase(Phase):
                             use_amp=use_amp,
                             model_cfg=model_cfg,
                             cache_features=cache_features,
+                            requires_backbone_features=requires_backbone_features,
+                            require_aux_logits=require_aux_logits,
                             backbone=backbone,
                             processor=processor,
                             ps=ps,

@@ -290,6 +290,8 @@ def run_train_epoch_batches(
     processor: Any,
     autocast: Any,
     scaler: Any,
+    requires_backbone_features: bool,
+    require_aux_logits: bool,
     grad_accum: int,
     stability: Any,
     boundary_kernel_size: int,
@@ -318,6 +320,8 @@ def run_train_epoch_batches(
         processor (Any): Cached image processor or ``None``.
         autocast (Any): AMP autocast context manager.
         scaler (Any): Optional gradient scaler.
+        requires_backbone_features (bool): Whether the head needs DINO features.
+        require_aux_logits (bool): Whether aux logits must be present.
         grad_accum (int): Gradient accumulation steps.
         stability (Any): Stability configuration object.
         boundary_kernel_size (int): Boundary-target morphology kernel size.
@@ -392,7 +396,9 @@ def run_train_epoch_batches(
         stage_name = "feature_extract"
         stage_started_at = time.time()
         try:
-            if cache_features and features:
+            if not requires_backbone_features:
+                feats = []
+            elif cache_features and features:
                 feats = move_features_to_device(features, device)
             else:
                 backbone, processor = ensure_backbone_processor(
@@ -426,7 +432,7 @@ def run_train_epoch_batches(
                         model_call,
                         img,
                         feats,
-                        require_aux_logits=loss_fn.aux_weight > 0,
+                        require_aux_logits=require_aux_logits,
                     )
                 )
                 logits = cast(torch.Tensor, align_logits_to_labels(logits, y))

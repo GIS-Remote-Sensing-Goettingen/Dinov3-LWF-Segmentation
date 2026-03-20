@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Replace `head: unet` with a standard image-only U-Net (Ronneberger-style
+  symmetric encoder/decoder with double 3x3 conv blocks, max-pooling, and
+  transpose-convolution upsampling), and update prepare/train/inference/XAI so
+  this head ignores `model.layers`, skips DINO feature caching/extraction, and
+  no longer requires auxiliary logits
+  (`models/unet.py`, `pipeline/train_utils.py`, `pipeline/data_splits.py`,
+  `pipeline/phases/prepare.py`, `pipeline/phases/train.py`,
+  `pipeline/phases/train_batches.py`, `pipeline/phases/train_xai.py`,
+  `pipeline/phases/inference.py`, `utils/data/pipeline.py`,
+  `test/test_train_utils_safety.py`, `test/test_prepare_runtime.py`,
+  `README.md`, `docs/ARCHITECTURE.md`).
 - Add a `train.plots.paper` profile that emits curated paper-oriented copies of
   epoch metric/XAI figures under `artifacts/plots/*/paper`, adds a compact
   `training_summary.png` cross-epoch plot, and restyles the paper variants with
@@ -22,6 +33,10 @@
   (`utils/data/core.py`, `utils/data/pipeline.py`,
   `pipeline/data_splits.py`, `pipeline/phases/train.py`,
   `test/test_prepare_runtime.py`).
+- Ignore backbone model/layer metadata for `prepare` caches when
+  `cache_features: false`, so no-feature tile caches are reusable across layer
+  config changes and new no-feature cache metadata no longer persists unused
+  model/layer fields (`utils/data/core.py`, `test/test_prepare_runtime.py`).
 - Make `unet_nano` accept 1-4 selected DINO layers by keeping the deepest
   available feature as the bottleneck input and dropping missing shallow DINO
   skip concatenations, while preserving the existing 4-layer path; add

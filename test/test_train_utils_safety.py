@@ -11,17 +11,23 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from models.unet import DinoUNetHead  # noqa: E402
 from models.unet_nano import DinoUNetNanoHead  # noqa: E402
 from models.unet_nano_fapm import DinoUNetNanoFAPMHead  # noqa: E402
 from pipeline.phases.train_xai import _build_plot_rgb  # noqa: E402
 from pipeline.train_utils import (  # noqa: E402
     NormalizedForwardAdapter,
     align_logits_to_labels,
+    evaluate,
     forward_with_optional_extras,
+    head_supports_aux_logits,
+    head_uses_backbone_features,
     resolve_lr_metrics,
+    resolve_model_patch_size,
     should_warn_high_logit,
     use_adamw_only_for_head,
 )
+from utils import SegmentationLoss  # noqa: E402
 from utils.optim import Muon  # noqa: E402
 
 
@@ -38,6 +44,76 @@ def test_use_adamw_only_for_baseline_heads() -> None:
     assert use_adamw_only_for_head("dino_dense_probe")
     assert use_adamw_only_for_head("dino_segdino_light")
     assert not use_adamw_only_for_head("unet_lite")
+
+
+def test_standard_unet_is_image_only_and_has_no_aux_logits() -> None:
+    """Standard `unet` should bypass DINO features and aux supervision.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    assert not head_uses_backbone_features("unet")
+    assert not head_supports_aux_logits("unet")
+    assert (
+        resolve_model_patch_size("facebook/dinov3-vitl16-pretrain-sat493m", "unet") == 1
+    )
+
+
+def test_standard_unet_forward_ignores_feature_list() -> None:
+    """The standard U-Net head should segment directly from the image tensor.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    head = DinoUNetHead(num_classes=2, dino_channels=1024)
+    image = torch.randn(2, 3, 128, 128, requires_grad=True)
+    logits = head(
+        image,
+        [torch.randn(2, 1024, 8, 8), torch.randn(2, 1024, 4, 4)],
+    )
+
+    assert logits.shape == (2, 2, 128, 128)
+    logits.mean().backward()
+    assert image.grad is not None
+
+
+def test_evaluate_supports_image_only_unet_without_backbone() -> None:
+    """Validation should run for the standard U-Net with empty feature lists.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    head = DinoUNetHead(num_classes=2, dino_channels=1024)
+    loader = [
+        (
+            torch.randn(1, 3, 64, 64),
+            [],
+            torch.zeros(1, 64, 64, dtype=torch.long),
+        )
+    ]
+    loss_fn = SegmentationLoss(num_classes=2, aux_weight=0.4)
+
+    loss, metrics = evaluate(
+        head,
+        loader,
+        loss_fn,
+        torch.device("cpu"),
+        use_amp=False,
+        num_classes=2,
+        cache_features=False,
+        requires_backbone_features=False,
+        require_aux_logits=False,
+        ps=1,
+    )
+
+    assert isinstance(loss, float)
+    assert "miou" in metrics
 
 
 def test_align_logits_to_labels_downsamples_to_native_label_grid() -> None:

@@ -884,14 +884,16 @@ def resolve_cache_dir_for_prepare(
         str: Resolved cache directory.
     """
 
+    expected_model_name = model_name if cache_features else None
+    expected_layers = layers if cache_features else None
     meta = _load_cache_metadata(base_dir)
     if meta is not None:
         _validate_cache_metadata(
             meta,
             tile_size,
             cache_features,
-            model_name,
-            layers,
+            expected_model_name,
+            expected_layers,
             allow_layer_subset=bool(cache_features),
         )
         return base_dir
@@ -904,12 +906,18 @@ def resolve_cache_dir_for_prepare(
             meta,
             tile_size,
             cache_features,
-            model_name,
-            layers,
+            expected_model_name,
+            expected_layers,
             allow_layer_subset=bool(cache_features),
         )
     else:
-        _write_cache_metadata(cache_dir, tile_size, cache_features, model_name, layers)
+        _write_cache_metadata(
+            cache_dir,
+            tile_size,
+            cache_features,
+            expected_model_name,
+            expected_layers,
+        )
     if logger and glob.glob(os.path.join(base_dir, "*.pt")):
         logger.info(
             "Legacy cached tiles detected in %s; writing new tiles to %s."

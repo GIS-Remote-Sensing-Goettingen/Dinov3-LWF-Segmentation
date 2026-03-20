@@ -22,6 +22,19 @@ _PATCH_CROP_WARNED: set[tuple[int, int, int]] = set()
 _ADAMW_ONLY_HEADS: frozenset[str] = frozenset(
     {"dino_dense_probe", "dino_segdino_light"}
 )
+_IMAGE_ONLY_HEADS: frozenset[str] = frozenset({"unet"})
+_AUX_LOGIT_HEADS: frozenset[str] = frozenset(
+    {
+        "dino_dense_probe",
+        "dino_segdino_light",
+        "unet_v2",
+        "unet_lite",
+        "unet_lite_plus",
+        "unet_nano",
+        "unet_nano_fapm",
+        "unet_topo_fusion",
+    }
+)
 
 
 class ModelEMA:
@@ -535,6 +548,66 @@ def use_adamw_only_for_head(head_name: str) -> bool:
     return str(head_name).strip().lower() in _ADAMW_ONLY_HEADS
 
 
+def head_uses_backbone_features(head_name: str) -> bool:
+    """Return whether a head consumes DINO backbone features.
+
+    Args:
+        head_name (str): Model head registry key.
+
+    Returns:
+        bool: ``True`` when the head expects DINO feature tensors.
+
+    Examples:
+        >>> head_uses_backbone_features("unet")
+        False
+        >>> head_uses_backbone_features("unet_nano")
+        True
+    """
+
+    return str(head_name).strip().lower() not in _IMAGE_ONLY_HEADS
+
+
+def head_supports_aux_logits(head_name: str) -> bool:
+    """Return whether a head exposes auxiliary supervision logits.
+
+    Args:
+        head_name (str): Model head registry key.
+
+    Returns:
+        bool: ``True`` when the head returns auxiliary logits.
+
+    Examples:
+        >>> head_supports_aux_logits("unet")
+        False
+        >>> head_supports_aux_logits("unet_nano")
+        True
+    """
+
+    return str(head_name).strip().lower() in _AUX_LOGIT_HEADS
+
+
+def resolve_model_patch_size(backbone_name: str, head_name: str) -> int:
+    """Return the spatial compatibility multiple required by the active head.
+
+    Args:
+        backbone_name (str): Backbone model identifier.
+        head_name (str): Segmentation head registry key.
+
+    Returns:
+        int: Patch-size multiple. Image-only heads return ``1``.
+
+    Examples:
+        >>> resolve_model_patch_size("facebook/dinov3-vitl16-pretrain-sat493m", "unet")
+        1
+        >>> resolve_model_patch_size("facebook/dinov3-vitl16-pretrain-sat493m", "unet_nano")
+        16
+    """
+
+    if not head_uses_backbone_features(head_name):
+        return 1
+    return 14 if "vitl14" in str(backbone_name) else 16
+
+
 def should_warn_high_logit(batch_max_abs_logit: float, threshold: float) -> bool:
     """Return whether batch logits exceed the configured warning threshold.
 
@@ -653,6 +726,8 @@ def evaluate(
     ps: int = 16,
     stability: StabilityConfig | None = None,
     boundary_kernel_size: int = 3,
+    requires_backbone_features: bool = True,
+    require_aux_logits: bool = False,
 ) -> tuple[float, dict[str, Any]]:
     """Evaluate the model on the validation set.
 
@@ -671,6 +746,8 @@ def evaluate(
         ps (int): Patch size for the backbone.
         stability (StabilityConfig | None): Stability policy controls.
         boundary_kernel_size (int): Kernel size for boundary target extraction.
+        requires_backbone_features (bool): Whether the head needs DINO features.
+        require_aux_logits (bool): Whether aux logits must be present.
 
     Returns:
         tuple[float, dict[str, Any]]: Average loss and metrics summary.
@@ -712,7 +789,9 @@ def evaluate(
             img = img.to(device)
             y = y.to(device)
             img, y = align_to_patch_grid(img, y, patch_size=ps, logger=logger)
-            if cache_features and features:
+            if not requires_backbone_features:
+                feats = []
+            elif cache_features and features:
                 feats = move_features_to_device(features, device)
             else:
                 if backbone is None or processor is None or layers is None:
@@ -734,7 +813,7 @@ def evaluate(
                         model_call,
                         img,
                         feats,
-                        require_aux_logits=loss_fn.aux_weight > 0,
+                        require_aux_logits=require_aux_logits,
                     )
                 )
                 logits = cast(torch.Tensor, align_logits_to_labels(logits, y))

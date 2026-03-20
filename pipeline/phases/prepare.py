@@ -17,6 +17,7 @@ from ..constants import (
 )
 from ..context import PhaseOutcome, RunContext
 from ..phase_runner import Phase
+from ..train_utils import head_uses_backbone_features, resolve_model_patch_size
 from ..utils import broadcast_main_object, get_model_config, resolve_path
 
 
@@ -59,8 +60,16 @@ class PreparePhase(Phase):
         device = torch.device(section.get("device", DEFAULT_DEVICE))
         if context.dist_ctx.enabled:
             device = torch.device(f"cuda:{context.dist_ctx.local_rank}")
-        cache_features = bool(section.get("cache_features", True))
+        requested_cache_features = bool(section.get("cache_features", True))
+        uses_backbone_features = head_uses_backbone_features(model_cfg["head"])
+        cache_features = requested_cache_features and uses_backbone_features
+        if requested_cache_features and not uses_backbone_features:
+            context.logger.info(
+                "Head '%s' is image-only; prepare will cache image/label tiles "
+                "without DINO features." % model_cfg["head"]
+            )
         tile_size = section.get("tile_size", 512)
+        patch_size = resolve_model_patch_size(model_cfg["backbone"], model_cfg["head"])
         output_dir = resolve_cache_dir_for_prepare(
             output_dir,
             tile_size,
@@ -81,6 +90,7 @@ class PreparePhase(Phase):
             tile_size=tile_size,
             cache_features=cache_features,
             tile_filter_cfg=dataset_cfg.get("tile_filter"),
+            patch_size=patch_size,
             workers=section.get("workers"),
             max_tiles=max_tiles,
             logger=context.logger,

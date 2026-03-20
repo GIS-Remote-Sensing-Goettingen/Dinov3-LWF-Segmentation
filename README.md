@@ -1,6 +1,6 @@
 # DINOv3Seg Experiments
 
-This repository provides a research-grade segmentation pipeline that keeps a frozen **DINOv3** backbone and swaps different decoder heads (classic U-Net, SPM/FAPM-enhanced U-Net, and a MaskFormer-style transformer). The pipeline now runs entirely from a YAML configuration file, supports structured verbosity with timestamps, and records durations for every major phase.
+This repository provides a research-grade segmentation pipeline for segmentation experiments with both frozen-**DINOv3** decoder heads and an image-only standard U-Net baseline. The pipeline now runs entirely from a YAML configuration file, supports structured verbosity with timestamps, and records durations for every major phase.
 
 ## Quick Start
 
@@ -38,6 +38,8 @@ Important cache semantics:
 - `dataset.cache_features` and `prepare.cache_features` control whether cached
   `.pt` tiles include precomputed DINO features. They do not disable tile
   caching itself.
+- `head: unet` is image-only: it ignores `model.layers`, skips DINO feature
+  caching/extraction, and trains directly from RGB tiles.
 - `paths.label_path` is read during `prepare` when tiles are built. Training
   usually reads cached `.pt` tiles from `processed_dir`, not the label TIFF
   directly.
@@ -124,6 +126,7 @@ model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
   head: unet_v2          # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
+                         # `unet` is the image-only standard U-Net baseline and ignores `model.layers`
   num_classes: 2
   dino_channels: 1024
   dense_probe:
@@ -311,7 +314,7 @@ The `model.head` key selects one of the decoders registered under `models/`:
 |-------------|------------------|-------------------------------------------------------------------|
 | `dino_dense_probe` | `models/dino_dense_probe.py` | Dense linear-probe baseline on last-layer DINO tokens (`norm -> 1x1 conv -> upsample`). |
 | `dino_segdino_light` | `models/dino_segdino_light.py` | SegDINO-style lightweight multi-layer fusion head (`per-layer 1x1 -> align -> concat -> fuse`). |
-| `unet`      | `models/unet.py` | Baseline DinoUNet with stacked UpBlocks and raw-image skip.       |
+| `unet`      | `models/unet.py` | Standard image-only U-Net baseline (64/128/256/512 encoder, 1024 bottleneck, transpose-conv decoder); ignores `model.layers`. |
 | `unet_v2`   | `models/unet_v2.py` | Adds Spatial Prior Module + Fidelity-Aware projections + deep supervision. |
 | `unet_lite` | `models/UnetLite.py` | Lightweight DinoUNet variant with reduced channels for faster training/inference. |
 | `unet_lite_plus` | `models/unet_lite_plus.py` | Opt-in Lite+ variant using interpolate+conv upsampling, GN+GELU residual blocks, and lightweight gated H/4 fusion. |

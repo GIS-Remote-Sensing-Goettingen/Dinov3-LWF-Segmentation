@@ -41,6 +41,7 @@ from ..inference_utils import (
     upsample_map,
 )
 from ..phase_runner import Phase
+from ..train_utils import head_uses_backbone_features, resolve_model_patch_size
 from ..utils import get_model_config, resolve_path
 
 
@@ -97,8 +98,14 @@ class InferencePhase(Phase):
         paths_cfg = context.config.get("paths", {})
         model_cfg = get_model_config(context.config)
         device = torch.device(infer_cfg.get("device", DEFAULT_DEVICE))
-        processor = AutoImageProcessor.from_pretrained(model_cfg["backbone"])
-        backbone = AutoModel.from_pretrained(model_cfg["backbone"]).eval().to(device)
+        uses_backbone_features = head_uses_backbone_features(model_cfg["head"])
+        processor = None
+        backbone = None
+        if uses_backbone_features:
+            processor = AutoImageProcessor.from_pretrained(model_cfg["backbone"])
+            backbone = (
+                AutoModel.from_pretrained(model_cfg["backbone"]).eval().to(device)
+            )
         head = build_head(
             model_cfg["head"],
             num_classes=model_cfg["num_classes"],
@@ -125,7 +132,7 @@ class InferencePhase(Phase):
         output_dir = infer_cfg.get("output_dir")
         output_tif = infer_cfg.get("output_tif")
         tile_size = infer_cfg.get("tile_size", 512)
-        ps = 14 if "vitl14" in model_cfg["backbone"] else 16
+        ps = resolve_model_patch_size(model_cfg["backbone"], model_cfg["head"])
         overlap_cfg = infer_cfg.get("overlap", 0.0)
         overlap_px = (
             int(tile_size * overlap_cfg) if overlap_cfg < 1 else int(overlap_cfg)
@@ -294,15 +301,20 @@ class InferencePhase(Phase):
                                 .unsqueeze(0)
                                 .to(device)
                             )
-                            feats = extract_multiscale_features(
-                                aug_img.astype(np.float32),
-                                backbone,
-                                processor,
-                                device,
-                                model_cfg["layers"],
-                                ps=ps,
-                            )
-                            feats_batched = [f.to(device).unsqueeze(0) for f in feats]
+                            feats_batched = []
+                            if uses_backbone_features:
+                                assert backbone is not None and processor is not None
+                                feats = extract_multiscale_features(
+                                    aug_img.astype(np.float32),
+                                    backbone,
+                                    processor,
+                                    device,
+                                    model_cfg["layers"],
+                                    ps=ps,
+                                )
+                                feats_batched = [
+                                    f.to(device).unsqueeze(0) for f in feats
+                                ]
                             with torch.no_grad(), autocast:
                                 logits = head(img_t, feats_batched)
                                 logits = transform.invert_logits(logits)
@@ -325,21 +337,27 @@ class InferencePhase(Phase):
                         tile_probs /= len(tta_transforms)
                         gradcam_tile = None
                         if explain_enabled:
-                            gradcam_tile = upsample_map(
-                                compute_gradcam_map(
-                                    img_tile_raw.astype(np.float32),
-                                    backbone,
-                                    head,
-                                    processor,
-                                    device,
-                                    model_cfg["layers"],
-                                    ps,
-                                    class_index,
-                                    logger=context.logger,
-                                ),
-                                orig_h,
-                                orig_w,
-                            )
+                            if uses_backbone_features:
+                                assert backbone is not None and processor is not None
+                                gradcam_tile = upsample_map(
+                                    compute_gradcam_map(
+                                        img_tile_raw.astype(np.float32),
+                                        backbone,
+                                        head,
+                                        processor,
+                                        device,
+                                        model_cfg["layers"],
+                                        ps,
+                                        class_index,
+                                        logger=context.logger,
+                                    ),
+                                    orig_h,
+                                    orig_w,
+                                )
+                            else:
+                                gradcam_tile = np.zeros(
+                                    (orig_h, orig_w), dtype=np.float32
+                                )
                         blend_key = (orig_h, orig_w)
                         if label_grid_enabled:
                             tile_bounds = src.window_bounds(window)

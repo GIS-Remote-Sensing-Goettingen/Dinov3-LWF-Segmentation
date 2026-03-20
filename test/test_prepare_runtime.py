@@ -7,6 +7,7 @@ Examples:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -309,6 +310,75 @@ def test_resolve_cache_dir_for_prepare_accepts_requested_layer_subset(
     assert resolved == str(cache_dir)
 
 
+def test_resolve_cache_dir_for_prepare_ignores_layers_for_no_feature_cache(
+    tmp_path: Path,
+) -> None:
+    """Prepare should ignore model/layer metadata when features are not cached.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "cache_meta.json").write_text(
+        (
+            "{\n"
+            '  "cache_features": false,\n'
+            '  "layers": [5, 11, 17, 23],\n'
+            '  "model_name": "old-backbone",\n'
+            '  "supervision_grid_mode": "native_label_grid",\n'
+            '  "tile_size": 512\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    resolved = resolve_cache_dir_for_prepare(
+        str(cache_dir),
+        tile_size=512,
+        cache_features=False,
+        model_name="new-backbone",
+        layers=[23],
+    )
+
+    assert resolved == str(cache_dir)
+
+
+def test_resolve_cache_dir_for_prepare_writes_no_feature_metadata_without_layers(
+    tmp_path: Path,
+) -> None:
+    """New no-feature prepare caches should not persist model/layer metadata.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    base_dir = tmp_path / "cache"
+
+    resolved = resolve_cache_dir_for_prepare(
+        str(base_dir),
+        tile_size=512,
+        cache_features=False,
+        model_name="demo-backbone",
+        layers=[23],
+    )
+
+    meta_path = Path(resolved) / "cache_meta.json"
+    assert meta_path.exists()
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["layers"] is None
+    assert meta["model_name"] is None
+
+
 def test_precomputed_dataset_selects_requested_cached_layers(tmp_path: Path) -> None:
     """Dataset should load only the requested cached feature tensors.
 
@@ -351,6 +421,49 @@ def test_precomputed_dataset_selects_requested_cached_layers(tmp_path: Path) -> 
 
     assert len(features) == 1
     assert torch.all(features[0] == 3.0)
+
+
+def test_precomputed_dataset_can_drop_all_cached_features(tmp_path: Path) -> None:
+    """Image-only heads should be able to ignore cached feature tensors.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "cache_meta.json").write_text(
+        (
+            "{\n"
+            '  "cache_features": true,\n'
+            '  "layers": [5, 11, 17, 23],\n'
+            '  "model_name": "demo-backbone",\n'
+            '  "supervision_grid_mode": "native_label_grid",\n'
+            '  "tile_size": 512\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+    sample_path = cache_dir / "sample.pt"
+    torch.save(
+        {
+            "image": torch.zeros(4, 4, 3),
+            "features": [
+                torch.full((2, 2, 2), fill_value=float(idx)) for idx in range(4)
+            ],
+            "label": np.zeros((4, 4), dtype=np.uint8),
+        },
+        sample_path,
+    )
+
+    dataset = PrecomputedDataset(str(cache_dir), requested_layers=[])
+    _, features, _ = dataset[0]
+
+    assert features == []
 
 
 def test_atomic_tile_writer_preserves_existing_cache(tmp_path: Path) -> None:

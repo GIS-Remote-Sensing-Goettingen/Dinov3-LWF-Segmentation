@@ -217,6 +217,7 @@ def prepare_data_tiles(
     tile_size: int = 512,
     cache_features: bool = True,
     tile_filter_cfg: Optional[dict[str, Any]] = None,
+    patch_size: int | None = None,
     workers: int | None = None,
     max_tiles: int | None = None,
     logger: Optional["VerbosityLogger"] = None,
@@ -234,6 +235,8 @@ def prepare_data_tiles(
         tile_size (int): Tile size in pixels.
         cache_features (bool): Whether to cache DINO features on disk.
         tile_filter_cfg (Optional[dict[str, Any]]): Optional tile-label filter config.
+        patch_size (int | None): Optional feature-compatibility multiple used for
+            label-grid tiling. When unset, it is derived from the backbone.
         workers (int | None): Number of worker processes for tiling.
         max_tiles (int | None): Optional tile limit for preparation.
         logger (Optional["VerbosityLogger"]): Logger instance.
@@ -325,7 +328,11 @@ def prepare_data_tiles(
     image_paths = glob.glob(os.path.join(img_dir, "*.tif"))
     if max_tiles is not None:
         random.shuffle(image_paths)
-    ps = 14 if "vitl14" in model_name else 16
+    ps = (
+        int(patch_size)
+        if patch_size is not None
+        else (14 if "vitl14" in model_name else 16)
+    )
     total_images = len(image_paths)
     start_time = time.time()
     tiles_written = len(existing) if count_existing else 0
@@ -805,6 +812,8 @@ class PrecomputedDataset(Dataset):
             List[torch.Tensor]: Requested feature tensors in requested-layer order.
         """
 
+        if self.requested_layers == []:
+            return []
         if not features or self.requested_layers is None:
             return features
         if self.cached_layers is None:

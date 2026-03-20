@@ -39,6 +39,7 @@ from ..plotting import (
 from ..train_utils import (
     align_logits_to_labels,
     extract_multiscale_features_batch,
+    head_uses_backbone_features,
     move_features_to_device,
 )
 from ..xai.module_xai import build_module_xai_sample
@@ -388,7 +389,8 @@ def _collect_epoch_xai_samples(
     gradcam_topk = max(
         plot_cfg.xai_topk_channels, plot_cfg.xai_channel_top_k_per_sample
     )
-    if plot_cfg.xai_enable:
+    uses_backbone_features = head_uses_backbone_features(model_cfg["head"])
+    if plot_cfg.xai_enable and uses_backbone_features:
         backbone, processor = ensure_backbone_processor(
             backbone,
             processor,
@@ -432,7 +434,9 @@ def _collect_epoch_xai_samples(
             rgb_input = sample_img.detach().cpu().numpy().transpose(0, 2, 3, 1)[0]
             rgb_input = np.clip(rgb_input * 255.0, 0, 255).astype(np.uint8)
             rgb = _build_plot_rgb(sample_img, sample_gt)
-            if cache_features and feats_device:
+            if not uses_backbone_features:
+                sample_feats = []
+            elif cache_features and feats_device:
                 sample_feats = [
                     feat[local_idx : local_idx + 1] for feat in feats_device
                 ]
@@ -534,36 +538,45 @@ def _collect_epoch_xai_samples(
 
             if plot_cfg.xai_enable and (wants_plot or wants_channel):
                 rgb_h, rgb_w = int(rgb.shape[0]), int(rgb.shape[1])
-                gradcam_result = compute_gradcam_with_topk_channels(
-                    image_hw3=rgb_input.astype(np.float32),
-                    backbone=backbone,
-                    head=eval_model,
-                    processor=processor,
-                    device=device,
-                    layers=model_cfg["layers"],
-                    ps=ps,
-                    class_index=plot_cfg.xai_class_index,
-                    topk_channels=gradcam_topk,
-                    cam_layer=plot_xai_cam_layer,
-                    logger=context.logger,
-                )
-                if wants_channel:
-                    channel_importance_samples.append(
-                        {
-                            "top_channels": [
-                                int(idx)
-                                for idx in gradcam_result["top_indices"][
-                                    : plot_cfg.xai_channel_top_k_per_sample
-                                ]
-                            ],
-                            "top_scores": [
-                                float(score)
-                                for score in gradcam_result["top_scores"][
-                                    : plot_cfg.xai_channel_top_k_per_sample
-                                ]
-                            ],
-                        }
+                gradcam_result: dict[str, Any] = {
+                    "cam_map": np.zeros((1, 1), dtype=np.float32),
+                    "top_indices": [],
+                    "top_scores": [],
+                    "top_maps": [],
+                }
+                attn_cls_map = np.zeros((rgb_h, rgb_w), dtype=np.float32)
+                attn_rollout_map = np.zeros((rgb_h, rgb_w), dtype=np.float32)
+                if uses_backbone_features:
+                    gradcam_result = compute_gradcam_with_topk_channels(
+                        image_hw3=rgb_input.astype(np.float32),
+                        backbone=backbone,
+                        head=eval_model,
+                        processor=processor,
+                        device=device,
+                        layers=model_cfg["layers"],
+                        ps=ps,
+                        class_index=plot_cfg.xai_class_index,
+                        topk_channels=gradcam_topk,
+                        cam_layer=plot_xai_cam_layer,
+                        logger=context.logger,
                     )
+                    if wants_channel:
+                        channel_importance_samples.append(
+                            {
+                                "top_channels": [
+                                    int(idx)
+                                    for idx in gradcam_result["top_indices"][
+                                        : plot_cfg.xai_channel_top_k_per_sample
+                                    ]
+                                ],
+                                "top_scores": [
+                                    float(score)
+                                    for score in gradcam_result["top_scores"][
+                                        : plot_cfg.xai_channel_top_k_per_sample
+                                    ]
+                                ],
+                            }
+                        )
                 if wants_plot and sample_payload is not None:
                     pca_rgb_map = None
                     if plot_cfg.xai_pca_enable and sample_feats:
@@ -576,25 +589,28 @@ def _collect_epoch_xai_samples(
                             pca_feature = sample_feats[pca_idx]
                         pca_small = compute_feature_pca_rgb(pca_feature)
                         pca_rgb_map = upsample_rgb_map(pca_small, rgb_h, rgb_w)
-                    (
-                        attn_cls_map,
-                        attn_rollout_map,
-                        had_attn,
-                    ) = compute_attention_maps(
-                        rgb_input.astype(np.float32),
-                        backbone,
-                        processor,
-                        device,
-                        ps,
-                        logger=context.logger,
-                    )
-                    if not had_attn:
-                        context.logger.info(
-                            "Epoch %s sample %s attention unavailable; using zero attention maps."
-                            % (epoch + 1, len(sample_plots) + 1)
+                    if uses_backbone_features:
+                        (
+                            attn_cls_map_small,
+                            attn_rollout_map_small,
+                            had_attn,
+                        ) = compute_attention_maps(
+                            rgb_input.astype(np.float32),
+                            backbone,
+                            processor,
+                            device,
+                            ps,
+                            logger=context.logger,
                         )
-                    attn_cls_map = upsample_map(attn_cls_map, rgb_h, rgb_w)
-                    attn_rollout_map = upsample_map(attn_rollout_map, rgb_h, rgb_w)
+                        if not had_attn:
+                            context.logger.info(
+                                "Epoch %s sample %s attention unavailable; using zero attention maps."
+                                % (epoch + 1, len(sample_plots) + 1)
+                            )
+                        attn_cls_map = upsample_map(attn_cls_map_small, rgb_h, rgb_w)
+                        attn_rollout_map = upsample_map(
+                            attn_rollout_map_small, rgb_h, rgb_w
+                        )
                     gradcam_map = upsample_map(
                         np.asarray(gradcam_result["cam_map"], dtype=np.float32),
                         rgb_h,

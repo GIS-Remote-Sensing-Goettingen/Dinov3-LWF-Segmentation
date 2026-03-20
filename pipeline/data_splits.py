@@ -16,6 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from utils import PrecomputedDataset, VerbosityLogger
 
 from .context import DistContext
+from .train_utils import head_uses_backbone_features
 from .utils import broadcast_main_object
 
 _TILE_SUFFIX_RE = re.compile(r"_y-?\d+_x-?\d+$")
@@ -297,6 +298,11 @@ def create_dataloaders(
         )
     val_fraction = train_cfg.get("val_fraction", 0.2)
     max_tiles = dataset_cfg.get("max_tiles")
+    requested_layers = (
+        model_cfg.get("layers")
+        if head_uses_backbone_features(str(model_cfg.get("head", "")))
+        else []
+    )
     train_files, val_files = _resolve_rank_consistent_splits(
         processed_dir=processed_dir,
         split_cfg=split_cfg,
@@ -310,7 +316,7 @@ def create_dataloaders(
         augmentation_cfg=augment_cfg,
         file_subset=train_files,
         validation_cfg=validation_cfg,
-        requested_layers=model_cfg.get("layers"),
+        requested_layers=requested_layers,
     )
     train_sampler = None
     if dist_ctx.enabled:
@@ -344,7 +350,7 @@ def create_dataloaders(
             augmentation_cfg={"enable": False},
             file_subset=val_files,
             validation_cfg=validation_cfg,
-            requested_layers=model_cfg.get("layers"),
+            requested_layers=requested_layers,
         )
         val_workers = train_cfg.get("val_workers", max(1, num_workers // 2))
         val_loader = DataLoader(
