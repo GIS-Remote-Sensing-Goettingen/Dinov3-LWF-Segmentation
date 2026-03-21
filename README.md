@@ -289,7 +289,7 @@ Inference input selection:
 - Directory inputs now overwrite in sorted file order when they truly overlap on the shared output raster; they are no longer skipped for cumulative-raster overlap.
 - Directory inputs that cannot align cleanly to the label grid are also skipped with a warning so the rest of the folder can still finish.
 - Inference explainability now writes one scene-level figure per input image by default: RGB, light-blue prediction overlay, Grad-CAM, and class probability.
-- When `input_dir` is used, the pipeline creates one backup of an existing shared output before updating it in place during the current run.
+- When `input_dir` is used, the pipeline creates one literal backup copy of an existing shared output before updating it in place during the current run, and it does not create any separate `*_coverage_*.tif` raster.
 
 ## Logging & Timing
 

@@ -14,9 +14,10 @@
   use disk-backed scene accumulators for lower-memory large-scene runs, build
   the cumulative directory-mode GeoTIFF from the union of the input image
   footprints while reusing `label_path` only for CRS/resolution/grid
-  alignment, overwrite overlapping scene writes in sorted order instead of
-  skipping them, and fix a tiled-inference loop bug that previously processed
-  only the last x-window in each row; also add regression coverage for
+  alignment, keep only the literal pre-update backup raster instead of any
+  separate coverage TIFF, overwrite overlapping scene writes in sorted order
+  instead of skipping them, and fix a tiled-inference loop bug that previously
+  processed only the last x-window in each row; also add regression coverage for
   cumulative raster creation, backup, overwrite, folder-union grid creation,
   large-scene tile coverage, payload heads, and label-path validation
   (`pipeline/phases/inference.py`, `pipeline/inference_utils.py`,

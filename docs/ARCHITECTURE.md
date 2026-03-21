@@ -207,7 +207,8 @@ MLflow-compatible artifacts for research workflows.
    update one cumulative GeoTIFF (with one safety backup if the file already
    exists) on a folder-wide extent derived from the union of the input-image
    footprints, snapped to the `label_path` grid, instead of emitting per-image
-   prediction TIFFs. Directory mode still uses `label_path` for CRS,
+   prediction TIFFs. The only secondary raster artifact is that literal
+   pre-update backup; there is no separate coverage raster. Directory mode still uses `label_path` for CRS,
    resolution, and grid alignment, but no longer clips output to the label
    raster extent. Overlapping scene writes now follow deterministic sorted-file
    overwrite order rather than being rejected. The prediction raster is still

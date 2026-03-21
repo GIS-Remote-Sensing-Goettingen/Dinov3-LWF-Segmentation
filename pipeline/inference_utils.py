@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import math
 import os
 import shutil
 from contextlib import contextmanager
@@ -1344,26 +1343,6 @@ def build_cumulative_raster_backup_path(output_path: str, run_id: str) -> str:
     return f"{root}_preupdate_{run_id}{suffix}"
 
 
-def build_cumulative_coverage_path(output_path: str, run_id: str) -> str:
-    """Return the per-run coverage GeoTIFF path for overlap detection.
-
-    Args:
-        output_path (str): Destination cumulative GeoTIFF path.
-        run_id (str): Active run identifier.
-
-    Returns:
-        str: Coverage-raster path in the same directory as ``output_path``.
-
-    Examples:
-        >>> build_cumulative_coverage_path("predictions.tif", "run1")
-        'predictions_coverage_run1.tif'
-    """
-
-    root, ext = os.path.splitext(output_path)
-    suffix = ext or ".tif"
-    return f"{root}_coverage_{run_id}{suffix}"
-
-
 @contextmanager
 def hold_prediction_raster_lock(output_path: str) -> Any:
     """Hold one exclusive lock for a shared prediction raster.
@@ -1410,10 +1389,6 @@ def write_prediction_to_cumulative_raster(
     prediction: np.ndarray,
     prediction_transform: Any,
     prediction_crs: Any,
-    coverage_path: str | None = None,
-    require_empty: bool = False,
-    edge_overlap_tolerance: int = 1,
-    edge_overlap_tolerance_fraction: float = 0.05,
 ) -> Window:
     """Write one scene prediction into the matching cumulative-raster window.
 
@@ -1422,12 +1397,6 @@ def write_prediction_to_cumulative_raster(
         prediction (np.ndarray): Scene prediction array on one output grid.
         prediction_transform (Any): Affine transform for ``prediction``.
         prediction_crs (Any): CRS for ``prediction``.
-        coverage_path (str | None): Optional per-run coverage raster.
-        require_empty (bool): Whether the destination window must be unused.
-        edge_overlap_tolerance (int): Allowed overlap depth in pixels when the
-            overlap stays on the destination window border.
-        edge_overlap_tolerance_fraction (float): Additional allowed overlap
-            depth as a fraction of the smaller destination-window dimension.
 
     Returns:
         Window: Destination write window inside ``output_path``.
@@ -1478,39 +1447,6 @@ def write_prediction_to_cumulative_raster(
             width=write_width,
             height=write_height,
         )
-        if coverage_path is not None:
-            with rasterio.open(coverage_path, "r+") as coverage_dst:
-                coverage = coverage_dst.read(1, window=write_window)
-                if require_empty and np.any(coverage):
-                    overlap_rows, overlap_cols = np.nonzero(coverage)
-                    max_edge_overlap = max(
-                        max(0, int(edge_overlap_tolerance)),
-                        int(
-                            math.ceil(
-                                max(0.0, float(edge_overlap_tolerance_fraction))
-                                * float(min(write_height, write_width))
-                            )
-                        ),
-                    )
-                    row_distance = np.minimum(
-                        overlap_rows,
-                        (write_height - 1) - overlap_rows,
-                    )
-                    col_distance = np.minimum(
-                        overlap_cols,
-                        (write_width - 1) - overlap_cols,
-                    )
-                    border_distance = np.minimum(row_distance, col_distance)
-                    if np.any(border_distance > max_edge_overlap):
-                        raise ValueError(
-                            "Overlapping scene footprints detected while "
-                            "writing the cumulative prediction raster."
-                        )
-                coverage_dst.write(
-                    np.ones((write_height, write_width), dtype=np.uint8),
-                    1,
-                    window=write_window,
-                )
         dst.write(
             pred_array[
                 src_row_off : src_row_off + write_height,
