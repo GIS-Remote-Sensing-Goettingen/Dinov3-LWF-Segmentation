@@ -377,7 +377,7 @@ inference:
   # Single-scene inference input path, or blank when using `input_dir`.
   input_tif:
   # Directory inference input path, or blank when using `input_tif`.
-  input_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_2/
+  input_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_1/
   # Output GeoTIFF path for single-scene inference, or the shared cumulative
   # prediction raster updated during `input_dir` runs.
   output_tif:
