@@ -871,6 +871,15 @@ class InferencePhase(Phase):
                 template_transform = template_src.transform
             cumulative_window = None
             for tile_path in tile_files:
+                try:
+                    build_tile_grid_layout(
+                        tile_path,
+                        label_path,
+                        requested_tile_size=tile_size,
+                        patch_size=ps,
+                    )
+                except Exception:
+                    continue
                 with rasterio.open(tile_path) as src:
                     tile_bounds = src.bounds
                     if src.crs != template_crs:
@@ -920,7 +929,10 @@ class InferencePhase(Phase):
                     height=row_end - row_off,
                 )
             if cumulative_window is None:
-                raise InferenceError(f"No valid input files found in {input_dir}")
+                raise InferenceError(
+                    "No input files in %s could align to the configured label grid."
+                    % input_dir
+                )
             cumulative_backup_path = None
             with hold_prediction_raster_lock(cumulative_output_path):
                 existed_before = os.path.exists(cumulative_output_path)
