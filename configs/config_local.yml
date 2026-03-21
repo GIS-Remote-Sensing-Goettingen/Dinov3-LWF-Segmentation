@@ -167,7 +167,7 @@ prepare:
   # Run the tile-building phase before verification/training: `true` or `false`.
   enable: false
   # Tile edge length in pixels for cached `.pt` samples.
-  tile_size: 1024
+  tile_size: 960
   # Torch device string for prepare; common values are `cuda`, `cpu`, or `mps`.
   device: cuda
   # Override for feature caching during prepare; keep aligned with `dataset.cache_features`.
@@ -378,18 +378,21 @@ inference:
   input_tif: /home/mak/PycharmProjects/SegEdge/experiments/get_data_from_api/patches_mt/dop20_592000_5975000_1km_20cm.tif
   # Directory inference input path, or blank when using `input_tif`.
   input_dir:
-  # Output GeoTIFF path for single-scene inference, or blank in directory mode.
+  # Output GeoTIFF path for single-scene inference, or the shared cumulative
+  # prediction raster updated during `input_dir` runs.
   output_tif: /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/test/dop20_592000_5975000_1km_20cm_labels.tif
-  # Output directory path used when `input_dir` is set, or blank otherwise.
+  # Optional directory used for inference-side artifacts such as plots when
+  # `input_dir` is set.
   output_dir:
-  # Filename suffix appended to predictions written into `output_dir`.
+  # Legacy per-file prediction suffix; directory inference now updates one
+  # shared `output_tif` instead of writing per-image TIFFs.
   output_suffix: _pred.tif
   # Glob used to discover input files inside `input_dir`.
   glob: "*.tif"
   # Checkpoint path to load, or leave blank to reuse the current train artifact.
   checkpoint:
   # Inference tile size in pixels.
-  tile_size: 512
+  tile_size: 960
   # Overlap fraction between adjacent inference windows.
   overlap: 0.25
   merge:
@@ -397,13 +400,13 @@ inference:
     mode: center_weighted
   tta:
     # Enable horizontal-flip test-time augmentation: `true` or `false`.
-    horizontal_flip: true
+    horizontal_flip: false
     # Enable vertical-flip test-time augmentation: `true` or `false`.
     vertical_flip: false
   explain:
     # Enable scene-level explainability dashboards during inference: `true` or
     # `false`.
-    enable: true
+    enable: false
     # Output directory for inference explainability figures.
     output_dir: plots
     # Foreground class index highlighted in inference explainability outputs.
@@ -421,7 +424,7 @@ inference:
     plot_every_n: 10
   vector:
     # Export cumulative foreground polygons as a shapefile: `true` or `false`.
-    enable: true
+    enable: false
     # EPSG code used for vector export reprojection.
     target_epsg: 4326
     # Append new scene polygons to an existing shapefile: `true` or `false`.

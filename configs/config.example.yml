@@ -378,11 +378,14 @@ inference:
   input_tif: /path/to/scene.tif
   # Directory inference input path, or blank when using `input_tif`.
   input_dir:
-  # Output GeoTIFF path for single-scene inference, or blank in directory mode.
+  # Output GeoTIFF path for single-scene inference, or the shared cumulative
+  # prediction raster updated during `input_dir` runs.
   output_tif: test/output_prediction.tif
-  # Output directory path used when `input_dir` is set, or blank otherwise.
+  # Optional directory used for inference-side artifacts such as plots when
+  # `input_dir` is set.
   output_dir:
-  # Filename suffix appended to predictions written into `output_dir`.
+  # Legacy per-file prediction suffix; directory inference now updates one
+  # shared `output_tif` instead of writing per-image TIFFs.
   output_suffix: _pred.tif
   # Glob used to discover input files inside `input_dir`.
   glob: "*.tif"

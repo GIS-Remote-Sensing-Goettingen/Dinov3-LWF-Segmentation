@@ -5,6 +5,20 @@
 
 ## [Unreleased]
 ### Changed
+- Rework directory-mode inference so it now updates one shared GeoTIFF on the
+  native label grid (taking one pre-update backup when that file already
+  exists) instead of writing per-image prediction TIFFs or relying on the old
+  cumulative shapefile workflow; also clarify the reused `output_tif` /
+  `output_dir` config semantics, normalize payload-style head outputs during
+  inference, skip only raster-masked nodata tiles instead of all-zero imagery,
+  use disk-backed scene accumulators for lower-memory large-scene runs, and
+  skip label-grid alignment errors or overlapping directory inputs with warning
+  counters instead of aborting the whole folder run; also add regression
+  coverage for cumulative raster creation, backup, overwrite, overlap
+  detection, payload heads, and label-path validation
+  (`pipeline/phases/inference.py`, `pipeline/inference_utils.py`,
+  `test/test_inference_outputs.py`, `configs/config_*.yml`, `README.md`,
+  `docs/ARCHITECTURE.md`).
 - Redesign DINO tiling so prepare drops partial edge tiles instead of shifting
   or zero-filling them, inference uses border-aligned sliding windows instead
   of partial reflected edge pads, cached tiles now carry per-tile geometry

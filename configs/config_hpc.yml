@@ -123,7 +123,7 @@ model:
   # Segmentation head architecture: `dino_dense_probe`, `dino_segdino_light`,
   # `maskformer`, `unet`, `unet_v2`, `unet_lite`, `unet_lite_plus`,
   # `unet_nano`, `unet_nano_fapm`, or `unet_topo_fusion`.
-  head: unet_nano_fapm
+  head: unet_topo_fusion
   # Number of semantic output classes.
   num_classes: 2
   # Channel count per selected DINO feature map.
@@ -165,9 +165,9 @@ model:
 
 prepare:
   # Run the tile-building phase before verification/training: `true` or `false`.
-  enable: true
+  enable: false
   # Tile edge length in pixels for cached `.pt` samples.
-  tile_size: 1024
+  tile_size: 960
   # Torch device string for prepare; common values are `cuda`, `cpu`, or `mps`.
   device: cuda
   # Override for feature caching during prepare; keep aligned with `dataset.cache_features`.
@@ -183,7 +183,7 @@ verify:
 
 train:
   # Run supervised training: `true` or `false`.
-  enable: true
+  enable: false
   # Torch device string for training; common values are `cuda`, `cpu`, or `mps`.
   device: cuda
   # Cached tile directory used by training; override `paths.processed_dir` here if needed.
@@ -377,19 +377,22 @@ inference:
   # Single-scene inference input path, or blank when using `input_dir`.
   input_tif:
   # Directory inference input path, or blank when using `input_tif`.
-  input_dir: /user/davide.mattioli/u20330/dinov3-LWF-Segmentation-erosion/data/tiles/
-  # Output GeoTIFF path for single-scene inference, or blank in directory mode.
+  input_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_2/
+  # Output GeoTIFF path for single-scene inference, or the shared cumulative
+  # prediction raster updated during `input_dir` runs.
   output_tif:
-  # Output directory path used when `input_dir` is set, or blank otherwise.
+  # Optional directory used for inference-side artifacts such as plots when
+  # `input_dir` is set.
   output_dir: test/
-  # Filename suffix appended to predictions written into `output_dir`.
+  # Legacy per-file prediction suffix; directory inference now updates one
+  # shared `output_tif` instead of writing per-image TIFFs.
   output_suffix: _pred.tif
   # Glob used to discover input files inside `input_dir`.
   glob: "*.tif"
   # Checkpoint path to load, or leave blank to reuse the current train artifact.
-  checkpoint:
+  checkpoint: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/unet_topo_fusion_best.pth
   # Inference tile size in pixels.
-  tile_size: 1024
+  tile_size: 960
   # Overlap fraction between adjacent inference windows.
   overlap: 0.25
   merge:
@@ -403,7 +406,7 @@ inference:
   explain:
     # Enable scene-level explainability dashboards during inference: `true` or
     # `false`.
-    enable: true
+    enable: false
     # Output directory for inference explainability figures.
     output_dir: plots
     # Foreground class index highlighted in inference explainability outputs.
@@ -421,7 +424,7 @@ inference:
     plot_every_n: 10
   vector:
     # Export cumulative foreground polygons as a shapefile: `true` or `false`.
-    enable: true
+    enable: false
     # EPSG code used for vector export reprojection.
     target_epsg: 4326
     # Append new scene polygons to an existing shapefile: `true` or `false`.

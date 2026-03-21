@@ -203,7 +203,11 @@ MLflow-compatible artifacts for research workflows.
    Both `input_tif` and `input_dir` modes use the same sliding-window tiled inference
    and merge path to keep behavior consistent and memory-bounded on large inputs.
    Scene outputs now use center-weighted overlap blending, emit one compact
-   explainability figure per input image, and can append foreground polygons
-   into a cumulative `EPSG:4326` shapefile. When `label_path` is configured,
-   the default prediction raster is written on the label raster grid rather
-   than the finer source-image grid.
+   explainability figure per input image, and when `input_dir` is used they now
+   update one cumulative GeoTIFF (with one safety backup if the file already
+   exists) on the native label grid instead of emitting per-image prediction
+   TIFFs. Directory mode now skips label-grid alignment failures and overlapping
+   scene footprints with explicit warnings so large-scale runs continue without
+   silently overwriting prior predictions. When `label_path` is configured, the
+   prediction raster is written on the label raster grid rather than the finer
+   source-image grid.

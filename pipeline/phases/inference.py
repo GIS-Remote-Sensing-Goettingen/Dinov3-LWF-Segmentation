@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import os
+import tempfile
 import traceback
 from contextlib import nullcontext
 
@@ -32,20 +33,30 @@ from ..inference_checkpoint import (
 )
 from ..inference_utils import (
     append_prediction_shapefile,
+    backup_prediction_raster,
     build_blend_weight_mask,
+    build_cumulative_coverage_path,
+    build_cumulative_raster_backup_path,
     build_dashboard,
     build_tta_transforms,
     compute_gradcam_map,
     compute_xai_maps,
+    ensure_cumulative_prediction_raster,
     extract_prediction_features,
+    hold_prediction_raster_lock,
     normalize_map,
     overlay_binary_mask,
     overlay_heatmap,
     upsample_map,
+    write_prediction_to_cumulative_raster,
 )
 from ..phase_runner import Phase
 from ..plotting import resolve_cam_layer
-from ..train_utils import head_uses_backbone_features, resolve_model_patch_size
+from ..train_utils import (
+    head_uses_backbone_features,
+    normalize_forward_output,
+    resolve_model_patch_size,
+)
 from ..utils import get_model_config, resolve_path
 
 
@@ -169,7 +180,6 @@ class InferencePhase(Phase):
         vector_target_epsg = int(vector_cfg.get("target_epsg", 4326))
         vector_append = bool(vector_cfg.get("append", True))
         foreground_class = int(vector_cfg.get("foreground_class", class_index))
-        output_suffix = infer_cfg.get("output_suffix", "_pred.tif")
         glob_pattern = infer_cfg.get("glob", "*.tif")
         label_path = resolve_path(context.config, infer_cfg, "label_path", "")
         if not label_path and isinstance(paths_cfg, dict):
@@ -177,23 +187,26 @@ class InferencePhase(Phase):
 
         def _infer_one_tif(
             input_tif_path: str,
-            output_tif_path: str,
+            output_tif_path: str | None,
             plot_prefix: str,
             vector_output_path: str | None = None,
+            cumulative_output_path: str | None = None,
         ) -> dict[str, float]:
             """Run tiled inference for a single input raster.
 
             Args:
                 input_tif_path (str): Source raster path.
-                output_tif_path (str): Destination prediction path.
+                output_tif_path (str | None): Optional destination prediction path.
                 plot_prefix (str): Prefix for explainability dashboard filenames.
                 vector_output_path (str | None): Shared shapefile output path.
+                cumulative_output_path (str | None): Shared cumulative raster path.
 
             Returns:
                 dict[str, float]: Per-file metrics with `tiles_total`.
             """
 
             label_grid_enabled = bool(label_path and os.path.exists(label_path))
+            strict_label_grid = cumulative_output_path is not None
             with rasterio.open(input_tif_path) as src:
                 profile = src.profile.copy()
                 height, width = src.height, src.width
@@ -240,6 +253,12 @@ class InferencePhase(Phase):
                                 (1, 2, 0),
                             )
                     except Exception as exc:
+                        if strict_label_grid:
+                            raise InferenceError(
+                                "Directory inference requires successful label-grid "
+                                "alignment for every scene; failed for %s: %s"
+                                % (os.path.basename(input_tif_path), exc)
+                            ) from exc
                         label_grid_enabled = False
                         context.logger.warning(
                             "Falling back to image-grid inference output for %s: %s"
@@ -251,12 +270,6 @@ class InferencePhase(Phase):
                 raise InferenceError(
                     f"Expected 3-band imagery: {os.path.basename(input_tif_path)}"
                 )
-            prob_accum = np.zeros(
-                (model_cfg["num_classes"], output_height, output_width),
-                dtype=np.float32,
-            )
-            weight_accum = np.zeros((output_height, output_width), dtype=np.float32)
-            gradcam_accum = np.zeros((output_height, output_width), dtype=np.float32)
             gradcam_tiles_attempted = 0
             gradcam_tiles_succeeded = 0
             gradcam_tiles_failed = 0
@@ -265,6 +278,7 @@ class InferencePhase(Phase):
             y_positions = coverage_window_positions(height, tile_size_eff, stride_eff)
             x_positions = coverage_window_positions(width, tile_size_eff, stride_eff)
             total_tiles = len(y_positions) * len(x_positions)
+            scene_window_size = 1024
             context.logger.info(
                 "Running inference on %s tiles with stride %s and effective tile "
                 "size %s." % (total_tiles, stride_eff, tile_size_eff)
@@ -277,20 +291,46 @@ class InferencePhase(Phase):
                     local_plot_every_n = 10 if total_tiles > 50 else 1
             tile_counter = 0
             phase_label = f"Inference phase ({os.path.basename(input_tif_path)})"
-            with (
-                rasterio.open(input_tif_path) as src,
-                TimedBlock(context.logger, phase_label),
-            ):
-                for y in y_positions:
-                    for x in x_positions:
-                        tile_counter += 1
-                        y_max = min(y + tile_size_eff, height)
-                        x_max = min(x + tile_size_eff, width)
+            with tempfile.TemporaryDirectory(prefix="scene_infer_") as temp_dir:
+                with (
+                    rasterio.open(input_tif_path) as src,
+                    TimedBlock(context.logger, phase_label),
+                ):
+                    prob_accum = np.memmap(
+                        os.path.join(temp_dir, "prob_accum.dat"),
+                        dtype=np.float32,
+                        mode="w+",
+                        shape=(model_cfg["num_classes"], output_height, output_width),
+                    )
+                    prob_accum[:] = 0.0
+                    weight_accum = np.memmap(
+                        os.path.join(temp_dir, "weight_accum.dat"),
+                        dtype=np.float32,
+                        mode="w+",
+                        shape=(output_height, output_width),
+                    )
+                    weight_accum[:] = 0.0
+                    gradcam_accum = None
+                    if explain_enabled:
+                        gradcam_accum = np.memmap(
+                            os.path.join(temp_dir, "gradcam_accum.dat"),
+                            dtype=np.float32,
+                            mode="w+",
+                            shape=(output_height, output_width),
+                        )
+                        gradcam_accum[:] = 0.0
+
+                    for y in y_positions:
+                        for x in x_positions:
+                            tile_counter += 1
+                            y_max = min(y + tile_size_eff, height)
+                            x_max = min(x + tile_size_eff, width)
                         window = Window.from_slices((y, y_max), (x, x_max))
+                        mask_tile = src.read_masks(window=window)
+                        if not np.any(mask_tile):
+                            continue
                         img_tile = src.read(window=window, boundless=False)
                         img_tile = np.transpose(img_tile, (1, 2, 0))
-                        if np.max(img_tile) == 0:
-                            continue
                         img_tile_raw = img_tile
                         orig_h, orig_w = img_tile.shape[:2]
                         pad_h = max(0, tile_size_eff - orig_h)
@@ -343,7 +383,10 @@ class InferencePhase(Phase):
                                     f.to(device).unsqueeze(0) for f in feats
                                 ]
                             with torch.no_grad(), autocast:
-                                logits = head(img_t, feats_batched)
+                                payload = normalize_forward_output(
+                                    head(img_t, feats_batched)
+                                )
+                                logits = payload["logits"]
                                 logits = transform.invert_logits(logits)
                                 if logits.shape[-2:] != img_t.shape[-2:]:
                                     logits = F.interpolate(
@@ -534,7 +577,11 @@ class InferencePhase(Phase):
                             tile_probs * blend_mask[None, ...]
                         )
                         weight_accum[y_slice, x_slice] += blend_mask
-                        if explain_enabled and gradcam_tile is not None:
+                        if (
+                            explain_enabled
+                            and gradcam_tile is not None
+                            and gradcam_accum is not None
+                        ):
                             gradcam_accum[y_slice, x_slice] += gradcam_tile * blend_mask
                         if tile_counter % 50 == 0 or tile_counter == total_tiles:
                             context.logger.info(
@@ -546,97 +593,204 @@ class InferencePhase(Phase):
                                 tile_counter,
                                 total_tiles,
                             )
-            weight_accum[weight_accum == 0] = 1
-            prob_accum /= weight_accum[None, ...]
-            pred_full = prob_accum.argmax(axis=0).astype(np.uint8)
-            profile.update(
-                dtype=rasterio.uint8,
-                count=1,
-                nodata=0,
-                transform=output_transform,
-                crs=output_crs,
-                height=output_height,
-                width=output_width,
-            )
-            os.makedirs(os.path.dirname(output_tif_path) or ".", exist_ok=True)
-            with rasterio.open(output_tif_path, "w", **profile) as dst:
-                dst.write(pred_full, 1)
-            context.logger.info(f"Saved prediction to {output_tif_path}")
-            scene_metrics = {"tiles_total": float(total_tiles)}
-            if gradcam_tiles_attempted > 0:
-                scene_metrics["gradcam_tiles_attempted"] = float(
-                    gradcam_tiles_attempted
-                )
-                scene_metrics["gradcam_tiles_succeeded"] = float(
-                    gradcam_tiles_succeeded
-                )
-                scene_metrics["gradcam_tiles_failed"] = float(gradcam_tiles_failed)
-                summary_message = (
-                    "Grad-CAM summary for %s :: attempted=%s succeeded=%s failed=%s layer=%s"
-                    % (
-                        os.path.basename(input_tif_path),
-                        gradcam_tiles_attempted,
-                        gradcam_tiles_succeeded,
-                        gradcam_tiles_failed,
-                        explain_cam_layer,
+                    pred_full = np.memmap(
+                        os.path.join(temp_dir, "pred_full.dat"),
+                        dtype=np.uint8,
+                        mode="w+",
+                        shape=(output_height, output_width),
                     )
-                )
-                if gradcam_first_failure is not None:
-                    summary_message += " first_failure=" + gradcam_first_failure
-                context.logger.info(summary_message)
-            if explain_enabled and scene_rgb is not None:
-                try:
-                    gradcam_scene = normalize_map(gradcam_accum / weight_accum)
-                    _, _, class_prob_scene = compute_xai_maps(prob_accum, class_index)
-                    scene_rgb_uint8 = np.clip(scene_rgb, 0, 255).astype(np.uint8)
-                    overlay_pred = overlay_binary_mask(
-                        scene_rgb_uint8,
-                        pred_full == foreground_class,
-                        color=overlay_color,
-                        alpha=overlay_alpha,
+                    for row_off in range(0, output_height, scene_window_size):
+                        row_end = min(output_height, row_off + scene_window_size)
+                        for col_off in range(0, output_width, scene_window_size):
+                            col_end = min(output_width, col_off + scene_window_size)
+                            weights = np.asarray(
+                                weight_accum[row_off:row_end, col_off:col_end],
+                                dtype=np.float32,
+                            )
+                            weights[weights == 0] = 1.0
+                            probs = np.asarray(
+                                prob_accum[:, row_off:row_end, col_off:col_end],
+                                dtype=np.float32,
+                            )
+                            probs /= weights[None, ...]
+                            pred_full[row_off:row_end, col_off:col_end] = probs.argmax(
+                                axis=0
+                            ).astype(np.uint8)
+                            prob_accum[:, row_off:row_end, col_off:col_end] = probs
+                    profile.update(
+                        dtype=rasterio.uint8,
+                        count=1,
+                        nodata=0,
+                        transform=output_transform,
+                        crs=output_crs,
+                        height=output_height,
+                        width=output_width,
                     )
-                    gradcam_overlay = overlay_heatmap(
-                        scene_rgb_uint8,
-                        gradcam_scene,
-                        cmap="magma",
-                        alpha=0.45,
-                    )
-                    plot_path = os.path.join(
-                        plots_dir,
-                        f"{plot_prefix}_scene_dashboard.png",
-                    )
-                    build_dashboard(
-                        plot_path,
-                        scene_rgb_uint8,
-                        overlay_pred,
-                        gradcam_overlay,
-                        class_prob_scene,
-                        layout=layout,
-                    )
-                    scene_metrics["scene_plot"] = 1.0
-                except Exception:
-                    context.logger.error(
-                        "Scene XAI plotting failed for %s\n%s"
-                        % (plot_prefix, traceback.format_exc())
-                    )
-            if vector_enabled and vector_output_path is not None:
-                features = extract_prediction_features(
-                    pred_full,
-                    output_transform,
-                    output_crs,
-                    source_id=plot_prefix,
-                    run_id=context.run_id,
-                    foreground_class=foreground_class,
-                    target_epsg=vector_target_epsg,
-                )
-                append_prediction_shapefile(
-                    vector_output_path,
-                    features,
-                    target_epsg=vector_target_epsg,
-                    append=vector_append,
-                )
-                scene_metrics["vector_features"] = float(len(features))
-            return scene_metrics
+                    if output_tif_path is not None:
+                        os.makedirs(
+                            os.path.dirname(output_tif_path) or ".", exist_ok=True
+                        )
+                        with rasterio.open(output_tif_path, "w", **profile) as dst:
+                            for row_off in range(0, output_height, scene_window_size):
+                                row_end = min(
+                                    output_height, row_off + scene_window_size
+                                )
+                                for col_off in range(
+                                    0, output_width, scene_window_size
+                                ):
+                                    col_end = min(
+                                        output_width, col_off + scene_window_size
+                                    )
+                                    dst.write(
+                                        np.asarray(
+                                            pred_full[row_off:row_end, col_off:col_end],
+                                            dtype=np.uint8,
+                                        ),
+                                        1,
+                                        window=Window(
+                                            col_off=col_off,
+                                            row_off=row_off,
+                                            width=col_end - col_off,
+                                            height=row_end - row_off,
+                                        ),
+                                    )
+                        context.logger.info(f"Saved prediction to {output_tif_path}")
+                    scene_metrics = {"tiles_total": float(total_tiles)}
+                    if cumulative_output_path is not None:
+                        write_prediction_to_cumulative_raster(
+                            cumulative_output_path,
+                            pred_full,
+                            output_transform,
+                            output_crs,
+                            coverage_path=cumulative_coverage_path,
+                            require_empty=True,
+                        )
+                        context.logger.info(
+                            "Updated cumulative prediction raster %s for %s"
+                            % (cumulative_output_path, os.path.basename(input_tif_path))
+                        )
+                        scene_metrics["cumulative_updates"] = 1.0
+                    if gradcam_tiles_attempted > 0:
+                        scene_metrics["gradcam_tiles_attempted"] = float(
+                            gradcam_tiles_attempted
+                        )
+                        scene_metrics["gradcam_tiles_succeeded"] = float(
+                            gradcam_tiles_succeeded
+                        )
+                        scene_metrics["gradcam_tiles_failed"] = float(
+                            gradcam_tiles_failed
+                        )
+                        summary_message = (
+                            "Grad-CAM summary for %s :: attempted=%s succeeded=%s failed=%s layer=%s"
+                            % (
+                                os.path.basename(input_tif_path),
+                                gradcam_tiles_attempted,
+                                gradcam_tiles_succeeded,
+                                gradcam_tiles_failed,
+                                explain_cam_layer,
+                            )
+                        )
+                        if gradcam_first_failure is not None:
+                            summary_message += " first_failure=" + gradcam_first_failure
+                        context.logger.info(summary_message)
+                    if explain_enabled and scene_rgb is not None:
+                        try:
+                            assert gradcam_accum is not None
+                            gradcam_scene = np.zeros(
+                                (output_height, output_width),
+                                dtype=np.float32,
+                            )
+                            class_prob_scene = np.zeros(
+                                (output_height, output_width),
+                                dtype=np.float32,
+                            )
+                            for row_off in range(0, output_height, scene_window_size):
+                                row_end = min(
+                                    output_height, row_off + scene_window_size
+                                )
+                                for col_off in range(
+                                    0, output_width, scene_window_size
+                                ):
+                                    col_end = min(
+                                        output_width, col_off + scene_window_size
+                                    )
+                                    weights = np.asarray(
+                                        weight_accum[row_off:row_end, col_off:col_end],
+                                        dtype=np.float32,
+                                    )
+                                    weights[weights == 0] = 1.0
+                                    gradcam_scene[row_off:row_end, col_off:col_end] = (
+                                        np.asarray(
+                                            gradcam_accum[
+                                                row_off:row_end,
+                                                col_off:col_end,
+                                            ],
+                                            dtype=np.float32,
+                                        )
+                                        / weights
+                                    )
+                                    class_prob_scene[
+                                        row_off:row_end, col_off:col_end
+                                    ] = np.asarray(
+                                        prob_accum[
+                                            class_index,
+                                            row_off:row_end,
+                                            col_off:col_end,
+                                        ],
+                                        dtype=np.float32,
+                                    )
+                            gradcam_scene = normalize_map(gradcam_scene)
+                            scene_rgb_uint8 = np.clip(scene_rgb, 0, 255).astype(
+                                np.uint8
+                            )
+                            overlay_pred = overlay_binary_mask(
+                                scene_rgb_uint8,
+                                pred_full == foreground_class,
+                                color=overlay_color,
+                                alpha=overlay_alpha,
+                            )
+                            gradcam_overlay = overlay_heatmap(
+                                scene_rgb_uint8,
+                                gradcam_scene,
+                                cmap="magma",
+                                alpha=0.45,
+                            )
+                            plot_path = os.path.join(
+                                plots_dir,
+                                f"{plot_prefix}_scene_dashboard.png",
+                            )
+                            build_dashboard(
+                                plot_path,
+                                scene_rgb_uint8,
+                                overlay_pred,
+                                gradcam_overlay,
+                                class_prob_scene,
+                                layout=layout,
+                            )
+                            scene_metrics["scene_plot"] = 1.0
+                        except Exception:
+                            context.logger.error(
+                                "Scene XAI plotting failed for %s\n%s"
+                                % (plot_prefix, traceback.format_exc())
+                            )
+                    if vector_enabled and vector_output_path is not None:
+                        features = extract_prediction_features(
+                            pred_full,
+                            output_transform,
+                            output_crs,
+                            source_id=plot_prefix,
+                            run_id=context.run_id,
+                            foreground_class=foreground_class,
+                            target_epsg=vector_target_epsg,
+                        )
+                        append_prediction_shapefile(
+                            vector_output_path,
+                            features,
+                            target_epsg=vector_target_epsg,
+                            append=vector_append,
+                        )
+                        scene_metrics["vector_features"] = float(len(features))
+                    return scene_metrics
 
         if input_dir and input_tif:
             raise InferenceError(
@@ -644,52 +798,126 @@ class InferencePhase(Phase):
                 "inference.input_dir."
             )
         if input_dir:
-            if not output_dir:
-                raise InferenceError("output_dir is required when input_dir is set")
-            os.makedirs(output_dir, exist_ok=True)
-            if explain_enabled:
-                plots_dir = plots_dir or os.path.join(output_dir, "plots")
-                os.makedirs(plots_dir, exist_ok=True)
-            vector_output_path = None
-            if vector_enabled:
-                vector_output_path = str(
-                    context.run_dir
-                    / "artifacts"
-                    / "vectors"
-                    / "inference"
-                    / "predictions_4326.shp"
+            if not label_path or not os.path.exists(label_path):
+                raise InferenceError(
+                    "Directory inference requires a valid label_path so the shared "
+                    "prediction GeoTIFF can be written on the native label grid."
                 )
-            tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
-            if not tile_files:
-                raise InferenceError(f"No input files found in {input_dir}")
-            total_tiles = 0.0
-            total_gradcam_tiles_attempted = 0.0
-            total_gradcam_tiles_succeeded = 0.0
-            total_gradcam_tiles_failed = 0.0
-            total_vector_features = 0.0
-            for idx, tile_path in enumerate(tile_files, start=1):
-                base = os.path.splitext(os.path.basename(tile_path))[0]
-                context.logger.info(
-                    "Running file inference %s/%s: %s" % (idx, len(tile_files), base)
+            cumulative_output_path = str(
+                output_tif
+                or context.run_dir
+                / "artifacts"
+                / "rasters"
+                / "inference"
+                / "predictions.tif"
+            )
+            cumulative_coverage_path = build_cumulative_coverage_path(
+                cumulative_output_path,
+                context.run_id,
+            )
+            cumulative_backup_path = None
+            with hold_prediction_raster_lock(cumulative_output_path):
+                existed_before = os.path.exists(cumulative_output_path)
+                ensure_cumulative_prediction_raster(
+                    cumulative_output_path,
+                    label_path,
                 )
-                out_path = os.path.join(output_dir, f"{base}{output_suffix}")
-                file_metrics = _infer_one_tif(
-                    tile_path,
-                    out_path,
-                    plot_prefix=base,
-                    vector_output_path=vector_output_path,
+                ensure_cumulative_prediction_raster(
+                    cumulative_coverage_path,
+                    label_path,
+                    compress="none",
                 )
-                total_tiles += float(file_metrics.get("tiles_total", 0.0))
-                total_gradcam_tiles_attempted += float(
-                    file_metrics.get("gradcam_tiles_attempted", 0.0)
-                )
-                total_gradcam_tiles_succeeded += float(
-                    file_metrics.get("gradcam_tiles_succeeded", 0.0)
-                )
-                total_gradcam_tiles_failed += float(
-                    file_metrics.get("gradcam_tiles_failed", 0.0)
-                )
-                total_vector_features += float(file_metrics.get("vector_features", 0.0))
+                if existed_before:
+                    cumulative_backup_path = build_cumulative_raster_backup_path(
+                        cumulative_output_path,
+                        context.run_id,
+                    )
+                    if not os.path.exists(cumulative_backup_path):
+                        backup_prediction_raster(
+                            cumulative_output_path,
+                            cumulative_backup_path,
+                        )
+                        context.logger.info(
+                            "Backed up cumulative prediction raster to %s"
+                            % cumulative_backup_path
+                        )
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                if explain_enabled:
+                    default_plot_root = (
+                        output_dir
+                        or os.path.dirname(cumulative_output_path or "")
+                        or str(context.run_dir / "artifacts" / "plots" / "inference")
+                    )
+                    plots_dir = plots_dir or os.path.join(default_plot_root, "plots")
+                    os.makedirs(plots_dir, exist_ok=True)
+                vector_output_path = None
+                if vector_enabled:
+                    context.logger.warning(
+                        "Skipping inference.vector export in directory mode because "
+                        "predictions are now accumulated into one GeoTIFF."
+                    )
+                tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
+                if not tile_files:
+                    raise InferenceError(f"No input files found in {input_dir}")
+                total_tiles = 0.0
+                total_gradcam_tiles_attempted = 0.0
+                total_gradcam_tiles_succeeded = 0.0
+                total_gradcam_tiles_failed = 0.0
+                total_vector_features = 0.0
+                total_cumulative_updates = 0.0
+                total_skipped_alignment = 0.0
+                total_skipped_overlap = 0.0
+                for idx, tile_path in enumerate(tile_files, start=1):
+                    base = os.path.splitext(os.path.basename(tile_path))[0]
+                    context.logger.info(
+                        "Running file inference %s/%s: %s"
+                        % (idx, len(tile_files), base)
+                    )
+                    try:
+                        file_metrics = _infer_one_tif(
+                            tile_path,
+                            None,
+                            plot_prefix=base,
+                            vector_output_path=vector_output_path,
+                            cumulative_output_path=cumulative_output_path,
+                        )
+                    except InferenceError as exc:
+                        message = str(exc)
+                        if "label-grid alignment" in message:
+                            total_skipped_alignment += 1.0
+                            context.logger.warning(
+                                "Skipping %s due to label-grid alignment failure: %s"
+                                % (base, message)
+                            )
+                            continue
+                        raise
+                    except ValueError as exc:
+                        message = str(exc)
+                        if "Overlapping scene footprints" in message:
+                            total_skipped_overlap += 1.0
+                            context.logger.warning(
+                                "Skipping %s due to overlapping footprint: %s"
+                                % (base, message)
+                            )
+                            continue
+                        raise
+                    total_tiles += float(file_metrics.get("tiles_total", 0.0))
+                    total_gradcam_tiles_attempted += float(
+                        file_metrics.get("gradcam_tiles_attempted", 0.0)
+                    )
+                    total_gradcam_tiles_succeeded += float(
+                        file_metrics.get("gradcam_tiles_succeeded", 0.0)
+                    )
+                    total_gradcam_tiles_failed += float(
+                        file_metrics.get("gradcam_tiles_failed", 0.0)
+                    )
+                    total_vector_features += float(
+                        file_metrics.get("vector_features", 0.0)
+                    )
+                    total_cumulative_updates += float(
+                        file_metrics.get("cumulative_updates", 0.0)
+                    )
             metrics = {
                 "files_total": float(len(tile_files)),
                 "tiles_total": total_tiles,
@@ -697,12 +925,20 @@ class InferencePhase(Phase):
                 "gradcam_tiles_succeeded": total_gradcam_tiles_succeeded,
                 "gradcam_tiles_failed": total_gradcam_tiles_failed,
                 "vector_features": total_vector_features,
+                "cumulative_updates": total_cumulative_updates,
+                "files_skipped_alignment": total_skipped_alignment,
+                "files_skipped_overlap": total_skipped_overlap,
             }
-            artifacts = {"output_dir": output_dir, "checkpoint": checkpoint}
+            artifacts = {
+                "checkpoint": checkpoint,
+                "output_tif": cumulative_output_path,
+            }
             if explain_enabled and plots_dir is not None:
                 artifacts["plots_dir"] = plots_dir
             if vector_enabled and vector_output_path is not None:
                 artifacts["vector_output"] = vector_output_path
+            if cumulative_backup_path is not None:
+                artifacts["output_tif_backup"] = cumulative_backup_path
             return PhaseOutcome(metrics=metrics, artifacts=artifacts)
         if not input_tif:
             raise InferenceError(

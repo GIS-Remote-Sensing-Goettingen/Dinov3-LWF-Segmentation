@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import fiona
 import numpy as np
+import pytest
+import rasterio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,13 +19,65 @@ from rasterio.transform import from_origin
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pipeline.phases.inference as inference_module  # noqa: E402
+from pipeline.context import (  # noqa: E402
+    DatasetValidationConfig,
+    DistContext,
+    InferenceError,
+    RunContext,
+    StabilityConfig,
+)
 from pipeline.inference_utils import (  # noqa: E402
     append_prediction_shapefile,
+    backup_prediction_raster,
     build_blend_weight_mask,
+    build_cumulative_raster_backup_path,
     compute_gradcam_with_topk_channels,
+    ensure_cumulative_prediction_raster,
     extract_prediction_features,
     overlay_binary_mask,
+    write_prediction_to_cumulative_raster,
 )
+from pipeline.phases.inference import InferencePhase  # noqa: E402
+from pipeline.tracking import HookManager  # noqa: E402
+
+
+def _write_test_geotiff(
+    path: Path,
+    data: np.ndarray,
+    *,
+    transform,
+    crs: str = "EPSG:25832",
+) -> None:
+    """Write one small GeoTIFF fixture.
+
+    Args:
+        path (Path): Output path.
+        data (np.ndarray): Raster data, either ``(H, W)`` or ``(H, W, C)``.
+        transform: Raster affine transform.
+        crs (str): CRS identifier.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if data.ndim == 2:
+        count = 1
+        write_data = data[np.newaxis, ...]
+    else:
+        count = int(data.shape[2])
+        write_data = np.transpose(data, (2, 0, 1))
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=int(data.shape[0]),
+        width=int(data.shape[1]),
+        count=count,
+        dtype=str(data.dtype),
+        crs=crs,
+        transform=transform,
+        nodata=0,
+    ) as dst:
+        dst.write(write_data)
 
 
 class _DummyBatch(dict):
@@ -165,6 +220,140 @@ class _RecordingLogger:
         """
 
         self.info_messages.append(str(message))
+
+    def warning(self, message: str) -> None:
+        """Record one warning-level message.
+
+        Args:
+            message (str): Message text.
+        """
+
+        self.info_messages.append(str(message))
+
+    def error(self, message: str) -> None:
+        """Record one error-level message.
+
+        Args:
+            message (str): Message text.
+        """
+
+        self.info_messages.append(str(message))
+
+
+class _DeterministicHead(nn.Module):
+    """Tiny inference head that predicts class 1 on bright pixels."""
+
+    def forward(
+        self, image: torch.Tensor, features: list[torch.Tensor]
+    ) -> torch.Tensor:
+        """Return two-class logits aligned to the input image grid.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (list[torch.Tensor]): Unused feature list.
+
+        Returns:
+            torch.Tensor: Two-class logits.
+        """
+
+        _ = features
+        foreground = image.mean(dim=1, keepdim=True)
+        background = 1.0 - foreground
+        return torch.cat([background, foreground], dim=1)
+
+
+class _PayloadDeterministicHead(nn.Module):
+    """Tiny inference head that returns logits inside a payload dict."""
+
+    def forward(
+        self, image: torch.Tensor, features: list[torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        """Return two-class logits wrapped in a payload mapping.
+
+        Args:
+            image (torch.Tensor): Input image tensor.
+            features (list[torch.Tensor]): Unused feature list.
+
+        Returns:
+            dict[str, torch.Tensor]: Payload containing `logits`.
+        """
+
+        _ = features
+        foreground = image.mean(dim=1, keepdim=True)
+        background = 1.0 - foreground
+        return {"logits": torch.cat([background, foreground], dim=1)}
+
+
+def _make_inference_context(tmp_path: Path, config: dict[str, Any]) -> RunContext:
+    """Build the minimal runtime context needed by ``InferencePhase`` tests.
+
+    Args:
+        tmp_path (Path): Pytest temporary directory.
+        config (dict[str, Any]): Runtime configuration mapping.
+
+    Returns:
+        RunContext: Minimal phase-compatible context.
+    """
+
+    run_dir = tmp_path / "mlruns" / "0" / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return RunContext(
+        config=config,
+        logger=_RecordingLogger(),
+        dist_ctx=DistContext(),
+        mlflow_logger=None,
+        hook_manager=HookManager([]),
+        metrics_writer=None,
+        run_dir=run_dir,
+        experiment_id="0",
+        run_id="testrun",
+        start_time=time.time(),
+        config_path=None,
+        continue_on_error=False,
+        stability=StabilityConfig(),
+        dataset_validation=DatasetValidationConfig(),
+        run_results=[],
+    )
+
+
+def _patch_inference_phase_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_path: Path,
+    *,
+    payload_head: bool = False,
+) -> None:
+    """Replace heavyweight inference dependencies with deterministic stubs.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+        checkpoint_path (Path): Stub checkpoint path returned by the resolver.
+        payload_head (bool): Whether to return a payload-style head.
+    """
+
+    monkeypatch.setattr(
+        inference_module,
+        "build_head",
+        (
+            (lambda *args, **kwargs: _PayloadDeterministicHead())
+            if payload_head
+            else (lambda *args, **kwargs: _DeterministicHead())
+        ),
+    )
+    monkeypatch.setattr(
+        inference_module,
+        "resolve_inference_checkpoint",
+        lambda context, infer_cfg: (str(checkpoint_path), "configured"),
+    )
+    monkeypatch.setattr(
+        inference_module,
+        "extract_checkpoint_state_dict",
+        lambda payload: {},
+    )
+    monkeypatch.setattr(
+        inference_module,
+        "validate_checkpoint_compatibility",
+        lambda head, state_dict: None,
+    )
 
 
 def test_center_weight_mask_emphasizes_tile_center() -> None:
@@ -310,3 +499,464 @@ def test_prediction_shapefile_append_uses_epsg4326(tmp_path: Path) -> None:
             "scene_a",
             "scene_b",
         }
+
+
+def test_cumulative_prediction_raster_uses_template_grid(tmp_path: Path) -> None:
+    """Shared prediction rasters should inherit the label-template grid.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    template_path = tmp_path / "labels.tif"
+    output_path = tmp_path / "predictions.tif"
+    template = np.zeros((4, 4), dtype=np.uint8)
+    transform = from_origin(100.0, 200.0, 1.0, 1.0)
+    _write_test_geotiff(template_path, template, transform=transform)
+
+    created = ensure_cumulative_prediction_raster(
+        str(output_path),
+        str(template_path),
+    )
+
+    assert created is True
+    with rasterio.open(output_path) as src:
+        assert src.transform == transform
+        assert str(src.crs) == "EPSG:25832"
+        assert src.width == 4
+        assert src.height == 4
+        assert src.read(1).tolist() == template.tolist()
+
+
+def test_cumulative_prediction_backup_and_overwrite_are_deterministic(
+    tmp_path: Path,
+) -> None:
+    """Later cumulative writes should overwrite earlier overlapping pixels.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    template_path = tmp_path / "labels.tif"
+    output_path = tmp_path / "predictions.tif"
+    template = np.zeros((4, 4), dtype=np.uint8)
+    _write_test_geotiff(
+        template_path,
+        template,
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    ensure_cumulative_prediction_raster(str(output_path), str(template_path))
+
+    first_pred = np.ones((2, 2), dtype=np.uint8)
+    second_pred = np.full((2, 2), 2, dtype=np.uint8)
+    write_prediction_to_cumulative_raster(
+        str(output_path),
+        first_pred,
+        from_origin(0.0, 4.0, 1.0, 1.0),
+        "EPSG:25832",
+    )
+    backup_path = build_cumulative_raster_backup_path(str(output_path), "run1")
+    backup_prediction_raster(str(output_path), backup_path)
+    write_prediction_to_cumulative_raster(
+        str(output_path),
+        second_pred,
+        from_origin(1.0, 4.0, 1.0, 1.0),
+        "EPSG:25832",
+    )
+
+    with rasterio.open(output_path) as current:
+        current_data = current.read(1)
+    with rasterio.open(backup_path) as backup:
+        backup_data = backup.read(1)
+
+    assert backup_data.tolist() == [
+        [1, 1, 0, 0],
+        [1, 1, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    assert current_data.tolist() == [
+        [1, 2, 2, 0],
+        [1, 2, 2, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+
+
+def test_directory_inference_writes_one_shared_output_tif(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directory inference should update one shared GeoTIFF, not per-image TIFFs.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+    """
+
+    image_dir = tmp_path / "images"
+    image_a = image_dir / "scene_a.tif"
+    image_b = image_dir / "scene_b.tif"
+    label_path = tmp_path / "labels.tif"
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    output_tif = tmp_path / "shared_predictions.tif"
+
+    _write_test_geotiff(
+        label_path,
+        np.zeros((4, 4), dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_a,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_b,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(2.0, 4.0, 1.0, 1.0),
+    )
+    torch.save({}, checkpoint_path)
+    _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
+
+    context = _make_inference_context(
+        tmp_path,
+        {
+            "model": {
+                "head": "unet",
+                "num_classes": 2,
+                "dino_channels": 1,
+                "backbone": "stub",
+                "layers": [1],
+            },
+            "paths": {"label_path": str(label_path)},
+            "inference": {
+                "enable": True,
+                "device": "cpu",
+                "input_dir": str(image_dir),
+                "input_tif": "",
+                "output_tif": str(output_tif),
+                "output_dir": "",
+                "glob": "*.tif",
+                "checkpoint": str(checkpoint_path),
+                "tile_size": 8,
+                "overlap": 0.0,
+                "merge": {"mode": "uniform"},
+                "tta": {
+                    "horizontal_flip": False,
+                    "vertical_flip": False,
+                },
+                "explain": {"enable": False},
+                "vector": {"enable": False},
+            },
+        },
+    )
+
+    outcome = InferencePhase().execute(context)
+
+    with rasterio.open(output_tif) as src:
+        data = src.read(1)
+    assert data.tolist() == [
+        [1, 1, 1, 1],
+        [1, 1, 1, 1],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    assert outcome.metrics["files_total"] == 2.0
+    assert outcome.metrics["cumulative_updates"] == 2.0
+    assert outcome.artifacts["output_tif"] == str(output_tif)
+    assert not list(tmp_path.glob("*_pred.tif"))
+
+
+def test_directory_inference_skips_overlapping_scene_footprints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directory inference should skip scenes whose footprints overlap.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+    """
+
+    image_dir = tmp_path / "images"
+    image_a = image_dir / "scene_a.tif"
+    image_b = image_dir / "scene_b.tif"
+    label_path = tmp_path / "labels.tif"
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    output_tif = tmp_path / "shared_predictions.tif"
+
+    _write_test_geotiff(
+        label_path,
+        np.zeros((4, 4), dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_a,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_b,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(1.0, 4.0, 1.0, 1.0),
+    )
+    torch.save({}, checkpoint_path)
+    _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
+
+    context = _make_inference_context(
+        tmp_path,
+        {
+            "model": {
+                "head": "unet",
+                "num_classes": 2,
+                "dino_channels": 1,
+                "backbone": "stub",
+                "layers": [1],
+            },
+            "paths": {"label_path": str(label_path)},
+            "inference": {
+                "enable": True,
+                "device": "cpu",
+                "input_dir": str(image_dir),
+                "input_tif": "",
+                "output_tif": str(output_tif),
+                "output_dir": "",
+                "glob": "*.tif",
+                "checkpoint": str(checkpoint_path),
+                "tile_size": 8,
+                "overlap": 0.0,
+                "merge": {"mode": "uniform"},
+                "tta": {
+                    "horizontal_flip": False,
+                    "vertical_flip": False,
+                },
+                "explain": {"enable": False},
+                "vector": {"enable": False},
+            },
+        },
+    )
+
+    outcome = InferencePhase().execute(context)
+
+    with rasterio.open(output_tif) as src:
+        data = src.read(1)
+    assert data.tolist() == [
+        [1, 1, 0, 0],
+        [1, 1, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    assert outcome.metrics["files_skipped_overlap"] == 1.0
+
+
+def test_directory_inference_accepts_payload_style_heads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directory inference should normalize payload-style head outputs.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+    """
+
+    image_dir = tmp_path / "images"
+    image_path = image_dir / "scene_a.tif"
+    label_path = tmp_path / "labels.tif"
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    output_tif = tmp_path / "shared_predictions.tif"
+
+    _write_test_geotiff(
+        label_path,
+        np.zeros((2, 2), dtype=np.uint8),
+        transform=from_origin(0.0, 2.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_path,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 2.0, 1.0, 1.0),
+    )
+    torch.save({}, checkpoint_path)
+    _patch_inference_phase_dependencies(
+        monkeypatch,
+        checkpoint_path,
+        payload_head=True,
+    )
+
+    context = _make_inference_context(
+        tmp_path,
+        {
+            "model": {
+                "head": "unet",
+                "num_classes": 2,
+                "dino_channels": 1,
+                "backbone": "stub",
+                "layers": [1],
+            },
+            "paths": {"label_path": str(label_path)},
+            "inference": {
+                "enable": True,
+                "device": "cpu",
+                "input_dir": str(image_dir),
+                "input_tif": "",
+                "output_tif": str(output_tif),
+                "output_dir": "",
+                "glob": "*.tif",
+                "checkpoint": str(checkpoint_path),
+                "tile_size": 8,
+                "overlap": 0.0,
+                "merge": {"mode": "uniform"},
+                "tta": {
+                    "horizontal_flip": False,
+                    "vertical_flip": False,
+                },
+                "explain": {"enable": False},
+                "vector": {"enable": False},
+            },
+        },
+    )
+
+    outcome = InferencePhase().execute(context)
+
+    with rasterio.open(output_tif) as src:
+        assert src.read(1).tolist() == [[1, 1], [1, 1]]
+    assert outcome.metrics["cumulative_updates"] == 1.0
+
+
+def test_directory_inference_requires_label_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directory inference should fail fast without a usable label raster.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+    """
+
+    image_dir = tmp_path / "images"
+    image_path = image_dir / "scene.tif"
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    _write_test_geotiff(
+        image_path,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 2.0, 1.0, 1.0),
+    )
+    torch.save({}, checkpoint_path)
+    _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
+
+    context = _make_inference_context(
+        tmp_path,
+        {
+            "model": {
+                "head": "unet",
+                "num_classes": 2,
+                "dino_channels": 1,
+                "backbone": "stub",
+                "layers": [1],
+            },
+            "paths": {},
+            "inference": {
+                "enable": True,
+                "device": "cpu",
+                "input_dir": str(image_dir),
+                "input_tif": "",
+                "output_tif": str(tmp_path / "shared_predictions.tif"),
+                "output_dir": "",
+                "glob": "*.tif",
+                "checkpoint": str(checkpoint_path),
+                "tile_size": 8,
+                "overlap": 0.0,
+                "merge": {"mode": "uniform"},
+                "tta": {
+                    "horizontal_flip": False,
+                    "vertical_flip": False,
+                },
+                "explain": {"enable": False},
+                "vector": {"enable": False},
+            },
+        },
+    )
+
+    with pytest.raises(InferenceError, match="label_path"):
+        InferencePhase().execute(context)
+
+
+def test_directory_inference_skips_alignment_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directory inference should skip scenes that cannot align to label grid.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+    """
+
+    image_dir = tmp_path / "images"
+    image_a = image_dir / "scene_a.tif"
+    image_b = image_dir / "scene_b.tif"
+    label_path = tmp_path / "labels.tif"
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    output_tif = tmp_path / "shared_predictions.tif"
+
+    _write_test_geotiff(
+        label_path,
+        np.zeros((2, 2), dtype=np.uint8),
+        transform=from_origin(0.0, 2.0, 1.0, 1.0),
+        crs="EPSG:25832",
+    )
+    _write_test_geotiff(
+        image_a,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 2.0, 1.0, 1.0),
+        crs="EPSG:25832",
+    )
+    _write_test_geotiff(
+        image_b,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 2.0, 1.0, 1.0),
+        crs="EPSG:4326",
+    )
+    torch.save({}, checkpoint_path)
+    _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
+
+    context = _make_inference_context(
+        tmp_path,
+        {
+            "model": {
+                "head": "unet",
+                "num_classes": 2,
+                "dino_channels": 1,
+                "backbone": "stub",
+                "layers": [1],
+            },
+            "paths": {"label_path": str(label_path)},
+            "inference": {
+                "enable": True,
+                "device": "cpu",
+                "input_dir": str(image_dir),
+                "input_tif": "",
+                "output_tif": str(output_tif),
+                "output_dir": "",
+                "glob": "*.tif",
+                "checkpoint": str(checkpoint_path),
+                "tile_size": 8,
+                "overlap": 0.0,
+                "merge": {"mode": "uniform"},
+                "tta": {
+                    "horizontal_flip": False,
+                    "vertical_flip": False,
+                },
+                "explain": {"enable": False},
+                "vector": {"enable": False},
+            },
+        },
+    )
+
+    outcome = InferencePhase().execute(context)
+
+    with rasterio.open(output_tif) as src:
+        assert src.read(1).tolist() == [[1, 1], [1, 1]]
+    assert outcome.metrics["files_skipped_alignment"] == 1.0

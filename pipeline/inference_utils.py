@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
+import shutil
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
+import rasterio
 import torch
 import torch.nn.functional as F
+from rasterio.transform import array_bounds
+from rasterio.warp import transform_bounds
+from rasterio.windows import Window, from_bounds
 
 from .train_utils import normalize_forward_output
 
@@ -1166,6 +1173,269 @@ def overlay_heatmap(
     overlay = (1 - alpha) * rgb_float + alpha * colored
     overlay = np.clip(overlay * 255.0, 0, 255).astype(np.uint8)
     return overlay
+
+
+def _iter_raster_windows(
+    height: int,
+    width: int,
+    window_size: int = 4096,
+) -> list[Window]:
+    """Return fixed-size windows covering one raster.
+
+    Args:
+        height (int): Raster height in pixels.
+        width (int): Raster width in pixels.
+        window_size (int): Maximum window width/height in pixels.
+
+    Returns:
+        list[Window]: Coverage windows spanning the raster extent.
+    """
+
+    windows: list[Window] = []
+    for row_off in range(0, int(height), int(window_size)):
+        row_end = min(int(height), row_off + int(window_size))
+        for col_off in range(0, int(width), int(window_size)):
+            col_end = min(int(width), col_off + int(window_size))
+            windows.append(
+                Window(
+                    col_off=col_off,
+                    row_off=row_off,
+                    width=col_end - col_off,
+                    height=row_end - row_off,
+                )
+            )
+    return windows
+
+
+def ensure_cumulative_prediction_raster(
+    output_path: str,
+    template_path: str,
+    *,
+    dtype: str = "uint8",
+    fill_value: int = 0,
+    compress: str = "deflate",
+) -> bool:
+    """Create or validate one cumulative prediction GeoTIFF.
+
+    Args:
+        output_path (str): Destination GeoTIFF path.
+        template_path (str): Template GeoTIFF providing the target grid.
+        dtype (str): Output raster dtype.
+        fill_value (int): Background value for empty pixels.
+        compress (str): GeoTIFF compression codec.
+
+    Returns:
+        bool: ``True`` when a new blank raster was created.
+
+    Examples:
+        >>> callable(ensure_cumulative_prediction_raster)
+        True
+    """
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with rasterio.open(template_path) as template:
+        template_profile = template.profile.copy()
+        template_crs = template.crs
+        template_transform = template.transform
+        template_width = int(template.width)
+        template_height = int(template.height)
+        output_profile = template_profile
+        output_profile.update(
+            driver="GTiff",
+            count=1,
+            dtype=dtype,
+            nodata=fill_value,
+            compress=compress or template_profile.get("compress", "deflate"),
+        )
+        if os.path.exists(output_path):
+            with rasterio.open(output_path) as existing:
+                if (
+                    existing.count != 1
+                    or existing.crs != template_crs
+                    or existing.transform != template_transform
+                    or int(existing.width) != template_width
+                    or int(existing.height) != template_height
+                ):
+                    raise ValueError(
+                        "Existing cumulative raster does not match the label-grid "
+                        "template."
+                    )
+            return False
+
+        with rasterio.open(output_path, "w", **output_profile) as dst:
+            for window in _iter_raster_windows(template_height, template_width):
+                dst.write(
+                    np.full(
+                        (int(window.height), int(window.width)),
+                        fill_value,
+                        dtype=np.dtype(dtype),
+                    ),
+                    1,
+                    window=window,
+                )
+    return True
+
+
+def build_cumulative_raster_backup_path(output_path: str, run_id: str) -> str:
+    """Return the one-time backup path for a cumulative GeoTIFF.
+
+    Args:
+        output_path (str): Destination GeoTIFF path.
+        run_id (str): Active run identifier.
+
+    Returns:
+        str: Backup path in the same directory as ``output_path``.
+
+    Examples:
+        >>> build_cumulative_raster_backup_path("predictions.tif", "run1")
+        'predictions_preupdate_run1.tif'
+    """
+
+    root, ext = os.path.splitext(output_path)
+    suffix = ext or ".tif"
+    return f"{root}_preupdate_{run_id}{suffix}"
+
+
+def build_cumulative_coverage_path(output_path: str, run_id: str) -> str:
+    """Return the per-run coverage GeoTIFF path for overlap detection.
+
+    Args:
+        output_path (str): Destination cumulative GeoTIFF path.
+        run_id (str): Active run identifier.
+
+    Returns:
+        str: Coverage-raster path in the same directory as ``output_path``.
+
+    Examples:
+        >>> build_cumulative_coverage_path("predictions.tif", "run1")
+        'predictions_coverage_run1.tif'
+    """
+
+    root, ext = os.path.splitext(output_path)
+    suffix = ext or ".tif"
+    return f"{root}_coverage_{run_id}{suffix}"
+
+
+@contextmanager
+def hold_prediction_raster_lock(output_path: str) -> Any:
+    """Hold one exclusive lock for a shared prediction raster.
+
+    Args:
+        output_path (str): Destination cumulative GeoTIFF path.
+
+    Yields:
+        Any: Open lock-file handle held for the duration of the context.
+
+    Examples:
+        >>> callable(hold_prediction_raster_lock)
+        True
+    """
+
+    lock_path = f"{output_path}.lock"
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield handle
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def backup_prediction_raster(output_path: str, backup_path: str) -> None:
+    """Copy one prediction GeoTIFF to a backup path.
+
+    Args:
+        output_path (str): Source GeoTIFF path.
+        backup_path (str): Destination backup path.
+
+    Examples:
+        >>> callable(backup_prediction_raster)
+        True
+    """
+
+    os.makedirs(os.path.dirname(backup_path) or ".", exist_ok=True)
+    shutil.copy2(output_path, backup_path)
+
+
+def write_prediction_to_cumulative_raster(
+    output_path: str,
+    prediction: np.ndarray,
+    prediction_transform: Any,
+    prediction_crs: Any,
+    coverage_path: str | None = None,
+    require_empty: bool = False,
+) -> Window:
+    """Write one scene prediction into the matching cumulative-raster window.
+
+    Args:
+        output_path (str): Destination cumulative GeoTIFF path.
+        prediction (np.ndarray): Scene prediction array on one output grid.
+        prediction_transform (Any): Affine transform for ``prediction``.
+        prediction_crs (Any): CRS for ``prediction``.
+        coverage_path (str | None): Optional per-run coverage raster.
+        require_empty (bool): Whether the destination window must be unused.
+
+    Returns:
+        Window: Destination write window inside ``output_path``.
+
+    Examples:
+        >>> callable(write_prediction_to_cumulative_raster)
+        True
+    """
+
+    pred_array = np.array(prediction, dtype=np.uint8, copy=False)
+    if pred_array.ndim != 2:
+        raise ValueError("prediction must be a 2D array")
+    with rasterio.open(output_path, "r+") as dst:
+        pred_bounds = array_bounds(
+            pred_array.shape[0],
+            pred_array.shape[1],
+            prediction_transform,
+        )
+        pred_crs_obj = rasterio.crs.CRS.from_user_input(prediction_crs)
+        if dst.crs != pred_crs_obj:
+            pred_bounds = transform_bounds(
+                pred_crs_obj,
+                dst.crs,
+                *pred_bounds,
+                densify_pts=21,
+            )
+        target_window = (
+            from_bounds(*pred_bounds, transform=dst.transform)
+            .round_offsets()
+            .round_lengths()
+        )
+        target_window = Window(
+            col_off=max(0, int(target_window.col_off)),
+            row_off=max(0, int(target_window.row_off)),
+            width=max(1, int(target_window.width)),
+            height=max(1, int(target_window.height)),
+        )
+        row_end = min(int(target_window.row_off + target_window.height), dst.height)
+        col_end = min(int(target_window.col_off + target_window.width), dst.width)
+        write_height = max(1, row_end - int(target_window.row_off))
+        write_width = max(1, col_end - int(target_window.col_off))
+        write_window = Window(
+            col_off=int(target_window.col_off),
+            row_off=int(target_window.row_off),
+            width=write_width,
+            height=write_height,
+        )
+        if coverage_path is not None:
+            with rasterio.open(coverage_path, "r+") as coverage_dst:
+                coverage = coverage_dst.read(1, window=write_window)
+                if require_empty and np.any(coverage):
+                    raise ValueError(
+                        "Overlapping scene footprints detected while writing the "
+                        "cumulative prediction raster."
+                    )
+                coverage_dst.write(
+                    np.ones((write_height, write_width), dtype=np.uint8),
+                    1,
+                    window=write_window,
+                )
+        dst.write(pred_array[:write_height, :write_width], 1, window=write_window)
+        return write_window
 
 
 def extract_prediction_features(
