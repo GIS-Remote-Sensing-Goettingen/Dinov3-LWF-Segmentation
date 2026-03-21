@@ -56,6 +56,10 @@ def _write_test_geotiff(
         data (np.ndarray): Raster data, either ``(H, W)`` or ``(H, W, C)``.
         transform: Raster affine transform.
         crs (str): CRS identifier.
+
+    Examples:
+        >>> callable(_write_test_geotiff)
+        True
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +95,11 @@ class _DummyBatch(dict):
 
         Returns:
             _DummyBatch: Device-moved batch payload.
+
+        Examples:
+            >>> batch = _DummyBatch({"x": torch.ones(1)})
+            >>> isinstance(batch.to(torch.device("cpu")), _DummyBatch)
+            True
         """
 
         return _DummyBatch({key: value.to(device) for key, value in self.items()})
@@ -117,6 +126,17 @@ class _DummyProcessor:
 
         Returns:
             _DummyBatch: Payload containing `pixel_values`.
+
+        Examples:
+            >>> processor = _DummyProcessor()
+            >>> payload = processor(
+            ...     images=np.zeros((2, 2, 3), dtype=np.uint8),
+            ...     return_tensors="pt",
+            ...     do_resize=False,
+            ...     do_center_crop=False,
+            ... )
+            >>> tuple(payload["pixel_values"].shape)
+            (1, 3, 2, 2)
         """
 
         _ = return_tensors, do_resize, do_center_crop
@@ -148,6 +168,12 @@ class _DummyBackbone(nn.Module):
 
         Returns:
             Any: Namespace with `hidden_states`.
+
+        Examples:
+            >>> backbone = _DummyBackbone()
+            >>> outputs = backbone(torch.ones(1, 3, 4, 4), output_hidden_states=True)
+            >>> len(outputs.hidden_states)
+            2
         """
 
         _ = output_hidden_states
@@ -173,6 +199,15 @@ class _PayloadHead(nn.Module):
 
         Returns:
             dict[str, torch.Tensor]: Payload containing `logits`.
+
+        Examples:
+            >>> head = _PayloadHead()
+            >>> logits = head(
+            ...     torch.ones(1, 3, 2, 2),
+            ...     [torch.ones(1, 3, 2, 2)],
+            ... )["logits"]
+            >>> tuple(logits.shape)
+            (1, 2, 2, 2)
         """
 
         _ = image
@@ -217,6 +252,12 @@ class _RecordingLogger:
 
         Args:
             message (str): Message text.
+
+        Examples:
+            >>> logger = _RecordingLogger()
+            >>> logger.info("hi")
+            >>> logger.info_messages[-1]
+            'hi'
         """
 
         self.info_messages.append(str(message))
@@ -254,6 +295,12 @@ class _DeterministicHead(nn.Module):
 
         Returns:
             torch.Tensor: Two-class logits.
+
+        Examples:
+            >>> head = _DeterministicHead()
+            >>> logits = head(torch.ones(1, 3, 2, 2), [])
+            >>> tuple(logits.shape)
+            (1, 2, 2, 2)
         """
 
         _ = features
@@ -276,6 +323,12 @@ class _PayloadDeterministicHead(nn.Module):
 
         Returns:
             dict[str, torch.Tensor]: Payload containing `logits`.
+
+        Examples:
+            >>> head = _PayloadDeterministicHead()
+            >>> payload = head(torch.ones(1, 3, 2, 2), [])
+            >>> sorted(payload)
+            ['logits']
         """
 
         _ = features
@@ -293,6 +346,11 @@ def _make_inference_context(tmp_path: Path, config: dict[str, Any]) -> RunContex
 
     Returns:
         RunContext: Minimal phase-compatible context.
+
+    Examples:
+        >>> ctx = _make_inference_context(Path("."), {"inference": {"enable": True}})
+        >>> ctx.run_id
+        'testrun'
     """
 
     run_dir = tmp_path / "mlruns" / "0" / "run"
@@ -328,6 +386,10 @@ def _patch_inference_phase_dependencies(
         monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
         checkpoint_path (Path): Stub checkpoint path returned by the resolver.
         payload_head (bool): Whether to return a payload-style head.
+
+    Examples:
+        >>> callable(_patch_inference_phase_dependencies)
+        True
     """
 
     monkeypatch.setattr(
@@ -668,11 +730,11 @@ def test_directory_inference_writes_one_shared_output_tif(
     assert not list(tmp_path.glob("*_pred.tif"))
 
 
-def test_directory_inference_skips_overlapping_scene_footprints(
+def test_directory_inference_allows_small_edge_overlap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Directory inference should skip scenes whose footprints overlap.
+    """Directory inference should tolerate border-only overlap up to 5%.
 
     Args:
         tmp_path (Path): Temporary directory provided by pytest.
@@ -688,18 +750,98 @@ def test_directory_inference_skips_overlapping_scene_footprints(
 
     _write_test_geotiff(
         label_path,
-        np.zeros((4, 4), dtype=np.uint8),
-        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+        np.zeros((40, 78), dtype=np.uint8),
+        transform=from_origin(0.0, 40.0, 1.0, 1.0),
     )
     _write_test_geotiff(
         image_a,
-        np.full((2, 2, 3), 255, dtype=np.uint8),
-        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+        np.full((40, 40, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 40.0, 1.0, 1.0),
     )
     _write_test_geotiff(
         image_b,
-        np.full((2, 2, 3), 255, dtype=np.uint8),
-        transform=from_origin(1.0, 4.0, 1.0, 1.0),
+        np.full((40, 40, 3), 255, dtype=np.uint8),
+        transform=from_origin(38.0, 40.0, 1.0, 1.0),
+    )
+    torch.save({}, checkpoint_path)
+    _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
+
+    context = _make_inference_context(
+        tmp_path,
+        {
+            "model": {
+                "head": "unet",
+                "num_classes": 2,
+                "dino_channels": 1,
+                "backbone": "stub",
+                "layers": [1],
+            },
+            "paths": {"label_path": str(label_path)},
+            "inference": {
+                "enable": True,
+                "device": "cpu",
+                "input_dir": str(image_dir),
+                "input_tif": "",
+                "output_tif": str(output_tif),
+                "output_dir": "",
+                "glob": "*.tif",
+                "checkpoint": str(checkpoint_path),
+                "tile_size": 40,
+                "overlap": 0.0,
+                "merge": {"mode": "uniform"},
+                "tta": {
+                    "horizontal_flip": False,
+                    "vertical_flip": False,
+                },
+                "explain": {"enable": False},
+                "vector": {"enable": False},
+            },
+        },
+    )
+
+    outcome = InferencePhase().execute(context)
+
+    with rasterio.open(output_tif) as src:
+        data = src.read(1)
+    assert data.shape == (40, 78)
+    assert np.all(data[:, :38] == 1)
+    assert np.all(data[:, 38:78] == 1)
+    assert outcome.metrics["files_skipped_overlap"] == 0.0
+    assert outcome.metrics["cumulative_updates"] == 2.0
+
+
+def test_directory_inference_skips_large_overlapping_scene_footprints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directory inference should still skip materially overlapping scenes.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+    """
+
+    image_dir = tmp_path / "images"
+    image_a = image_dir / "scene_a.tif"
+    image_b = image_dir / "scene_b.tif"
+    label_path = tmp_path / "labels.tif"
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    output_tif = tmp_path / "shared_predictions.tif"
+
+    _write_test_geotiff(
+        label_path,
+        np.zeros((8, 8), dtype=np.uint8),
+        transform=from_origin(0.0, 8.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_a,
+        np.full((6, 6, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 8.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_b,
+        np.full((6, 6, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 8.0, 1.0, 1.0),
     )
     torch.save({}, checkpoint_path)
     _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
@@ -742,10 +884,14 @@ def test_directory_inference_skips_overlapping_scene_footprints(
     with rasterio.open(output_tif) as src:
         data = src.read(1)
     assert data.tolist() == [
-        [1, 1, 0, 0],
-        [1, 1, 0, 0],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
     ]
     assert outcome.metrics["files_skipped_overlap"] == 1.0
 

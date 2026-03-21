@@ -61,7 +61,12 @@ from ..utils import get_model_config, resolve_path
 
 
 class InferencePhase(Phase):
-    """Phase for sliding-window inference."""
+    """Phase for sliding-window inference.
+
+    Examples:
+        >>> InferencePhase.name
+        'inference'
+    """
 
     name = "inference"
     config_key = "inference"

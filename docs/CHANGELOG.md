@@ -12,10 +12,12 @@
   `output_dir` config semantics, normalize payload-style head outputs during
   inference, skip only raster-masked nodata tiles instead of all-zero imagery,
   use disk-backed scene accumulators for lower-memory large-scene runs, and
-  skip label-grid alignment errors or overlapping directory inputs with warning
-  counters instead of aborting the whole folder run; also add regression
+  skip label-grid alignment errors while tolerating seam-border overlap up to
+  roughly 5% of the smaller write-window dimension and still skipping
+  materially overlapping directory inputs with warning counters instead of
+  aborting the whole folder run; also add regression
   coverage for cumulative raster creation, backup, overwrite, overlap
-  detection, payload heads, and label-path validation
+  tolerance/detection, payload heads, and label-path validation
   (`pipeline/phases/inference.py`, `pipeline/inference_utils.py`,
   `test/test_inference_outputs.py`, `configs/config_*.yml`, `README.md`,
   `docs/ARCHITECTURE.md`).
