@@ -205,11 +205,11 @@ MLflow-compatible artifacts for research workflows.
    Scene outputs now use center-weighted overlap blending, emit one compact
    explainability figure per input image, and when `input_dir` is used they now
    update one cumulative GeoTIFF (with one safety backup if the file already
-   exists) on the native label grid instead of emitting per-image prediction
-   TIFFs. Directory mode now skips label-grid alignment failures and only
-   rejects material scene-footprint overlap, while tolerating border-only seam
-   overlap up to roughly 5% of the smaller write-window dimension, so
-   large-scale runs continue without silently overwriting prior predictions.
-   When `label_path` is configured, the
-   prediction raster is written on the label raster grid rather than the finer
-   source-image grid.
+   exists) on a folder-wide extent derived from the union of the input-image
+   footprints, snapped to the `label_path` grid, instead of emitting per-image
+   prediction TIFFs. Directory mode still uses `label_path` for CRS,
+   resolution, and grid alignment, but no longer clips output to the label
+   raster extent. Overlapping scene writes now follow deterministic sorted-file
+   overwrite order rather than being rejected. The prediction raster is still
+   written on the label-grid resolution rather than the finer source-image
+   grid.

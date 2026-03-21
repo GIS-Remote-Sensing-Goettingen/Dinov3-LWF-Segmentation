@@ -35,7 +35,6 @@ from ..inference_utils import (
     append_prediction_shapefile,
     backup_prediction_raster,
     build_blend_weight_mask,
-    build_cumulative_coverage_path,
     build_cumulative_raster_backup_path,
     build_dashboard,
     build_tta_transforms,
@@ -227,14 +226,46 @@ class InferencePhase(Phase):
                 stride_eff = stride
                 if label_grid_enabled:
                     try:
-                        _, label_meta = read_label_window_for_image_bounds(
-                            input_tif_path,
-                            label_path,
-                        )
-                        output_transform = label_meta["transform"]
-                        output_crs = label_meta["crs"]
-                        output_height = int(label_meta["height"])
-                        output_width = int(label_meta["width"])
+                        if strict_label_grid:
+                            with rasterio.open(label_path) as template_src:
+                                output_crs = template_src.crs
+                                template_bounds = src.bounds
+                                if source_crs != output_crs:
+                                    template_bounds = rasterio.warp.transform_bounds(
+                                        source_crs,
+                                        output_crs,
+                                        *src.bounds,
+                                        densify_pts=21,
+                                    )
+                                output_window = (
+                                    rasterio.windows.from_bounds(
+                                        *template_bounds,
+                                        transform=template_src.transform,
+                                    )
+                                    .round_offsets()
+                                    .round_lengths()
+                                )
+                                output_window = Window(
+                                    col_off=int(output_window.col_off),
+                                    row_off=int(output_window.row_off),
+                                    width=max(1, int(output_window.width)),
+                                    height=max(1, int(output_window.height)),
+                                )
+                                output_transform = rasterio.windows.transform(
+                                    output_window,
+                                    template_src.transform,
+                                )
+                                output_height = int(output_window.height)
+                                output_width = int(output_window.width)
+                        else:
+                            _, label_meta = read_label_window_for_image_bounds(
+                                input_tif_path,
+                                label_path,
+                            )
+                            output_transform = label_meta["transform"]
+                            output_crs = label_meta["crs"]
+                            output_height = int(label_meta["height"])
+                            output_width = int(label_meta["width"])
                         label_layout = build_tile_grid_layout(
                             input_tif_path,
                             label_path,
@@ -330,274 +361,291 @@ class InferencePhase(Phase):
                             tile_counter += 1
                             y_max = min(y + tile_size_eff, height)
                             x_max = min(x + tile_size_eff, width)
-                        window = Window.from_slices((y, y_max), (x, x_max))
-                        mask_tile = src.read_masks(window=window)
-                        if not np.any(mask_tile):
-                            continue
-                        img_tile = src.read(window=window, boundless=False)
-                        img_tile = np.transpose(img_tile, (1, 2, 0))
-                        img_tile_raw = img_tile
-                        orig_h, orig_w = img_tile.shape[:2]
-                        pad_h = max(0, tile_size_eff - orig_h)
-                        pad_w = max(0, tile_size_eff - orig_w)
-                        if pad_h or pad_w:
-                            context.logger.info(
-                                "Scene %s is smaller than one full inference tile; "
-                                "reflect-padding %sx%s up to %sx%s for tile %s."
-                                % (
-                                    os.path.basename(input_tif_path),
-                                    orig_h,
-                                    orig_w,
-                                    tile_size_eff,
-                                    tile_size_eff,
-                                    tile_counter,
+                            window = Window.from_slices((y, y_max), (x, x_max))
+                            mask_tile = src.read_masks(window=window)
+                            if not np.any(mask_tile):
+                                continue
+                            img_tile = src.read(window=window, boundless=False)
+                            img_tile = np.transpose(img_tile, (1, 2, 0))
+                            img_tile_raw = img_tile
+                            orig_h, orig_w = img_tile.shape[:2]
+                            pad_h = max(0, tile_size_eff - orig_h)
+                            pad_w = max(0, tile_size_eff - orig_w)
+                            if pad_h or pad_w:
+                                context.logger.info(
+                                    "Scene %s is smaller than one full inference tile; "
+                                    "reflect-padding %sx%s up to %sx%s for tile %s."
+                                    % (
+                                        os.path.basename(input_tif_path),
+                                        orig_h,
+                                        orig_w,
+                                        tile_size_eff,
+                                        tile_size_eff,
+                                        tile_counter,
+                                    )
                                 )
-                            )
-                            img_tile = np.pad(
-                                img_tile,
-                                ((0, pad_h), (0, pad_w), (0, 0)),
-                                mode="reflect",
-                            )
-                        tile_probs = np.zeros(
-                            (model_cfg["num_classes"], orig_h, orig_w),
-                            dtype=np.float32,
-                        )
-                        for transform in tta_transforms:
-                            aug_img = transform.apply(img_tile)
-                            img_tile_norm = (aug_img.astype(np.float32) / 255.0).astype(
-                                np.float32
-                            )
-                            img_t = (
-                                torch.from_numpy(img_tile_norm)
-                                .permute(2, 0, 1)
-                                .unsqueeze(0)
-                                .to(device)
-                            )
-                            feats_batched = []
-                            if uses_backbone_features:
-                                assert backbone is not None and processor is not None
-                                feats = extract_multiscale_features(
-                                    aug_img.astype(np.float32),
-                                    backbone,
-                                    processor,
-                                    device,
-                                    model_cfg["layers"],
-                                    ps=ps,
+                                img_tile = np.pad(
+                                    img_tile,
+                                    ((0, pad_h), (0, pad_w), (0, 0)),
+                                    mode="reflect",
                                 )
-                                feats_batched = [
-                                    f.to(device).unsqueeze(0) for f in feats
-                                ]
-                            with torch.no_grad(), autocast:
-                                payload = normalize_forward_output(
-                                    head(img_t, feats_batched)
+                            tile_probs = np.zeros(
+                                (model_cfg["num_classes"], orig_h, orig_w),
+                                dtype=np.float32,
+                            )
+                            for transform in tta_transforms:
+                                aug_img = transform.apply(img_tile)
+                                img_tile_norm = (
+                                    aug_img.astype(np.float32) / 255.0
+                                ).astype(np.float32)
+                                img_t = (
+                                    torch.from_numpy(img_tile_norm)
+                                    .permute(2, 0, 1)
+                                    .unsqueeze(0)
+                                    .to(device)
                                 )
-                                logits = payload["logits"]
-                                logits = transform.invert_logits(logits)
-                                if logits.shape[-2:] != img_t.shape[-2:]:
-                                    logits = F.interpolate(
-                                        logits,
-                                        size=img_t.shape[-2:],
+                                feats_batched = []
+                                if uses_backbone_features:
+                                    assert (
+                                        backbone is not None and processor is not None
+                                    )
+                                    feats = extract_multiscale_features(
+                                        aug_img.astype(np.float32),
+                                        backbone,
+                                        processor,
+                                        device,
+                                        model_cfg["layers"],
+                                        ps=ps,
+                                    )
+                                    feats_batched = [
+                                        f.to(device).unsqueeze(0) for f in feats
+                                    ]
+                                with torch.no_grad(), autocast:
+                                    payload = normalize_forward_output(
+                                        head(img_t, feats_batched)
+                                    )
+                                    logits = payload["logits"]
+                                    logits = transform.invert_logits(logits)
+                                    if logits.shape[-2:] != img_t.shape[-2:]:
+                                        logits = F.interpolate(
+                                            logits,
+                                            size=img_t.shape[-2:],
+                                            mode="bilinear",
+                                            align_corners=False,
+                                        )
+                                    probs = (
+                                        torch.softmax(logits, dim=1)
+                                        .squeeze(0)
+                                        .detach()
+                                        .cpu()
+                                        .numpy()
+                                    )
+                                probs = probs[:, :orig_h, :orig_w]
+                                tile_probs += probs
+                            tile_probs /= len(tta_transforms)
+                            gradcam_tile = None
+                            if explain_enabled:
+                                if uses_backbone_features:
+                                    assert (
+                                        backbone is not None and processor is not None
+                                    )
+                                    gradcam_tiles_attempted += 1
+                                    gradcam_result = compute_gradcam_map(
+                                        img_tile_raw.astype(np.float32),
+                                        backbone,
+                                        head,
+                                        processor,
+                                        device,
+                                        model_cfg["layers"],
+                                        ps,
+                                        class_index,
+                                        cam_layer=explain_cam_layer,
+                                        logger=None,
+                                    )
+                                    gradcam_tile = upsample_map(
+                                        np.asarray(
+                                            gradcam_result["cam_map"], dtype=np.float32
+                                        ),
+                                        orig_h,
+                                        orig_w,
+                                    )
+                                    if bool(gradcam_result["success"]):
+                                        gradcam_tiles_succeeded += 1
+                                    else:
+                                        gradcam_tiles_failed += 1
+                                        if gradcam_first_failure is None:
+                                            gradcam_first_failure = (
+                                                "scene=%s tile=%s layer=%s stage=%s reason=%s"
+                                                % (
+                                                    os.path.basename(input_tif_path),
+                                                    tile_counter,
+                                                    gradcam_result.get(
+                                                        "selected_layer"
+                                                    ),
+                                                    gradcam_result.get("failure_stage"),
+                                                    gradcam_result.get(
+                                                        "failure_reason"
+                                                    ),
+                                                )
+                                            )
+                                            context.logger.warning(
+                                                "Grad-CAM fallback engaged; using zero maps. %s"
+                                                % gradcam_first_failure
+                                            )
+                                else:
+                                    gradcam_tile = np.zeros(
+                                        (orig_h, orig_w), dtype=np.float32
+                                    )
+                            blend_key = (orig_h, orig_w)
+                            if label_grid_enabled:
+                                tile_bounds = src.window_bounds(window)
+                                label_bounds = tile_bounds
+                                if source_crs != output_crs:
+                                    label_bounds = rasterio.warp.transform_bounds(
+                                        source_crs,
+                                        output_crs,
+                                        *tile_bounds,
+                                        densify_pts=21,
+                                    )
+                                label_window = (
+                                    rasterio.windows.from_bounds(
+                                        *label_bounds,
+                                        transform=output_transform,
+                                    )
+                                    .round_offsets()
+                                    .round_lengths()
+                                )
+                                label_window = Window(
+                                    col_off=max(0, int(label_window.col_off)),
+                                    row_off=max(0, int(label_window.row_off)),
+                                    width=max(1, int(label_window.width)),
+                                    height=max(1, int(label_window.height)),
+                                )
+                                row_end = min(
+                                    int(label_window.row_off + label_window.height),
+                                    output_height,
+                                )
+                                col_end = min(
+                                    int(label_window.col_off + label_window.width),
+                                    output_width,
+                                )
+                                target_h = max(
+                                    1,
+                                    row_end - int(label_window.row_off),
+                                )
+                                target_w = max(
+                                    1,
+                                    col_end - int(label_window.col_off),
+                                )
+                                tile_probs = (
+                                    F.interpolate(
+                                        torch.from_numpy(tile_probs).unsqueeze(0),
+                                        size=(target_h, target_w),
                                         mode="bilinear",
                                         align_corners=False,
                                     )
-                                probs = (
-                                    torch.softmax(logits, dim=1)
                                     .squeeze(0)
-                                    .detach()
-                                    .cpu()
                                     .numpy()
                                 )
-                            probs = probs[:, :orig_h, :orig_w]
-                            tile_probs += probs
-                        tile_probs /= len(tta_transforms)
-                        gradcam_tile = None
-                        if explain_enabled:
-                            if uses_backbone_features:
-                                assert backbone is not None and processor is not None
-                                gradcam_tiles_attempted += 1
-                                gradcam_result = compute_gradcam_map(
-                                    img_tile_raw.astype(np.float32),
-                                    backbone,
-                                    head,
-                                    processor,
-                                    device,
-                                    model_cfg["layers"],
-                                    ps,
-                                    class_index,
-                                    cam_layer=explain_cam_layer,
-                                    logger=None,
-                                )
-                                gradcam_tile = upsample_map(
-                                    np.asarray(
-                                        gradcam_result["cam_map"], dtype=np.float32
-                                    ),
-                                    orig_h,
-                                    orig_w,
-                                )
-                                if bool(gradcam_result["success"]):
-                                    gradcam_tiles_succeeded += 1
-                                else:
-                                    gradcam_tiles_failed += 1
-                                    if gradcam_first_failure is None:
-                                        gradcam_first_failure = (
-                                            "scene=%s tile=%s layer=%s stage=%s reason=%s"
-                                            % (
-                                                os.path.basename(input_tif_path),
-                                                tile_counter,
-                                                gradcam_result.get("selected_layer"),
-                                                gradcam_result.get("failure_stage"),
-                                                gradcam_result.get("failure_reason"),
-                                            )
-                                        )
-                                        context.logger.warning(
-                                            "Grad-CAM fallback engaged; using zero maps. %s"
-                                            % gradcam_first_failure
-                                        )
+                                if explain_enabled and gradcam_tile is not None:
+                                    gradcam_tile = upsample_map(
+                                        np.asarray(gradcam_tile, dtype=np.float32),
+                                        target_h,
+                                        target_w,
+                                    )
+                                blend_key = (target_h, target_w)
+                                y_slice = slice(int(label_window.row_off), row_end)
+                                x_slice = slice(int(label_window.col_off), col_end)
                             else:
-                                gradcam_tile = np.zeros(
-                                    (orig_h, orig_w), dtype=np.float32
+                                y_slice = slice(y, y_max)
+                                x_slice = slice(x, x_max)
+                            blend_mask = weight_cache.get(blend_key)
+                            if blend_mask is None:
+                                blend_mask = build_blend_weight_mask(
+                                    blend_key[0],
+                                    blend_key[1],
+                                    mode=merge_mode,
                                 )
-                        blend_key = (orig_h, orig_w)
-                        if label_grid_enabled:
-                            tile_bounds = src.window_bounds(window)
-                            label_bounds = tile_bounds
-                            if source_crs != output_crs:
-                                label_bounds = rasterio.warp.transform_bounds(
-                                    source_crs,
-                                    output_crs,
-                                    *tile_bounds,
-                                    densify_pts=21,
-                                )
-                            label_window = (
-                                rasterio.windows.from_bounds(
-                                    *label_bounds,
-                                    transform=output_transform,
-                                )
-                                .round_offsets()
-                                .round_lengths()
-                            )
-                            label_window = Window(
-                                col_off=max(0, int(label_window.col_off)),
-                                row_off=max(0, int(label_window.row_off)),
-                                width=max(1, int(label_window.width)),
-                                height=max(1, int(label_window.height)),
-                            )
-                            row_end = min(
-                                int(label_window.row_off + label_window.height),
-                                output_height,
-                            )
-                            col_end = min(
-                                int(label_window.col_off + label_window.width),
-                                output_width,
-                            )
-                            target_h = max(1, row_end - int(label_window.row_off))
-                            target_w = max(1, col_end - int(label_window.col_off))
-                            tile_probs = (
-                                F.interpolate(
-                                    torch.from_numpy(tile_probs).unsqueeze(0),
-                                    size=(target_h, target_w),
-                                    mode="bilinear",
-                                    align_corners=False,
-                                )
-                                .squeeze(0)
-                                .numpy()
-                            )
-                            if explain_enabled and gradcam_tile is not None:
-                                gradcam_tile = upsample_map(
-                                    np.asarray(gradcam_tile, dtype=np.float32),
-                                    target_h,
-                                    target_w,
-                                )
-                            blend_key = (target_h, target_w)
-                            y_slice = slice(int(label_window.row_off), row_end)
-                            x_slice = slice(int(label_window.col_off), col_end)
-                        else:
-                            blend_key = (orig_h, orig_w)
-                            y_slice = slice(y, y_max)
-                            x_slice = slice(x, x_max)
-                        blend_mask = weight_cache.get(blend_key)
-                        if blend_mask is None:
-                            blend_mask = build_blend_weight_mask(
-                                blend_key[0],
-                                blend_key[1],
-                                mode=merge_mode,
-                            )
-                            weight_cache[blend_key] = blend_mask
-                        if (
-                            explain_enabled
-                            and tile_debug_enable
-                            and local_plot_every_n
-                            and tile_counter % local_plot_every_n == 0
-                        ):
-                            try:
-                                rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
-                                _, _, class_prob = compute_xai_maps(
-                                    tile_probs, class_index
-                                )
-                                pred_tile = tile_probs.argmax(axis=0).astype(np.uint8)
-                                if rgb.shape[:2] != pred_tile.shape:
-                                    rgb = np.transpose(
-                                        src.read(
-                                            [1, 2, 3],
-                                            window=window,
-                                            out_shape=(
-                                                3,
-                                                pred_tile.shape[0],
-                                                pred_tile.shape[1],
+                                weight_cache[blend_key] = blend_mask
+                            if (
+                                explain_enabled
+                                and tile_debug_enable
+                                and local_plot_every_n
+                                and tile_counter % local_plot_every_n == 0
+                            ):
+                                try:
+                                    rgb = np.clip(img_tile_raw, 0, 255).astype(np.uint8)
+                                    _, _, class_prob = compute_xai_maps(
+                                        tile_probs, class_index
+                                    )
+                                    pred_tile = tile_probs.argmax(axis=0).astype(
+                                        np.uint8
+                                    )
+                                    if rgb.shape[:2] != pred_tile.shape:
+                                        rgb = np.transpose(
+                                            src.read(
+                                                [1, 2, 3],
+                                                window=window,
+                                                out_shape=(
+                                                    3,
+                                                    pred_tile.shape[0],
+                                                    pred_tile.shape[1],
+                                                ),
+                                                resampling=Resampling.bilinear,
                                             ),
-                                            resampling=Resampling.bilinear,
-                                        ),
-                                        (1, 2, 0),
-                                    ).astype(np.uint8)
-                                overlay_pred = overlay_binary_mask(
-                                    rgb,
-                                    pred_tile == foreground_class,
-                                    color=overlay_color,
-                                    alpha=overlay_alpha,
-                                )
-                                gradcam_overlay = overlay_heatmap(
-                                    rgb,
-                                    np.asarray(gradcam_tile, dtype=np.float32),
-                                    cmap="magma",
-                                    alpha=0.45,
-                                )
-                                plot_path = os.path.join(
-                                    plots_dir,
-                                    f"{plot_prefix}_tile_y{y}_x{x}_compact.png",
-                                )
-                                build_dashboard(
-                                    plot_path,
-                                    rgb,
-                                    overlay_pred,
-                                    gradcam_overlay,
-                                    class_prob,
-                                    layout=layout,
-                                )
-                            except Exception:
-                                context.logger.error(
-                                    "XAI plotting failed for tile y=%s x=%s\n%s"
-                                    % (y, x, traceback.format_exc())
-                                )
-                        prob_accum[:, y_slice, x_slice] += (
-                            tile_probs * blend_mask[None, ...]
-                        )
-                        weight_accum[y_slice, x_slice] += blend_mask
-                        if (
-                            explain_enabled
-                            and gradcam_tile is not None
-                            and gradcam_accum is not None
-                        ):
-                            gradcam_accum[y_slice, x_slice] += gradcam_tile * blend_mask
-                        if tile_counter % 50 == 0 or tile_counter == total_tiles:
-                            context.logger.info(
-                                f"Inference progress: {tile_counter}/{total_tiles} tiles."
+                                            (1, 2, 0),
+                                        ).astype(np.uint8)
+                                    overlay_pred = overlay_binary_mask(
+                                        rgb,
+                                        pred_tile == foreground_class,
+                                        color=overlay_color,
+                                        alpha=overlay_alpha,
+                                    )
+                                    gradcam_overlay = overlay_heatmap(
+                                        rgb,
+                                        np.asarray(gradcam_tile, dtype=np.float32),
+                                        cmap="magma",
+                                        alpha=0.45,
+                                    )
+                                    plot_path = os.path.join(
+                                        plots_dir,
+                                        f"{plot_prefix}_tile_y{y}_x{x}_compact.png",
+                                    )
+                                    build_dashboard(
+                                        plot_path,
+                                        rgb,
+                                        overlay_pred,
+                                        gradcam_overlay,
+                                        class_prob,
+                                        layout=layout,
+                                    )
+                                except Exception:
+                                    context.logger.error(
+                                        "XAI plotting failed for tile y=%s x=%s\n%s"
+                                        % (y, x, traceback.format_exc())
+                                    )
+                            prob_accum[:, y_slice, x_slice] += (
+                                tile_probs * blend_mask[None, ...]
                             )
-                            context.hook_manager.on_inference_tile(
-                                context,
-                                self.name,
-                                tile_counter,
-                                total_tiles,
-                            )
+                            weight_accum[y_slice, x_slice] += blend_mask
+                            if (
+                                explain_enabled
+                                and gradcam_tile is not None
+                                and gradcam_accum is not None
+                            ):
+                                gradcam_accum[y_slice, x_slice] += (
+                                    gradcam_tile * blend_mask
+                                )
+                            if tile_counter % 50 == 0 or tile_counter == total_tiles:
+                                context.logger.info(
+                                    f"Inference progress: {tile_counter}/{total_tiles} tiles."
+                                )
+                                context.hook_manager.on_inference_tile(
+                                    context,
+                                    self.name,
+                                    tile_counter,
+                                    total_tiles,
+                                )
                     pred_full = np.memmap(
                         os.path.join(temp_dir, "pred_full.dat"),
                         dtype=np.uint8,
@@ -667,8 +715,6 @@ class InferencePhase(Phase):
                             pred_full,
                             output_transform,
                             output_crs,
-                            coverage_path=cumulative_coverage_path,
-                            require_empty=True,
                         )
                         context.logger.info(
                             "Updated cumulative prediction raster %s for %s"
@@ -806,8 +852,12 @@ class InferencePhase(Phase):
             if not label_path or not os.path.exists(label_path):
                 raise InferenceError(
                     "Directory inference requires a valid label_path so the shared "
-                    "prediction GeoTIFF can be written on the native label grid."
+                    "prediction GeoTIFF can inherit CRS, resolution, and grid "
+                    "alignment."
                 )
+            tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
+            if not tile_files:
+                raise InferenceError(f"No input files found in {input_dir}")
             cumulative_output_path = str(
                 output_tif
                 or context.run_dir
@@ -816,21 +866,68 @@ class InferencePhase(Phase):
                 / "inference"
                 / "predictions.tif"
             )
-            cumulative_coverage_path = build_cumulative_coverage_path(
-                cumulative_output_path,
-                context.run_id,
-            )
+            with rasterio.open(label_path) as template_src:
+                template_crs = template_src.crs
+                template_transform = template_src.transform
+            cumulative_window = None
+            for tile_path in tile_files:
+                with rasterio.open(tile_path) as src:
+                    tile_bounds = src.bounds
+                    if src.crs != template_crs:
+                        tile_bounds = rasterio.warp.transform_bounds(
+                            src.crs,
+                            template_crs,
+                            *src.bounds,
+                            densify_pts=21,
+                        )
+                tile_window = (
+                    rasterio.windows.from_bounds(
+                        *tile_bounds,
+                        transform=template_transform,
+                    )
+                    .round_offsets()
+                    .round_lengths()
+                )
+                tile_window = Window(
+                    col_off=int(tile_window.col_off),
+                    row_off=int(tile_window.row_off),
+                    width=max(1, int(tile_window.width)),
+                    height=max(1, int(tile_window.height)),
+                )
+                if cumulative_window is None:
+                    cumulative_window = tile_window
+                    continue
+                row_off = min(
+                    int(cumulative_window.row_off),
+                    int(tile_window.row_off),
+                )
+                col_off = min(
+                    int(cumulative_window.col_off),
+                    int(tile_window.col_off),
+                )
+                row_end = max(
+                    int(cumulative_window.row_off + cumulative_window.height),
+                    int(tile_window.row_off + tile_window.height),
+                )
+                col_end = max(
+                    int(cumulative_window.col_off + cumulative_window.width),
+                    int(tile_window.col_off + tile_window.width),
+                )
+                cumulative_window = Window(
+                    col_off=col_off,
+                    row_off=row_off,
+                    width=col_end - col_off,
+                    height=row_end - row_off,
+                )
+            if cumulative_window is None:
+                raise InferenceError(f"No valid input files found in {input_dir}")
             cumulative_backup_path = None
             with hold_prediction_raster_lock(cumulative_output_path):
                 existed_before = os.path.exists(cumulative_output_path)
                 ensure_cumulative_prediction_raster(
                     cumulative_output_path,
                     label_path,
-                )
-                ensure_cumulative_prediction_raster(
-                    cumulative_coverage_path,
-                    label_path,
-                    compress="none",
+                    template_window=cumulative_window,
                 )
                 if existed_before:
                     cumulative_backup_path = build_cumulative_raster_backup_path(
@@ -862,9 +959,6 @@ class InferencePhase(Phase):
                         "Skipping inference.vector export in directory mode because "
                         "predictions are now accumulated into one GeoTIFF."
                     )
-                tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
-                if not tile_files:
-                    raise InferenceError(f"No input files found in {input_dir}")
                 total_tiles = 0.0
                 total_gradcam_tiles_attempted = 0.0
                 total_gradcam_tiles_succeeded = 0.0
@@ -872,7 +966,6 @@ class InferencePhase(Phase):
                 total_vector_features = 0.0
                 total_cumulative_updates = 0.0
                 total_skipped_alignment = 0.0
-                total_skipped_overlap = 0.0
                 for idx, tile_path in enumerate(tile_files, start=1):
                     base = os.path.splitext(os.path.basename(tile_path))[0]
                     context.logger.info(
@@ -893,16 +986,6 @@ class InferencePhase(Phase):
                             total_skipped_alignment += 1.0
                             context.logger.warning(
                                 "Skipping %s due to label-grid alignment failure: %s"
-                                % (base, message)
-                            )
-                            continue
-                        raise
-                    except ValueError as exc:
-                        message = str(exc)
-                        if "Overlapping scene footprints" in message:
-                            total_skipped_overlap += 1.0
-                            context.logger.warning(
-                                "Skipping %s due to overlapping footprint: %s"
                                 % (base, message)
                             )
                             continue
@@ -932,7 +1015,7 @@ class InferencePhase(Phase):
                 "vector_features": total_vector_features,
                 "cumulative_updates": total_cumulative_updates,
                 "files_skipped_alignment": total_skipped_alignment,
-                "files_skipped_overlap": total_skipped_overlap,
+                "files_skipped_overlap": 0.0,
             }
             artifacts = {
                 "checkpoint": checkpoint,

@@ -1100,6 +1100,14 @@ def compute_xai_maps(
 
     Returns:
         tuple[np.ndarray, np.ndarray, np.ndarray]: Confidence, entropy, class prob.
+
+    Examples:
+        >>> conf, ent, cls = compute_xai_maps(
+        ...     np.array([[[0.2]], [[0.8]]], dtype=np.float32),
+        ...     class_index=1,
+        ... )
+        >>> conf.shape, ent.shape, cls.shape
+        ((1, 1), (1, 1), (1, 1))
     """
 
     confidence = probs.max(axis=0)
@@ -1214,10 +1222,29 @@ def _iter_raster_windows(
     return windows
 
 
+def _normalize_template_window(window: Window) -> Window:
+    """Return one integer-valued raster window.
+
+    Args:
+        window (Window): Candidate raster window.
+
+    Returns:
+        Window: Integer-valued window with positive width and height.
+    """
+
+    return Window(
+        col_off=int(window.col_off),
+        row_off=int(window.row_off),
+        width=max(1, int(window.width)),
+        height=max(1, int(window.height)),
+    )
+
+
 def ensure_cumulative_prediction_raster(
     output_path: str,
     template_path: str,
     *,
+    template_window: Window | None = None,
     dtype: str = "uint8",
     fill_value: int = 0,
     compress: str = "deflate",
@@ -1227,6 +1254,8 @@ def ensure_cumulative_prediction_raster(
     Args:
         output_path (str): Destination GeoTIFF path.
         template_path (str): Template GeoTIFF providing the target grid.
+        template_window (Window | None): Optional window on the template grid
+            defining the output raster extent.
         dtype (str): Output raster dtype.
         fill_value (int): Background value for empty pixels.
         compress (str): GeoTIFF compression codec.
@@ -1244,8 +1273,17 @@ def ensure_cumulative_prediction_raster(
         template_profile = template.profile.copy()
         template_crs = template.crs
         template_transform = template.transform
-        template_width = int(template.width)
-        template_height = int(template.height)
+        target_window = (
+            _normalize_template_window(template_window)
+            if template_window is not None
+            else Window(0, 0, int(template.width), int(template.height))
+        )
+        template_transform = rasterio.windows.transform(
+            target_window,
+            template_transform,
+        )
+        template_width = int(target_window.width)
+        template_height = int(target_window.height)
         output_profile = template_profile
         output_profile.update(
             driver="GTiff",
@@ -1253,6 +1291,9 @@ def ensure_cumulative_prediction_raster(
             dtype=dtype,
             nodata=fill_value,
             compress=compress or template_profile.get("compress", "deflate"),
+            transform=template_transform,
+            width=template_width,
+            height=template_height,
         )
         if os.path.exists(output_path):
             with rasterio.open(output_path) as existing:
@@ -1264,8 +1305,8 @@ def ensure_cumulative_prediction_raster(
                     or int(existing.height) != template_height
                 ):
                     raise ValueError(
-                        "Existing cumulative raster does not match the label-grid "
-                        "template."
+                        "Existing cumulative raster does not match the expected "
+                        "cumulative output grid."
                     )
             return False
 
@@ -1418,19 +1459,22 @@ def write_prediction_to_cumulative_raster(
             .round_offsets()
             .round_lengths()
         )
-        target_window = Window(
-            col_off=max(0, int(target_window.col_off)),
-            row_off=max(0, int(target_window.row_off)),
-            width=max(1, int(target_window.width)),
-            height=max(1, int(target_window.height)),
-        )
+        target_window = _normalize_template_window(target_window)
+        src_row_off = max(0, -int(target_window.row_off))
+        src_col_off = max(0, -int(target_window.col_off))
+        dst_row_off = max(0, int(target_window.row_off))
+        dst_col_off = max(0, int(target_window.col_off))
         row_end = min(int(target_window.row_off + target_window.height), dst.height)
         col_end = min(int(target_window.col_off + target_window.width), dst.width)
-        write_height = max(1, row_end - int(target_window.row_off))
-        write_width = max(1, col_end - int(target_window.col_off))
+        write_height = row_end - dst_row_off
+        write_width = col_end - dst_col_off
+        if write_height <= 0 or write_width <= 0:
+            raise ValueError(
+                "Prediction window falls outside the cumulative raster extent."
+            )
         write_window = Window(
-            col_off=int(target_window.col_off),
-            row_off=int(target_window.row_off),
+            col_off=dst_col_off,
+            row_off=dst_row_off,
             width=write_width,
             height=write_height,
         )
@@ -1467,7 +1511,14 @@ def write_prediction_to_cumulative_raster(
                     1,
                     window=write_window,
                 )
-        dst.write(pred_array[:write_height, :write_width], 1, window=write_window)
+        dst.write(
+            pred_array[
+                src_row_off : src_row_off + write_height,
+                src_col_off : src_col_off + write_width,
+            ],
+            1,
+            window=write_window,
+        )
         return write_window
 
 

@@ -284,8 +284,9 @@ Model options for topology-fusion heads are grouped under `model.fusion`, `model
 Inference input selection:
 - Set exactly one source: `inference.input_tif` or `inference.input_dir`.
 - `input_dir` now runs each file through the same sliding-window tiled inference + merge path used by `input_tif`, but updates one cumulative GeoTIFF at `inference.output_tif` (or `artifacts/rasters/inference/predictions.tif` when `output_tif` is blank).
-- Directory inference requires `label_path` so the shared output can stay aligned to the native label grid.
-- Directory inputs may share border-only overlap up to about 5% of the smaller destination-window dimension on the shared label grid; larger overlaps are skipped with a warning instead of overwriting earlier predictions.
+- Directory inference requires `label_path`, but only as a grid template for CRS, pixel size, and alignment.
+- The shared directory-mode output extent is built from the union of the input image footprints, snapped to the `label_path` grid, so scenes outside the label raster extent still write correctly.
+- Directory inputs now overwrite in sorted file order when they truly overlap on the shared output raster; they are no longer skipped for cumulative-raster overlap.
 - Directory inputs that cannot align cleanly to the label grid are also skipped with a warning so the rest of the folder can still finish.
 - Inference explainability now writes one scene-level figure per input image by default: RGB, light-blue prediction overlay, Grad-CAM, and class probability.
 - When `input_dir` is used, the pipeline creates one backup of an existing shared output before updating it in place during the current run.

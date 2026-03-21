@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from rasterio.transform import from_origin
+from rasterio.windows import Window
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -590,6 +591,36 @@ def test_cumulative_prediction_raster_uses_template_grid(tmp_path: Path) -> None
         assert src.read(1).tolist() == template.tolist()
 
 
+def test_cumulative_prediction_raster_supports_template_window(
+    tmp_path: Path,
+) -> None:
+    """Shared prediction rasters should support a template-aligned subwindow.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    template_path = tmp_path / "labels.tif"
+    output_path = tmp_path / "predictions.tif"
+    _write_test_geotiff(
+        template_path,
+        np.zeros((4, 4), dtype=np.uint8),
+        transform=from_origin(100.0, 200.0, 1.0, 1.0),
+    )
+
+    created = ensure_cumulative_prediction_raster(
+        str(output_path),
+        str(template_path),
+        template_window=Window(col_off=-2, row_off=-1, width=6, height=5),
+    )
+
+    assert created is True
+    with rasterio.open(output_path) as src:
+        assert src.transform == from_origin(98.0, 201.0, 1.0, 1.0)
+        assert src.width == 6
+        assert src.height == 5
+
+
 def test_cumulative_prediction_backup_and_overwrite_are_deterministic(
     tmp_path: Path,
 ) -> None:
@@ -666,7 +697,7 @@ def test_directory_inference_writes_one_shared_output_tif(
     _write_test_geotiff(
         label_path,
         np.zeros((4, 4), dtype=np.uint8),
-        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+        transform=from_origin(100.0, 104.0, 1.0, 1.0),
     )
     _write_test_geotiff(
         image_a,
@@ -718,11 +749,12 @@ def test_directory_inference_writes_one_shared_output_tif(
 
     with rasterio.open(output_tif) as src:
         data = src.read(1)
+        assert src.transform == from_origin(0.0, 4.0, 1.0, 1.0)
+        assert src.width == 4
+        assert src.height == 2
     assert data.tolist() == [
         [1, 1, 1, 1],
         [1, 1, 1, 1],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0],
     ]
     assert outcome.metrics["files_total"] == 2.0
     assert outcome.metrics["cumulative_updates"] == 2.0
@@ -730,11 +762,11 @@ def test_directory_inference_writes_one_shared_output_tif(
     assert not list(tmp_path.glob("*_pred.tif"))
 
 
-def test_directory_inference_allows_small_edge_overlap(
+def test_directory_inference_covers_all_tiles_of_large_scene(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Directory inference should tolerate border-only overlap up to 5%.
+    """Directory inference should process every tile window of a large scene.
 
     Args:
         tmp_path (Path): Temporary directory provided by pytest.
@@ -743,25 +775,19 @@ def test_directory_inference_allows_small_edge_overlap(
 
     image_dir = tmp_path / "images"
     image_a = image_dir / "scene_a.tif"
-    image_b = image_dir / "scene_b.tif"
     label_path = tmp_path / "labels.tif"
     checkpoint_path = tmp_path / "checkpoint.pth"
     output_tif = tmp_path / "shared_predictions.tif"
 
     _write_test_geotiff(
         label_path,
-        np.zeros((40, 78), dtype=np.uint8),
-        transform=from_origin(0.0, 40.0, 1.0, 1.0),
+        np.zeros((4, 4), dtype=np.uint8),
+        transform=from_origin(100.0, 104.0, 1.0, 1.0),
     )
     _write_test_geotiff(
         image_a,
-        np.full((40, 40, 3), 255, dtype=np.uint8),
-        transform=from_origin(0.0, 40.0, 1.0, 1.0),
-    )
-    _write_test_geotiff(
-        image_b,
-        np.full((40, 40, 3), 255, dtype=np.uint8),
-        transform=from_origin(38.0, 40.0, 1.0, 1.0),
+        np.full((4, 4, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
     )
     torch.save({}, checkpoint_path)
     _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
@@ -786,7 +812,7 @@ def test_directory_inference_allows_small_edge_overlap(
                 "output_dir": "",
                 "glob": "*.tif",
                 "checkpoint": str(checkpoint_path),
-                "tile_size": 40,
+                "tile_size": 2,
                 "overlap": 0.0,
                 "merge": {"mode": "uniform"},
                 "tta": {
@@ -803,18 +829,17 @@ def test_directory_inference_allows_small_edge_overlap(
 
     with rasterio.open(output_tif) as src:
         data = src.read(1)
-    assert data.shape == (40, 78)
-    assert np.all(data[:, :38] == 1)
-    assert np.all(data[:, 38:78] == 1)
+    assert data.shape == (4, 4)
+    assert np.all(data == 1)
     assert outcome.metrics["files_skipped_overlap"] == 0.0
-    assert outcome.metrics["cumulative_updates"] == 2.0
+    assert outcome.metrics["cumulative_updates"] == 1.0
 
 
-def test_directory_inference_skips_large_overlapping_scene_footprints(
+def test_directory_inference_overwrites_overlapping_scene_footprints(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Directory inference should still skip materially overlapping scenes.
+    """Directory inference should allow overlapping scenes without skipping.
 
     Args:
         tmp_path (Path): Temporary directory provided by pytest.
@@ -883,17 +908,18 @@ def test_directory_inference_skips_large_overlapping_scene_footprints(
 
     with rasterio.open(output_tif) as src:
         data = src.read(1)
+        assert src.width == 6
+        assert src.height == 6
     assert data.tolist() == [
-        [1, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 1, 1, 0, 0],
-        [1, 1, 1, 1, 1, 1, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1],
     ]
-    assert outcome.metrics["files_skipped_overlap"] == 1.0
+    assert outcome.metrics["files_skipped_overlap"] == 0.0
+    assert outcome.metrics["cumulative_updates"] == 2.0
 
 
 def test_directory_inference_accepts_payload_style_heads(
