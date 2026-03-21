@@ -5,8 +5,8 @@
 
 ## [Unreleased]
 ### Changed
-- Point the shipped HPC inference template at `patches_mt/folder_3` so the
-  default batch-launch workflow now scans `folder_3`
+- Point the shipped HPC inference template at `patches_mt/folder_4` so the
+  default batch-launch workflow now scans `folder_4`
   (`configs/config_hpc.yml`).
 - Add manifest-driven folder inference selection through
   `inference.input_paths_file`, plus a new
