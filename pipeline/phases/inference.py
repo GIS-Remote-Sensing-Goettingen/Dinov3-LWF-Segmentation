@@ -7,6 +7,7 @@ import os
 import tempfile
 import traceback
 from contextlib import nullcontext
+from pathlib import Path
 
 import numpy as np
 import rasterio
@@ -185,6 +186,7 @@ class InferencePhase(Phase):
         vector_append = bool(vector_cfg.get("append", True))
         foreground_class = int(vector_cfg.get("foreground_class", class_index))
         glob_pattern = infer_cfg.get("glob", "*.tif")
+        input_paths_file = str(infer_cfg.get("input_paths_file", "") or "")
         label_path = resolve_path(context.config, infer_cfg, "label_path", "")
         if not label_path and isinstance(paths_cfg, dict):
             label_path = str(paths_cfg.get("label_path", "") or "")
@@ -843,21 +845,48 @@ class InferencePhase(Phase):
                         scene_metrics["vector_features"] = float(len(features))
                     return scene_metrics
 
-        if input_dir and input_tif:
+        directory_mode = bool(input_dir or input_paths_file)
+        if directory_mode and input_tif:
             raise InferenceError(
                 "Set only one input source: either inference.input_tif or "
-                "inference.input_dir."
+                "inference.input_dir/inference.input_paths_file."
             )
-        if input_dir:
+        if directory_mode:
             if not label_path or not os.path.exists(label_path):
                 raise InferenceError(
                     "Directory inference requires a valid label_path so the shared "
                     "prediction GeoTIFF can inherit CRS, resolution, and grid "
                     "alignment."
                 )
-            tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
+            if input_paths_file:
+                manifest_path = Path(input_paths_file).expanduser()
+                if not manifest_path.is_absolute():
+                    config_root = (
+                        Path(context.config_path).resolve().parent
+                        if context.config_path
+                        else Path.cwd()
+                    )
+                    manifest_path = config_root / manifest_path
+                if not manifest_path.exists():
+                    raise InferenceError(
+                        f"inference.input_paths_file not found: {manifest_path}"
+                    )
+                tile_files = [
+                    str(
+                        (
+                            manifest_path.parent / line
+                            if not Path(line).expanduser().is_absolute()
+                            else Path(line).expanduser()
+                        ).resolve()
+                    )
+                    for line in manifest_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.lstrip().startswith("#")
+                ]
+            else:
+                tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
             if not tile_files:
-                raise InferenceError(f"No input files found in {input_dir}")
+                input_desc = str(manifest_path) if input_paths_file else str(input_dir)
+                raise InferenceError(f"No input files found in {input_desc}")
             cumulative_output_path = str(
                 output_tif
                 or context.run_dir
@@ -931,7 +960,7 @@ class InferencePhase(Phase):
             if cumulative_window is None:
                 raise InferenceError(
                     "No input files in %s could align to the configured label grid."
-                    % input_dir
+                    % (input_dir or input_paths_file)
                 )
             cumulative_backup_path = None
             with hold_prediction_raster_lock(cumulative_output_path):

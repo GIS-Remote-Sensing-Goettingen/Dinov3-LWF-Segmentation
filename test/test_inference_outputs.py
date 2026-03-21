@@ -835,6 +835,89 @@ def test_directory_inference_covers_all_tiles_of_large_scene(
     assert outcome.metrics["cumulative_updates"] == 1.0
 
 
+def test_directory_inference_honors_input_paths_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Directory inference should process only the manifest-listed files.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+    """
+
+    image_dir = tmp_path / "images"
+    image_a = image_dir / "scene_a.tif"
+    image_b = image_dir / "scene_b.tif"
+    manifest_path = tmp_path / "batch_inputs.txt"
+    label_path = tmp_path / "labels.tif"
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    output_tif = tmp_path / "shared_predictions.tif"
+
+    _write_test_geotiff(
+        label_path,
+        np.zeros((4, 4), dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_a,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_b,
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        transform=from_origin(2.0, 4.0, 1.0, 1.0),
+    )
+    manifest_path.write_text(str(image_a) + "\n", encoding="utf-8")
+    torch.save({}, checkpoint_path)
+    _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
+
+    context = _make_inference_context(
+        tmp_path,
+        {
+            "model": {
+                "head": "unet",
+                "num_classes": 2,
+                "dino_channels": 1,
+                "backbone": "stub",
+                "layers": [1],
+            },
+            "paths": {"label_path": str(label_path)},
+            "inference": {
+                "enable": True,
+                "device": "cpu",
+                "input_dir": str(image_dir),
+                "input_paths_file": str(manifest_path),
+                "input_tif": "",
+                "output_tif": str(output_tif),
+                "output_dir": "",
+                "glob": "*.tif",
+                "checkpoint": str(checkpoint_path),
+                "tile_size": 8,
+                "overlap": 0.0,
+                "merge": {"mode": "uniform"},
+                "tta": {
+                    "horizontal_flip": False,
+                    "vertical_flip": False,
+                },
+                "explain": {"enable": False},
+                "vector": {"enable": False},
+            },
+        },
+    )
+
+    outcome = InferencePhase().execute(context)
+
+    with rasterio.open(output_tif) as src:
+        data = src.read(1)
+        assert src.width == 2
+        assert src.height == 2
+    assert data.tolist() == [[1, 1], [1, 1]]
+    assert outcome.metrics["files_total"] == 1.0
+    assert outcome.metrics["cumulative_updates"] == 1.0
+
+
 def test_directory_inference_overwrites_overlapping_scene_footprints(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

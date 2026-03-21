@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Add manifest-driven folder inference selection through
+  `inference.input_paths_file`, plus a new
+  `scripts/launch_batched_inference.py` Slurm orchestrator that reuses
+  `configs/config_hpc.yml` as a read-only template, splits directory inference
+  into fixed-size batch jobs, disables MLflow in the generated batch configs so
+  outputs/logs stay under one orchestration root instead of `mlruns`, retries
+  incomplete batches through a controller stage, and merges the per-batch
+  prediction TIFFs into one final GeoTIFF
+  (`pipeline/phases/inference.py`, `scripts/launch_batched_inference.py`,
+  `test/test_inference_outputs.py`, `test/test_launch_batched_inference.py`,
+  `configs/config_*.yml`, `README.md`, `docs/ARCHITECTURE.md`).
 - Rework directory-mode inference so it now updates one shared GeoTIFF on the
   native label grid (taking one pre-update backup when that file already
   exists) instead of writing per-image prediction TIFFs or relying on the old

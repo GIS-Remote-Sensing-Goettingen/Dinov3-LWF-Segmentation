@@ -254,6 +254,7 @@ train:
 inference:
   enable: false
   input_tif: /path/to/scene.tif
+  input_paths_file:
   output_tif: test/output_prediction.tif
   checkpoint: weights/unet_v2_best.pth
   tile_size: 512
@@ -283,6 +284,7 @@ Model options for topology-fusion heads are grouped under `model.fusion`, `model
 
 Inference input selection:
 - Set exactly one source: `inference.input_tif` or `inference.input_dir`.
+- `inference.input_paths_file` is an optional newline-delimited manifest for directory mode; when it is set, inference processes exactly those files in listed order instead of scanning `input_dir`.
 - `input_dir` now runs each file through the same sliding-window tiled inference + merge path used by `input_tif`, but updates one cumulative GeoTIFF at `inference.output_tif` (or `artifacts/rasters/inference/predictions.tif` when `output_tif` is blank).
 - Directory inference requires `label_path`, but only as a grid template for CRS, pixel size, and alignment.
 - The shared directory-mode output extent is built from the union of the input image footprints, snapped to the `label_path` grid, so scenes outside the label raster extent still write correctly.
@@ -290,6 +292,10 @@ Inference input selection:
 - Directory inputs that cannot align cleanly to the label grid are also skipped with a warning so the rest of the folder can still finish.
 - Inference explainability now writes one scene-level figure per input image by default: RGB, light-blue prediction overlay, Grad-CAM, and class probability.
 - When `input_dir` is used, the pipeline creates one literal backup copy of an existing shared output before updating it in place during the current run, and it does not create any separate `*_coverage_*.tif` raster.
+
+Batch orchestration:
+- `scripts/launch_batched_inference.py` uses `configs/config_hpc.yml` as a read-only template, scans `inference.input_dir`, chunks images into fixed-size batches (default `100`), writes one copied config per batch, disables MLflow in those copied configs, submits one Slurm worker per batch, then submits a dependent controller job that retries incomplete batches and merges the batch `predictions.tif` outputs into one final `merged/predictions.tif`.
+- Batch workers run from batch-local directories under `output/batches/<job_name>/runs/batch_###/`, so logs, artifacts, and per-batch prediction TIFFs stay out of `mlruns`.
 
 ## Logging & Timing
 

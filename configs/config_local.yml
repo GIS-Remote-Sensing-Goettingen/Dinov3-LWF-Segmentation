@@ -378,6 +378,9 @@ inference:
   input_tif: /home/mak/PycharmProjects/SegEdge/experiments/get_data_from_api/patches_mt/dop20_592000_5975000_1km_20cm.tif
   # Directory inference input path, or blank when using `input_tif`.
   input_dir:
+  # Optional newline-delimited input manifest; when set, inference reads these
+  # files in listed order instead of scanning `input_dir`.
+  input_paths_file:
   # Output GeoTIFF path for single-scene inference, or the shared cumulative
   # prediction raster updated during `input_dir` runs.
   output_tif: /home/mak/PycharmProjects/SegEdge/experiments/dinov3Seg/test/dop20_592000_5975000_1km_20cm_labels.tif

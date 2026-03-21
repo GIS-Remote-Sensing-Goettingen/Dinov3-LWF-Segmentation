@@ -21,7 +21,11 @@ MLflow-compatible artifacts for research workflows.
   config-driven merge path that builds one canonical 1 m output grid from a
   verification raster footprint, rasterizes multiple shapefiles onto that
   grid, aligns existing label TIFFs to the same grid, merges both stacks, and
-  validates coverage against the verification raster.
+  validates coverage against the verification raster. Batch folder inference
+  orchestration also lives here via `launch_batched_inference.py`, which
+  derives batch-local configs from the HPC template, submits one Slurm worker
+  per manifest chunk, and merges the batch prediction TIFFs after the
+  controller stage finishes.
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
   Data internals are grouped under the `utils/data/` package (`core.py`,
   `pipeline.py`) with `utils/data/__init__.py` as the public data facade.
@@ -213,4 +217,14 @@ MLflow-compatible artifacts for research workflows.
    raster extent. Overlapping scene writes now follow deterministic sorted-file
    overwrite order rather than being rejected. The prediction raster is still
    written on the label-grid resolution rather than the finer source-image
-   grid.
+   grid. Directory inference can also consume an explicit
+   `inference.input_paths_file` manifest so batch orchestrators can hand one
+   fixed file list to each worker instead of rescanning the full folder.
+5. Launch batched folder inference on Slurm (optional)
+   `scripts/launch_batched_inference.py` treats `configs/config_hpc.yml` as a
+   read-only template, scans `inference.input_dir`, splits the discovered files
+   into fixed-size batches, writes one copied YAML config per batch with
+   `tracking.mlflow.enable: false`, runs each worker from its own batch-local
+   directory under `output/batches/<job_name>/runs/`, retries incomplete
+   batches through a dependent controller job, and finally merges each batch
+   `predictions.tif` into one final `output/batches/<job_name>/merged/predictions.tif`.
