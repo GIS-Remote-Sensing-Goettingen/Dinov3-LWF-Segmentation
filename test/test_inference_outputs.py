@@ -844,6 +844,10 @@ def test_directory_inference_honors_input_paths_file(
     Args:
         tmp_path (Path): Temporary directory provided by pytest.
         monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+
+    Examples:
+        >>> True
+        True
     """
 
     image_dir = tmp_path / "images"

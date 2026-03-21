@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 ### Changed
+- Point the shipped HPC inference template at `patches_mt/folder_2` so the
+  default batch-launch workflow now scans `folder_2` instead of `folder_1`
+  (`configs/config_hpc.yml`).
 - Add manifest-driven folder inference selection through
   `inference.input_paths_file`, plus a new
   `scripts/launch_batched_inference.py` Slurm orchestrator that reuses

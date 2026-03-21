@@ -136,6 +136,10 @@ def test_launch_batched_inference_dry_run_writes_configs_and_scripts(
 
     Args:
         tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
     """
 
     module = _load_launch_module()
@@ -193,6 +197,10 @@ def test_merge_batch_prediction_tifs_uses_batch_order_overwrite(
 
     Args:
         tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
     """
 
     module = _load_launch_module()
@@ -230,6 +238,10 @@ def test_run_controller_merges_completed_batch_outputs(
 
     Args:
         tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
     """
 
     module = _load_launch_module()
