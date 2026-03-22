@@ -16,6 +16,10 @@
   `test/test_launch_batched_inference.py`,
   `test/test_merge_folder_prediction_tifs.py`, `README.md`,
   `docs/ARCHITECTURE.md`).
+- Add `merge_all_folders.sh` as a ready-made Slurm wrapper that submits the
+  default four-folder final merge on the cluster without requiring a fragile
+  long `sbatch --wrap` command (`merge_all_folders.sh`, `README.md`,
+  `docs/ARCHITECTURE.md`).
 - Point the shipped HPC inference template at `patches_mt/folder_4` so the
   default batch-launch workflow now scans `folder_4`
   (`configs/config_hpc.yml`).
