@@ -11,10 +11,12 @@ import argparse
 import copy
 import json
 import logging
+import os
 import re
 import shlex
 import subprocess
 import sys
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,7 +32,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from pipeline.inference_utils import (  # noqa: E402
     ensure_cumulative_prediction_raster,
-    write_prediction_to_cumulative_raster,
 )
 
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "output" / "batches"
@@ -819,16 +820,119 @@ def _reset_raster_to_zero(path: Path) -> None:
                 )
 
 
+def _read_raster_window(
+    source_path: str,
+    window: Window,
+) -> tuple[Window, np.ndarray]:
+    """Read one raster window from disk.
+
+    Args:
+        source_path (str): Source raster path.
+        window (Window): Source window.
+
+    Returns:
+        tuple[Window, np.ndarray]: Window plus the corresponding pixel data.
+
+    Examples:
+        >>> callable(_read_raster_window)
+        True
+    """
+
+    with rasterio.open(source_path) as src:
+        data = src.read(1, window=window)
+    return window, data
+
+
+def _copy_prediction_raster_into_merge_output(
+    *,
+    output_tif: str,
+    source_tif: str,
+    read_workers: int,
+) -> None:
+    """Copy one aligned prediction TIFF into the shared merge output.
+
+    Args:
+        output_tif (str): Destination cumulative TIFF path.
+        source_tif (str): Source TIFF path.
+        read_workers (int): Number of parallel read workers.
+
+    Examples:
+        >>> callable(_copy_prediction_raster_into_merge_output)
+        True
+    """
+
+    with rasterio.open(source_tif) as src, rasterio.open(output_tif, "r+") as dst:
+        source_window = from_bounds(*src.bounds, transform=dst.transform)
+        source_window = Window(
+            col_off=int(round(source_window.col_off)),
+            row_off=int(round(source_window.row_off)),
+            width=max(1, int(round(source_window.width))),
+            height=max(1, int(round(source_window.height))),
+        )
+        source_windows = [window for _, window in src.block_windows(1)]
+        if not source_windows:
+            source_windows = [
+                Window(col_off=0, row_off=0, width=int(src.width), height=int(src.height))
+            ]
+        worker_count = max(1, int(read_workers))
+        if worker_count == 1:
+            for window in source_windows:
+                data = src.read(1, window=window)
+                dst.write(
+                    data,
+                    1,
+                    window=Window(
+                        col_off=int(source_window.col_off + window.col_off),
+                        row_off=int(source_window.row_off + window.row_off),
+                        width=int(window.width),
+                        height=int(window.height),
+                    ),
+                )
+            return
+
+        pending: dict[Future, Window] = {}
+        pending_limit = max(worker_count * 2, 2)
+        window_iter = iter(source_windows)
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            while True:
+                while len(pending) < pending_limit:
+                    try:
+                        window = next(window_iter)
+                    except StopIteration:
+                        break
+                    future = pool.submit(_read_raster_window, source_tif, window)
+                    pending[future] = window
+                if not pending:
+                    break
+                done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                for future in done:
+                    window = pending.pop(future)
+                    _, data = future.result()
+                    dst.write(
+                        data,
+                        1,
+                        window=Window(
+                            col_off=int(source_window.col_off + window.col_off),
+                            row_off=int(source_window.row_off + window.row_off),
+                            width=int(window.width),
+                            height=int(window.height),
+                        ),
+                    )
+
+
 def merge_batch_prediction_tifs(
     *,
     batch_tifs: list[str],
     output_tif: str,
+    read_workers: int | None = None,
 ) -> str:
     """Merge batch-level prediction TIFFs into one cumulative GeoTIFF.
 
     Args:
         batch_tifs (list[str]): Batch prediction TIFF paths in merge order.
         output_tif (str): Final merged GeoTIFF path.
+        read_workers (int | None): Optional number of parallel source-window
+            readers used during the merge copy phase.
 
     Returns:
         str: Final merged GeoTIFF path.
@@ -842,6 +946,11 @@ def merge_batch_prediction_tifs(
         raise ValueError("batch_tifs cannot be empty")
     output_path = Path(output_tif)
     first_path = Path(batch_tifs[0])
+    merge_read_workers = (
+        max(1, min(8, os.cpu_count() or 1))
+        if read_workers is None
+        else max(1, int(read_workers))
+    )
     union_bounds: tuple[float, float, float, float] | None = None
     ref_transform = None
     ref_crs = None
@@ -900,17 +1009,16 @@ def merge_batch_prediction_tifs(
         str(output_path),
         str(first_path),
         template_window=template_window,
+        num_threads="ALL_CPUS",
     )
     if not created:
         _reset_raster_to_zero(output_path)
     for tif_path_str in batch_tifs:
-        with rasterio.open(tif_path_str) as src:
-            write_prediction_to_cumulative_raster(
-                str(output_path),
-                src.read(1),
-                src.transform,
-                src.crs,
-            )
+        _copy_prediction_raster_into_merge_output(
+            output_tif=str(output_path),
+            source_tif=tif_path_str,
+            read_workers=merge_read_workers,
+        )
     return str(output_path)
 
 

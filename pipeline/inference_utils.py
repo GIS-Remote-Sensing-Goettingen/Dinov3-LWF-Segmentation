@@ -1239,6 +1239,33 @@ def _normalize_template_window(window: Window) -> Window:
     )
 
 
+def _gtiff_block_size(length: int, preferred: int = 1024) -> int | None:
+    """Return one GeoTIFF-compatible tiled block size when feasible.
+
+    Args:
+        length (int): Raster width or height.
+        preferred (int): Preferred block size.
+
+    Returns:
+        int | None: Block size rounded down to a multiple of 16, or ``None``
+        when the raster edge is too small for tiled blocks.
+
+    Examples:
+        >>> _gtiff_block_size(1024)
+        1024
+        >>> _gtiff_block_size(30)
+        16
+        >>> _gtiff_block_size(8) is None
+        True
+    """
+
+    length = int(length)
+    if length < 16:
+        return None
+    capped = min(int(preferred), length)
+    return max(16, (capped // 16) * 16)
+
+
 def ensure_cumulative_prediction_raster(
     output_path: str,
     template_path: str,
@@ -1247,6 +1274,7 @@ def ensure_cumulative_prediction_raster(
     dtype: str = "uint8",
     fill_value: int = 0,
     compress: str = "deflate",
+    num_threads: str | int | None = "ALL_CPUS",
 ) -> bool:
     """Create or validate one cumulative prediction GeoTIFF.
 
@@ -1258,6 +1286,8 @@ def ensure_cumulative_prediction_raster(
         dtype (str): Output raster dtype.
         fill_value (int): Background value for empty pixels.
         compress (str): GeoTIFF compression codec.
+        num_threads (str | int | None): Optional GeoTIFF compression thread
+            hint used for large tiled outputs.
 
     Returns:
         bool: ``True`` when a new blank raster was created.
@@ -1293,7 +1323,18 @@ def ensure_cumulative_prediction_raster(
             transform=template_transform,
             width=template_width,
             height=template_height,
+            BIGTIFF="IF_SAFER",
         )
+        block_x = _gtiff_block_size(template_width)
+        block_y = _gtiff_block_size(template_height)
+        if block_x is not None and block_y is not None:
+            output_profile.update(
+                tiled=True,
+                blockxsize=block_x,
+                blockysize=block_y,
+            )
+        if num_threads is not None:
+            output_profile["num_threads"] = str(num_threads)
         if os.path.exists(output_path):
             with rasterio.open(output_path) as existing:
                 if (

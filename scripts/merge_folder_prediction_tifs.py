@@ -62,6 +62,7 @@ def merge_folder_prediction_tifs(
     batches_root: Path,
     folder_names: list[str],
     output_tif: Path,
+    read_workers: int | None = None,
 ) -> str:
     """Merge the selected folder-level merged TIFFs into one final raster.
 
@@ -69,6 +70,8 @@ def merge_folder_prediction_tifs(
         batches_root (Path): Root directory containing folder orchestration runs.
         folder_names (list[str]): Folder orchestration names to merge.
         output_tif (Path): Destination final merged TIFF path.
+        read_workers (int | None): Optional number of parallel source-window
+            readers used during the merge copy phase.
 
     Returns:
         str: Final merged TIFF path.
@@ -86,6 +89,7 @@ def merge_folder_prediction_tifs(
     return merge_batch_prediction_tifs(
         batch_tifs=tif_paths,
         output_tif=str(output_tif),
+        read_workers=read_workers,
     )
 
 
@@ -118,11 +122,18 @@ def main() -> None:
         required=True,
         help="Destination final merged TIFF path.",
     )
+    parser.add_argument(
+        "--read-workers",
+        type=int,
+        default=None,
+        help="Optional number of parallel source-window readers.",
+    )
     args = parser.parse_args()
     output_path = merge_folder_prediction_tifs(
         batches_root=Path(args.batches_root).expanduser().resolve(),
         folder_names=list(args.folders),
         output_tif=Path(args.output_tif).expanduser().resolve(),
+        read_workers=args.read_workers,
     )
     print(output_path)
 

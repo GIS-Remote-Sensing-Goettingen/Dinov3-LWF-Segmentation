@@ -99,6 +99,7 @@ def test_merge_folder_prediction_tifs_merges_default_folder_outputs(
         batches_root=batches_root,
         folder_names=["folder1_infer", "folder2_infer"],
         output_tif=output_tif,
+        read_workers=2,
     )
 
     with rasterio.open(merged_path) as src:

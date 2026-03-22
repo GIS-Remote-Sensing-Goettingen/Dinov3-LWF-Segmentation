@@ -27,7 +27,10 @@ MLflow-compatible artifacts for research workflows.
   per manifest chunk, and merges the batch prediction TIFFs after the
   controller stage finishes. A companion `merge_folder_prediction_tifs.py`
   utility can merge several already-completed folder-level `merged/predictions.tif`
-  outputs into one final raster mosaic.
+  outputs into one final raster mosaic. The merge path is windowed and
+  block-driven so giant GeoTIFFs are copied chunk-by-chunk instead of being
+  materialized fully in RAM, and optional multicore source-window reads can
+  overlap I/O for faster final mosaics.
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
   Data internals are grouped under the `utils/data/` package (`core.py`,
   `pipeline.py`) with `utils/data/__init__.py` as the public data facade.

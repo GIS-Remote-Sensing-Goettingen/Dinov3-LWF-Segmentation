@@ -222,6 +222,7 @@ def test_merge_batch_prediction_tifs_uses_batch_order_overwrite(
     merged_path = module.merge_batch_prediction_tifs(
         batch_tifs=[str(batch_a), str(batch_b)],
         output_tif=str(output_tif),
+        read_workers=2,
     )
 
     with rasterio.open(merged_path) as src:

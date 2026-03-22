@@ -8,7 +8,12 @@
 - Add `scripts/merge_folder_prediction_tifs.py` so multiple completed
   folder-level `merged/predictions.tif` outputs can be combined into one final
   GeoTIFF using the same grid-compatible overwrite merge helper as the batch
-  orchestrator (`scripts/merge_folder_prediction_tifs.py`,
+  orchestrator; also rework that merge helper so it now copies rasters
+  window-by-window, creates tiled BigTIFF-ready outputs, and can prefetch
+  source windows with multiple read workers instead of loading whole giant
+  TIFFs into RAM (`scripts/launch_batched_inference.py`,
+  `pipeline/inference_utils.py`, `scripts/merge_folder_prediction_tifs.py`,
+  `test/test_launch_batched_inference.py`,
   `test/test_merge_folder_prediction_tifs.py`, `README.md`,
   `docs/ARCHITECTURE.md`).
 - Point the shipped HPC inference template at `patches_mt/folder_4` so the
