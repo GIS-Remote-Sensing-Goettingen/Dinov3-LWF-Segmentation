@@ -25,7 +25,9 @@ MLflow-compatible artifacts for research workflows.
   orchestration also lives here via `launch_batched_inference.py`, which
   derives batch-local configs from the HPC template, submits one Slurm worker
   per manifest chunk, and merges the batch prediction TIFFs after the
-  controller stage finishes.
+  controller stage finishes. A companion `merge_folder_prediction_tifs.py`
+  utility can merge several already-completed folder-level `merged/predictions.tif`
+  outputs into one final raster mosaic.
 - `utils/`: Data preparation, losses, metrics, optimization helpers, logging.
   Data internals are grouped under the `utils/data/` package (`core.py`,
   `pipeline.py`) with `utils/data/__init__.py` as the public data facade.

@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 ### Changed
+- Add `scripts/merge_folder_prediction_tifs.py` so multiple completed
+  folder-level `merged/predictions.tif` outputs can be combined into one final
+  GeoTIFF using the same grid-compatible overwrite merge helper as the batch
+  orchestrator (`scripts/merge_folder_prediction_tifs.py`,
+  `test/test_merge_folder_prediction_tifs.py`, `README.md`,
+  `docs/ARCHITECTURE.md`).
 - Point the shipped HPC inference template at `patches_mt/folder_4` so the
   default batch-launch workflow now scans `folder_4`
   (`configs/config_hpc.yml`).

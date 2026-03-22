@@ -296,6 +296,7 @@ Inference input selection:
 Batch orchestration:
 - `scripts/launch_batched_inference.py` uses `configs/config_hpc.yml` as a read-only template, scans `inference.input_dir`, chunks images into fixed-size batches (default `100`), writes one copied config per batch, disables MLflow in those copied configs, submits one Slurm worker per batch, then submits a dependent controller job that retries incomplete batches and merges the batch `predictions.tif` outputs into one final `merged/predictions.tif`.
 - Batch workers run from batch-local directories under `output/batches/<job_name>/runs/batch_###/`, so logs, artifacts, and per-batch prediction TIFFs stay out of `mlruns`.
+- `scripts/merge_folder_prediction_tifs.py` can then merge multiple folder-level `merged/predictions.tif` files (for example `folder1_infer` through `folder4_infer`) into one final mosaic TIFF.
 
 ## Logging & Timing
 
