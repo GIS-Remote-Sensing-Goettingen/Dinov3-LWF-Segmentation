@@ -6,6 +6,8 @@ MLflow-compatible artifacts for research workflows.
 
 ## Folder Structure
 - `main.py`: Thin CLI entry point for running the pipeline.
+- `merge_all_folders.sh`: Ready-made Slurm wrapper for merging the default
+  folder-level inference mosaics into one final raster on the cluster.
 - `configs/`: Shipped YAML profiles for example, local, and HPC runs.
 - `docs/`: Supplemental documentation such as architecture notes, changelog,
   model notes, and style guidance.

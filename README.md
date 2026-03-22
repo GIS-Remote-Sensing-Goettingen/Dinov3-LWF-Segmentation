@@ -297,6 +297,7 @@ Batch orchestration:
 - `scripts/launch_batched_inference.py` uses `configs/config_hpc.yml` as a read-only template, scans `inference.input_dir`, chunks images into fixed-size batches (default `100`), writes one copied config per batch, disables MLflow in those copied configs, submits one Slurm worker per batch, then submits a dependent controller job that retries incomplete batches and merges the batch `predictions.tif` outputs into one final `merged/predictions.tif`.
 - Batch workers run from batch-local directories under `output/batches/<job_name>/runs/batch_###/`, so logs, artifacts, and per-batch prediction TIFFs stay out of `mlruns`.
 - `scripts/merge_folder_prediction_tifs.py` can then merge multiple folder-level `merged/predictions.tif` files (for example `folder1_infer` through `folder4_infer`) into one final mosaic TIFF. The merge path is windowed rather than whole-raster-in-memory, and it also supports `--read-workers` to parallelize source-window reads on multicore machines.
+- `merge_all_folders.sh` is a cluster-ready `sbatch` wrapper that merges the default `folder1_infer` through `folder4_infer` outputs under `output/batches/` into `output/batches/all_folders_merged/predictions.tif`. You can override `BATCHES_ROOT`, `OUTPUT_TIF`, `READ_WORKERS`, or `FOLDERS` via environment variables at submit time.
 
 ## Logging & Timing
 
