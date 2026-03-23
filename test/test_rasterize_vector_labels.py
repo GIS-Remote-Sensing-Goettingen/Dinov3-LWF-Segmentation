@@ -147,7 +147,7 @@ def test_derive_output_path_preserves_existing_labels_suffix() -> None:
     convention when old label TIFFs are used as references.
     """
 
-    ref = Path("dop20_592000_5975000_1km_20cm_labels.tif")
+    ref = Path("../utility/test/dop20_592000_5975000_1km_20cm_labels.tif")
     output = derive_output_path(ref, Path("labels"))
     assert output.name == "dop20_592000_5975000_1km_20cm_labels.tif"
 

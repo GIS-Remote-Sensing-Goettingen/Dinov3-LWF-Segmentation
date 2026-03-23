@@ -6,3 +6,15 @@ __pycache__/
 example_plots/
 new_labels.tif
 planet_labels_2022.tif
+tmp.pth
+tmp_checkpoint.pth
+utility/test/download_*/
+utility/test/md_dop_date_distribution/
+utility/test/dop20_592000_5975000_1km_20cm_labels.tif
+utility/test/dop20_592000_5975000_1km_20cm_labels.tif.aux.xml
+utility/test/dop20_596000_5973000_1km_20cm_labels.tif
+utility/test/dop20_596000_5973000_1km_20cm_labels.tif.aux.xml
+utility/test/output_prediction.tif
+utility/test/output_prediction.tif.aux.xml
+utility/test/output_prediction_2.tif
+utility/test/output_prediction_2.tif.aux.xml

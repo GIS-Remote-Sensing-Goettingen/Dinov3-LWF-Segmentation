@@ -5,6 +5,59 @@
 
 ## [Unreleased]
 ### Changed
+- Ignore local downloader smoke-test outputs and temporary checkpoint files so
+  ad hoc recovery/download experiments under `utility/test/download_*`,
+  `utility/test/md_dop_date_distribution/`, and local `tmp*.pth` files stop
+  showing up as untracked git noise (`.gitignore`).
+- Stop tracking the moved TIFF and `.aux.xml` files under `utility/test/` so
+  these local raster artifacts no longer appear in the commit while remaining
+  available in the working tree for ad hoc inspection (`.gitignore`).
+- Add a resumable login-node recovery wrapper for missing DOP20 source tiles:
+  `utility/recover_missing_tiles.py` now inventories the canonical `folder_1`
+  tile store by filename, computes missing AOI cells from the downloader's
+  snapped grid, writes deterministic 2k-tile recovery shard manifests, resumes
+  incomplete shards from per-batch JSONL/summary state, audits final accepted
+  coverage across staged downloads plus existing tiles, and promotes staged
+  TIFFs into `folder_1` only after the configured coverage threshold is met;
+  add regression coverage for missing-tile planning, shard resume behavior, and
+  safe promotion, plus lightweight `scripts/` compatibility wrappers that
+  forward to the moved `utility/` helpers so existing tests and entrypoint
+  paths keep working (`utility/recover_missing_tiles.py`,
+  `test/test_recover_missing_tiles.py`, `scripts/launch_batched_inference.py`,
+  `scripts/merge_folder_prediction_tifs.py`,
+  `scripts/rasterize_vector_labels.py`, `scripts/export_metrics_csv.py`,
+  `docs/ARCHITECTURE.md`).
+- Refactor `utility/get_data_api.py` into import-safe helper functions so the
+  downloader can build `GetFeatureInfo` metadata requests, extract acquisition
+  dates, and evaluate the preferred spring/summer season in unit-tested code;
+  also add a capped CLI smoke-test mode plus a small wrapper under
+  `utility/test/` that can download only 1-2 tiles into a utility-local test
+  directory, reject all-white blank WMS tiles instead of saving them as valid
+  outputs, and optionally target explicit `x,y` tile origins for known-good
+  smoke checks, alongside regression tests for metadata parameter building,
+  nested date parsing, blank-tile rejection, October rejection, and explicit
+  WMS `ServiceExceptionReport` handling for non-queryable metadata layers; the
+  metadata request path now also uses the smaller `1000 x 1000` virtual query
+  canvas accepted by the official `MD DOP` service instead of the image
+  downloader's `5000 x 5000` raster size, and each tile download is now gated
+  by a metadata pre-check so only spring/summer `A_DATUM` tiles are fetched
+  from the original image WMS while October tiles are skipped before any image
+  request; the season gate now opens on April 20 instead of waiting until May.
+  Add `utility/test/temp.py` as a small `MD DOP` 10 km sampling script that
+  writes a CSV plus a date-distribution plot over the configured AOI, with a
+  lightweight grid-spacing regression test. The smoke-download wrapper now can
+  also expand a lower-left `START_X, START_Y` plus `BLOCK_SIZE_KM` into a full
+  rectangular block of explicit tile origins for quick 5 km x 5 km tests
+  (`utility/get_data_api.py`, `test/test_get_data_api_metadata.py`,
+  `utility/test/run_get_data_api_smoke.sh`, `utility/test/temp.py`,
+  `test/test_md_dop_date_distribution.py`). Fix a regression where the `MD DOP`
+  metadata query canvas size accidentally leaked into the image `GetMap`
+  request, shrinking downloaded imagery to `1000 x 1000`; image downloads now
+  stay at the original `5000 x 5000` while metadata queries remain
+  `1000 x 1000`
+  (`utility/get_data_api.py`, `test/test_get_data_api_metadata.py`,
+  `utility/test/run_get_data_api_smoke.sh`, `utility/test/temp.py`,
+  `test/test_md_dop_date_distribution.py`).
 - Add `scripts/merge_folder_prediction_tifs.py` so multiple completed
   folder-level `merged/predictions.tif` outputs can be combined into one final
   GeoTIFF using the same grid-compatible overwrite merge helper as the batch

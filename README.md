@@ -294,10 +294,14 @@ Inference input selection:
 - When `input_dir` is used, the pipeline creates one literal backup copy of an existing shared output before updating it in place during the current run, and it does not create any separate `*_coverage_*.tif` raster.
 
 Batch orchestration:
-- `scripts/launch_batched_inference.py` uses `configs/config_hpc.yml` as a read-only template, scans `inference.input_dir`, chunks images into fixed-size batches (default `100`), writes one copied config per batch, disables MLflow in those copied configs, submits one Slurm worker per batch, then submits a dependent controller job that retries incomplete batches and merges the batch `predictions.tif` outputs into one final `merged/predictions.tif`.
+- `utility/launch_batched_inference.py` uses `configs/config_hpc.yml` as a read-only template, scans `inference.input_dir`, chunks images into fixed-size batches (default `100`), writes one copied config per batch, disables MLflow in those copied configs, submits one Slurm worker per batch, then submits a dependent controller job that retries incomplete batches and merges the batch `predictions.tif` outputs into one final `merged/predictions.tif`.
 - Batch workers run from batch-local directories under `output/batches/<job_name>/runs/batch_###/`, so logs, artifacts, and per-batch prediction TIFFs stay out of `mlruns`.
-- `scripts/merge_folder_prediction_tifs.py` can then merge multiple folder-level `merged/predictions.tif` files (for example `folder1_infer` through `folder4_infer`) into one final mosaic TIFF. The merge path is windowed rather than whole-raster-in-memory, and it also supports `--read-workers` to parallelize source-window reads on multicore machines.
+- `utility/merge_folder_prediction_tifs.py` can then merge multiple folder-level `merged/predictions.tif` files (for example `folder1_infer` through `folder4_infer`) into one final mosaic TIFF. The merge path is windowed rather than whole-raster-in-memory, and it also supports `--read-workers` to parallelize source-window reads on multicore machines.
 - `merge_all_folders.sh` is a cluster-ready `sbatch` wrapper that merges the default `folder1_infer` through `folder4_infer` outputs under `output/batches/` into `output/batches/all_folders_merged/predictions.tif`. You can override `BATCHES_ROOT`, `OUTPUT_TIF`, `READ_WORKERS`, or `FOLDERS` via environment variables at submit time.
+
+Source-imagery gap recovery:
+- `utility/recover_missing_tiles.py` inventories the canonical `folder_1` tile store, computes missing AOI cells from the downloader's snapped 1 km grid, shards the missing set into resumable recovery batches (default `2000` tiles per shard), downloads only accepted spring/summer tiles into a staging root on the login node, audits final coverage, and promotes staged TIFFs into `folder_1` only when the configured coverage threshold is satisfied.
+- The recovery wrapper reuses `utility/get_data_api.py`, which now downloads imagery from the original image WMS only after validating `A_DATUM` from the official `MD DOP` metadata service. The current season gate accepts April 20 onward and rejects earlier-April and October acquisitions.
 
 ## Logging & Timing
 

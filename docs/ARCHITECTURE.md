@@ -11,6 +11,15 @@ MLflow-compatible artifacts for research workflows.
 - `configs/`: Shipped YAML profiles for example, local, and HPC runs.
 - `docs/`: Supplemental documentation such as architecture notes, changelog,
   model notes, and style guidance.
+- `utility/`: Operational helper scripts that sit beside the main pipeline,
+  including data acquisition, login-node recovery workflows, batch inference
+  orchestration, and folder-level raster merges. `get_data_api.py` downloads
+  DOP20 imagery from the original image WMS after first validating acquisition
+  dates against the official `MD DOP` metadata service, while
+  `recover_missing_tiles.py` inventories the canonical `folder_1` tile store,
+  computes missing AOI cells, shards them into resumable recovery batches,
+  audits final coverage, and promotes accepted staged tiles only after the
+  coverage threshold is met.
 - `pipeline/`: Phase runner, hooks, processors, and tracking utilities.
   Concrete phases are grouped in the `pipeline/phases/` package
   (`prepare.py`, `verify.py`, `train.py`, `inference.py`) with helper modules
@@ -218,6 +227,14 @@ MLflow-compatible artifacts for research workflows.
    update one cumulative GeoTIFF (with one safety backup if the file already
    exists) on a folder-wide extent derived from the union of the input-image
    footprints, snapped to the `label_path` grid, instead of emitting per-image
+5. Recover missing source imagery (optional, login node)
+   `utility/recover_missing_tiles.py` is a resumable operational wrapper around
+   `utility/get_data_api.py`: it inventories the canonical tile directory,
+   computes missing AOI cells from filename coverage, downloads only those
+   gaps into staged 2k-tile batches after passing the metadata season gate,
+   writes per-batch JSONL/summary artifacts for resume, audits global coverage,
+   and promotes accepted staged TIFFs into `folder_1` only when the configured
+   coverage threshold is satisfied.
    prediction TIFFs. The only secondary raster artifact is that literal
    pre-update backup; there is no separate coverage raster. Directory mode still uses `label_path` for CRS,
    resolution, and grid alignment, but no longer clips output to the label
