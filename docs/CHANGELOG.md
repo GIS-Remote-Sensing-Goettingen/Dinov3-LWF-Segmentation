@@ -86,6 +86,12 @@
 - Make the local file-length pre-commit hook respect git-ignored paths so
   generated coverage CSVs/PNGs under ignored utility output folders do not fail
   repository checks (`scripts/check_file_length.py`).
+- Make the thin `scripts/*` compatibility wrappers prepend the repository root
+  to `sys.path` before importing from `utility/`, so direct absolute-path
+  execution in the cluster checkout works instead of failing with
+  `ModuleNotFoundError: No module named 'utility'`
+  (`scripts/launch_batched_inference.py`, `scripts/merge_folder_prediction_tifs.py`,
+  `scripts/rasterize_vector_labels.py`, `scripts/export_metrics_csv.py`).
 - Fix the temporary folder-coverage overlay helper so its prediction scan uses
   a `WarpedVRT`-based 1 km max-resampling path instead of unsupported direct
   `read(..., resampling=Resampling.max)`, while also keeping visible `tqdm`

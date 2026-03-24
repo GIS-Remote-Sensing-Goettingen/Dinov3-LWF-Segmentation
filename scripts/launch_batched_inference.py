@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from utility import launch_batched_inference as _impl
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utility import launch_batched_inference as _impl  # noqa: E402
 
 for _name in dir(_impl):
     if _name.startswith("__") and _name not in {"__all__"}:
