@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import json
 import logging
 import os
@@ -159,18 +160,14 @@ def _chunk_paths(paths: list[str], batch_size: int) -> list[list[str]]:
     return [paths[idx : idx + batch_size] for idx in range(0, len(paths), batch_size)]
 
 
-def resolve_inference_paths_from_config(template_config_path: Path) -> list[str]:
-    """Resolve directory-inference image paths from one template config.
+def _resolve_input_dir_from_config(template_config_path: Path) -> Path:
+    """Resolve the configured inference input directory from one template.
 
     Args:
         template_config_path (Path): Base YAML config path.
 
     Returns:
-        list[str]: Sorted absolute input raster paths.
-
-    Examples:
-        >>> callable(resolve_inference_paths_from_config)
-        True
+        Path: Absolute inference input directory path.
     """
 
     cfg = _load_yaml(template_config_path)
@@ -180,10 +177,101 @@ def resolve_inference_paths_from_config(template_config_path: Path) -> list[str]
         raise ValueError(
             f"{template_config_path} must define inference.input_dir for batch launch."
         )
-    input_dir = _resolve_relative_path(
+    return _resolve_relative_path(
         input_dir_raw,
         base_dir=template_config_path.parent,
     )
+
+
+def _resolve_input_selection_paths(
+    selection_path: Path,
+    *,
+    template_config_path: Path,
+) -> list[str]:
+    """Resolve one explicit input selection file into absolute raster paths.
+
+    Args:
+        selection_path (Path): Selection file, either newline-delimited text or
+            CSV with `path` or `tile_name`.
+        template_config_path (Path): Base YAML config path used to resolve
+            relative tile names against `inference.input_dir`.
+
+    Returns:
+        list[str]: Ordered absolute input raster paths.
+
+    Examples:
+        >>> callable(_resolve_input_selection_paths)
+        True
+    """
+
+    input_dir = _resolve_input_dir_from_config(template_config_path)
+    if selection_path.suffix.lower() != ".csv":
+        return [
+            str(_resolve_relative_path(line.strip(), base_dir=selection_path.parent))
+            for line in selection_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    with selection_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError(f"CSV selection file has no header: {selection_path}")
+        fieldnames = {field.strip() for field in reader.fieldnames if field}
+        if "path" in fieldnames:
+            paths = [
+                str(
+                    _resolve_relative_path(
+                        str(row["path"]).strip(),
+                        base_dir=selection_path.parent,
+                    )
+                )
+                for row in reader
+                if str(row.get("path", "")).strip()
+            ]
+        elif "tile_name" in fieldnames:
+            paths = [
+                str((input_dir / str(row["tile_name"]).strip()).resolve())
+                for row in reader
+                if str(row.get("tile_name", "")).strip()
+            ]
+        else:
+            raise ValueError(
+                f"CSV selection file must contain 'path' or 'tile_name': {selection_path}"
+            )
+    return paths
+
+
+def resolve_inference_paths_from_config(
+    template_config_path: Path,
+    *,
+    input_paths_file: Path | None = None,
+) -> list[str]:
+    """Resolve inference image paths from a template config or explicit list.
+
+    Args:
+        template_config_path (Path): Base YAML config path.
+        input_paths_file (Path | None): Optional explicit input selection file.
+
+    Returns:
+        list[str]: Sorted absolute input raster paths.
+
+    Examples:
+        >>> callable(resolve_inference_paths_from_config)
+        True
+    """
+
+    if input_paths_file is not None:
+        matches = _resolve_input_selection_paths(
+            input_paths_file,
+            template_config_path=template_config_path,
+        )
+        if not matches:
+            raise ValueError(f"No inference inputs found in {input_paths_file}.")
+        return matches
+
+    cfg = _load_yaml(template_config_path)
+    infer_cfg = cfg.get("inference", {})
+    input_dir = _resolve_input_dir_from_config(template_config_path)
     glob_pattern = str(infer_cfg.get("glob", "*.tif") or "*.tif")
     matches = sorted(str(path.resolve()) for path in input_dir.glob(glob_pattern))
     if not matches:
@@ -199,6 +287,7 @@ def build_inference_batches(
     batch_size: int,
     output_root: Path,
     job_name: str,
+    input_paths_file: Path | None = None,
 ) -> tuple[Path, list[Path]]:
     """Resolve input images once and write deterministic batch manifest files.
 
@@ -207,6 +296,7 @@ def build_inference_batches(
         batch_size (int): Maximum images per batch.
         output_root (Path): Parent directory for orchestration outputs.
         job_name (str): Job/orchestration name.
+        input_paths_file (Path | None): Optional explicit input selection file.
 
     Returns:
         tuple[Path, list[Path]]: Orchestration root and manifest paths.
@@ -221,7 +311,10 @@ def build_inference_batches(
         raise ValueError(
             f"orchestration root already exists and looks active: {orchestration_root}"
         )
-    paths = resolve_inference_paths_from_config(template_config_path)
+    paths = resolve_inference_paths_from_config(
+        template_config_path,
+        input_paths_file=input_paths_file,
+    )
     batches = _chunk_paths(paths, batch_size)
     manifest_paths: list[Path] = []
     batches_dir = orchestration_root / "batches"
@@ -241,6 +334,7 @@ def build_inference_batches(
             "created_at_utc": datetime.now(UTC).isoformat(),
             "template_config": str(template_config_path),
             "template_slurm": str(DEFAULT_TEMPLATE_SLURM),
+            "input_paths_file": str(input_paths_file) if input_paths_file else None,
             "total_images": len(paths),
             "num_batches": len(manifest_paths),
             "batch_manifests": [str(path) for path in manifest_paths],
@@ -1031,6 +1125,7 @@ def launch_batched_inference(
     output_root: Path,
     max_retries: int,
     dry_run: bool,
+    input_paths_file: Path | None = None,
 ) -> Path:
     """Build batch artifacts and submit worker/controller Slurm jobs.
 
@@ -1042,6 +1137,7 @@ def launch_batched_inference(
         output_root (Path): Root directory for orchestration outputs.
         max_retries (int): Maximum controller retries for incomplete batches.
         dry_run (bool): When true, skip real `sbatch` submissions.
+        input_paths_file (Path | None): Optional explicit input selection file.
 
     Returns:
         Path: Orchestration root.
@@ -1060,6 +1156,7 @@ def launch_batched_inference(
         batch_size=batch_size,
         output_root=output_root,
         job_name=job_name,
+        input_paths_file=input_paths_file,
     )
     config_paths = _write_batch_configs(
         orchestration_root=orchestration_root,
@@ -1291,6 +1388,13 @@ def main() -> None:
         help="Read-only Slurm template used to render worker/controller scripts.",
     )
     parser.add_argument(
+        "--input-paths-file",
+        help=(
+            "Optional explicit input selection file. Accepts newline-delimited "
+            "paths or a CSV with either 'path' or 'tile_name' columns."
+        ),
+    )
+    parser.add_argument(
         "--output-root",
         default=str(DEFAULT_OUTPUT_ROOT),
         help="Directory where orchestration manifests, scripts, runs, and merges live.",
@@ -1364,6 +1468,11 @@ def main() -> None:
         output_root=_resolve_relative_path(args.output_root, base_dir=Path.cwd()),
         max_retries=int(args.max_retries),
         dry_run=bool(args.dry_run),
+        input_paths_file=(
+            _resolve_relative_path(args.input_paths_file, base_dir=Path.cwd())
+            if args.input_paths_file
+            else None
+        ),
     )
 
 

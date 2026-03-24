@@ -43,11 +43,15 @@
   by a metadata pre-check so only spring/summer `A_DATUM` tiles are fetched
   from the original image WMS while October tiles are skipped before any image
   request; the season gate now opens on April 20 instead of waiting until May.
-  Add `utility/test/temp.py` as a small `MD DOP` 10 km sampling script that
-  writes a CSV plus a date-distribution plot over the configured AOI, with a
-  lightweight grid-spacing regression test. The smoke-download wrapper now can
-  also expand a lower-left `START_X, START_Y` plus `BLOCK_SIZE_KM` into a full
-  rectangular block of explicit tile origins for quick 5 km x 5 km tests
+  Replace the ad hoc `utility/test/temp.py` probe with a filename-based folder
+  coverage mapper that scans `folder_1`, extracts tile origins from TIFF
+  names, streams the Desktop `predictions*.tif` rasters (excluding the merged
+  mosaic) in logged row chunks, and overlays the tiles containing positive
+  prediction labels on top of the blue folder coverage map, with regression
+  coverage for filename parsing, prediction discovery, and chunk-to-tile
+  aggregation. The smoke-download wrapper now can also expand a lower-left
+  `START_X, START_Y` plus `BLOCK_SIZE_KM` into a full rectangular block of
+  explicit tile origins for quick 5 km x 5 km tests
   (`utility/get_data_api.py`, `test/test_get_data_api_metadata.py`,
   `utility/test/run_get_data_api_smoke.sh`, `utility/test/temp.py`,
   `test/test_md_dop_date_distribution.py`). Fix a regression where the `MD DOP`
@@ -73,6 +77,23 @@
   default four-folder final merge on the cluster without requiring a fragile
   long `sbatch --wrap` command (`merge_all_folders.sh`, `README.md`,
   `docs/ARCHITECTURE.md`).
+- Extend the batch inference launcher so it can take an explicit
+  `--input-paths-file` selection file, including the uncovered-tile CSV format
+  emitted by `utility/test/temp.py` via its `tile_name,x,y` rows, making it
+  possible to launch a targeted `missing_tiles` re-inference campaign without
+  rescanning the entire inference directory (`utility/launch_batched_inference.py`,
+  `test/test_launch_batched_inference.py`).
+- Fix the temporary folder-coverage overlay helper so its prediction scan uses
+  a `WarpedVRT`-based 1 km max-resampling path instead of unsupported direct
+  `read(..., resampling=Resampling.max)`, while also keeping visible `tqdm`
+  progress for the folder scan and Desktop prediction raster loop
+  (`utility/test/temp.py`, `test/test_md_dop_date_distribution.py`). Add
+  covered/uncovered tile CSV exports so the helper can list `folder_1` tiles
+  with and without positive prediction labels. Keep the large Desktop
+  prediction TIFF scan sequential and expose a GDAL cache limit so the helper
+  stays memory-safe instead of trying to process multiple rasters at once.
+  Ignore the generated `utility/test/folder_1_coverage/` output directory so
+  local map renders do not appear as untracked files (`.gitignore`).
 - Point the shipped HPC inference template at `patches_mt/folder_4` so the
   default batch-launch workflow now scans `folder_4`
   (`configs/config_hpc.yml`).

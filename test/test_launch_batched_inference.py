@@ -190,6 +190,106 @@ def test_launch_batched_inference_dry_run_writes_configs_and_scripts(
     assert status["controller_job_ids"] == [None]
 
 
+def test_resolve_inference_paths_from_csv_tile_names(
+    tmp_path: Path,
+) -> None:
+    """Launcher should resolve uncovered-tile CSV rows via template input_dir.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    module = _load_launch_module()
+    image_dir = tmp_path / "images"
+    first = image_dir / "dop20_453000_6066000_1km_20cm.tif"
+    second = image_dir / "dop20_454000_6067000_1km_20cm.tif"
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.touch()
+    second.touch()
+    template_config = tmp_path / "configs" / "config_hpc.yml"
+    _write_template_config(template_config, image_dir)
+    csv_path = tmp_path / "tiles_without_labels.csv"
+    csv_path.write_text(
+        (
+            "tile_name,x,y\n"
+            "dop20_453000_6066000_1km_20cm.tif,453000,6066000\n"
+            "dop20_454000_6067000_1km_20cm.tif,454000,6067000\n"
+        ),
+        encoding="utf-8",
+    )
+
+    resolved = module.resolve_inference_paths_from_config(
+        template_config,
+        input_paths_file=csv_path,
+    )
+
+    assert resolved == [str(first.resolve()), str(second.resolve())]
+
+
+def test_launch_batched_inference_uses_explicit_input_paths_file(
+    tmp_path: Path,
+) -> None:
+    """Dry-run launch should batch only the selected uncovered-tile subset.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    module = _load_launch_module()
+    image_dir = tmp_path / "images"
+    selected_a = image_dir / "dop20_453000_6066000_1km_20cm.tif"
+    selected_b = image_dir / "dop20_454000_6067000_1km_20cm.tif"
+    ignored = image_dir / "dop20_455000_6068000_1km_20cm.tif"
+    for path in (selected_a, selected_b, ignored):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    template_config = tmp_path / "configs" / "config_hpc.yml"
+    _write_template_config(template_config, image_dir)
+    csv_path = tmp_path / "tiles_without_labels.csv"
+    csv_path.write_text(
+        (
+            "tile_name,x,y\n"
+            "dop20_453000_6066000_1km_20cm.tif,453000,6066000\n"
+            "dop20_454000_6067000_1km_20cm.tif,454000,6067000\n"
+        ),
+        encoding="utf-8",
+    )
+
+    orchestration_root = module.launch_batched_inference(
+        job_name="missing_tiles",
+        batch_size=1,
+        template_config_path=template_config,
+        template_slurm_path=REPO_ROOT / "segmentation.sh",
+        output_root=tmp_path / "output",
+        max_retries=3,
+        dry_run=True,
+        input_paths_file=csv_path,
+    )
+
+    manifest = module._load_json(orchestration_root / "manifest.json")
+    assert manifest["job_name"] == "missing_tiles"
+    assert manifest["input_paths_file"] == str(csv_path)
+    assert manifest["total_images"] == 2
+    assert len(manifest["batch_manifests"]) == 2
+    first_batch_lines = (
+        Path(manifest["batch_manifests"][0]).read_text(encoding="utf-8").splitlines()
+    )
+    second_batch_lines = (
+        Path(manifest["batch_manifests"][1]).read_text(encoding="utf-8").splitlines()
+    )
+    assert first_batch_lines == [str(selected_a.resolve())]
+    assert second_batch_lines == [str(selected_b.resolve())]
+    assert str(ignored.resolve()) not in manifest["input_paths"]
+
+
 def test_merge_batch_prediction_tifs_uses_batch_order_overwrite(
     tmp_path: Path,
 ) -> None:

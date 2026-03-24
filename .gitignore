@@ -10,6 +10,7 @@ tmp.pth
 tmp_checkpoint.pth
 utility/test/download_*/
 utility/test/md_dop_date_distribution/
+utility/test/folder_1_coverage/
 utility/test/dop20_592000_5975000_1km_20cm_labels.tif
 utility/test/dop20_592000_5975000_1km_20cm_labels.tif.aux.xml
 utility/test/dop20_596000_5973000_1km_20cm_labels.tif
