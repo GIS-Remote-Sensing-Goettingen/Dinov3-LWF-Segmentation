@@ -14,6 +14,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
@@ -78,7 +79,36 @@ def iter_repo_files(root: Path) -> Iterable[Path]:
             continue
         if any(part in excluded for part in path.parts):
             continue
+        if is_git_ignored(path, root=root):
+            continue
         yield path
+
+
+def is_git_ignored(path: Path, *, root: Path) -> bool:
+    """Return whether one path is ignored by git.
+
+    Args:
+        path (Path): Candidate repository file path.
+        root (Path): Repository root.
+
+    Returns:
+        bool: True when git would ignore the path.
+
+    Examples:
+        >>> callable(is_git_ignored)
+        True
+    """
+
+    try:
+        relative_path = path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    proc = subprocess.run(
+        ["git", "check-ignore", "-q", str(relative_path)],
+        cwd=root,
+        check=False,
+    )
+    return proc.returncode == 0
 
 
 def count_lines(path: Path) -> int:

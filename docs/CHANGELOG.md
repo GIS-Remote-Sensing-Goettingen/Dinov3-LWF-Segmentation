@@ -83,6 +83,9 @@
   possible to launch a targeted `missing_tiles` re-inference campaign without
   rescanning the entire inference directory (`utility/launch_batched_inference.py`,
   `test/test_launch_batched_inference.py`).
+- Make the local file-length pre-commit hook respect git-ignored paths so
+  generated coverage CSVs/PNGs under ignored utility output folders do not fail
+  repository checks (`scripts/check_file_length.py`).
 - Fix the temporary folder-coverage overlay helper so its prediction scan uses
   a `WarpedVRT`-based 1 km max-resampling path instead of unsupported direct
   `read(..., resampling=Resampling.max)`, while also keeping visible `tqdm`
