@@ -1161,6 +1161,8 @@ def overlay_heatmap(
     heatmap: np.ndarray,
     cmap: str = "magma",
     alpha: float = 0.4,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> np.ndarray:
     """Overlay a heatmap onto an RGB image.
 
@@ -1169,6 +1171,10 @@ def overlay_heatmap(
         heatmap (np.ndarray): Heatmap in [0, 1].
         cmap (str): Matplotlib colormap name.
         alpha (float): Overlay alpha.
+        vmin (float | None): Optional lower bound used to normalize the heatmap
+            before color mapping.
+        vmax (float | None): Optional upper bound used to normalize the heatmap
+            before color mapping.
 
     Returns:
         np.ndarray: Overlay image.
@@ -1183,7 +1189,23 @@ def overlay_heatmap(
     import matplotlib.cm as cm
 
     rgb_float = rgb.astype(np.float32) / 255.0
-    colored = cm.get_cmap(cmap)(heatmap)[..., :3]
+    heatmap_float = np.asarray(heatmap, dtype=np.float32)
+    if vmin is not None or vmax is not None:
+        lo = (
+            float(vmin)
+            if vmin is not None and np.isfinite(vmin)
+            else float(np.nanmin(heatmap_float))
+        )
+        hi = (
+            float(vmax)
+            if vmax is not None and np.isfinite(vmax)
+            else float(np.nanmax(heatmap_float))
+        )
+        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+            heatmap_float = np.clip((heatmap_float - lo) / (hi - lo), 0.0, 1.0)
+        else:
+            heatmap_float = np.clip(heatmap_float, 0.0, 1.0)
+    colored = cm.get_cmap(cmap)(heatmap_float)[..., :3]
     overlay = (1 - alpha) * rgb_float + alpha * colored
     overlay = np.clip(overlay * 255.0, 0, 255).astype(np.uint8)
     return overlay

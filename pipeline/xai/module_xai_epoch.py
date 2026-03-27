@@ -373,6 +373,22 @@ def _compute_topology_metrics(
         float(np.sum(gt_skel)), 1.0
     )
     cldice_proxy = float((2.0 * tprec * tsens) / max(tprec + tsens, 1e-8))
+    skel_true_pos = float(np.sum(np.logical_and(pred_skel, gt_skel)))
+    skel_precision = skel_true_pos / max(float(np.sum(pred_skel)), 1.0)
+    skel_recall = skel_true_pos / max(float(np.sum(gt_skel)), 1.0)
+    skel_f1 = float(
+        (2.0 * skel_precision * skel_recall) / max(skel_precision + skel_recall, 1e-8)
+    )
+    finite_prob = skel_up[np.isfinite(skel_up)]
+    skel_prob_mean = (
+        float(np.mean(finite_prob)) if finite_prob.size > 0 else float("nan")
+    )
+    skel_prob_p95 = (
+        float(np.percentile(finite_prob, 95.0))
+        if finite_prob.size > 0
+        else float("nan")
+    )
+    skel_pred_pos_rate = float(np.mean(pred_skel.astype(np.float32)))
     pred_components = float(_count_components(pred_skel))
     gt_components = float(_count_components(gt_skel))
     component_delta = pred_components - gt_components
@@ -385,10 +401,18 @@ def _compute_topology_metrics(
             rgb=np.asarray(sample["rgb"]),
             gt_mask=gt_mask,
             pred_mask=pred_mask,
+            pred_skel_prob=skel_up,
             pred_skel=pred_skel,
             gt_skel=gt_skel,
+            threshold=float(gate_threshold),
             metrics={
                 "cldice_proxy": cldice_proxy,
+                "skel_precision": skel_precision,
+                "skel_recall": skel_recall,
+                "skel_f1": skel_f1,
+                "skel_prob_mean": skel_prob_mean,
+                "skel_prob_p95": skel_prob_p95,
+                "skel_pred_pos_rate": skel_pred_pos_rate,
                 "pred_components": pred_components,
                 "gt_components": gt_components,
                 "component_delta": component_delta,
@@ -396,6 +420,12 @@ def _compute_topology_metrics(
         )
     return {
         "cldice_proxy": cldice_proxy,
+        "skel_precision": skel_precision,
+        "skel_recall": skel_recall,
+        "skel_f1": skel_f1,
+        "skel_prob_mean": skel_prob_mean,
+        "skel_prob_p95": skel_prob_p95,
+        "skel_pred_pos_rate": skel_pred_pos_rate,
         "pred_components": pred_components,
         "gt_components": gt_components,
         "component_delta": component_delta,
@@ -442,6 +472,12 @@ def _collect_sample_metrics(
         "lora_region_interior": [],
         "lora_region_background": [],
         "topology_cldice_values": [],
+        "topology_skel_precision_values": [],
+        "topology_skel_recall_values": [],
+        "topology_skel_f1_values": [],
+        "topology_skel_prob_mean_values": [],
+        "topology_skel_prob_p95_values": [],
+        "topology_skel_pred_pos_rate_values": [],
         "topology_pred_components": [],
         "topology_gt_components": [],
         "topology_delta_components": [],
@@ -539,6 +575,23 @@ def _collect_sample_metrics(
             )
             if topology:
                 collected["topology_cldice_values"].append(topology["cldice_proxy"])
+                collected["topology_skel_precision_values"].append(
+                    topology["skel_precision"]
+                )
+                collected["topology_skel_recall_values"].append(topology["skel_recall"])
+                collected["topology_skel_f1_values"].append(topology["skel_f1"])
+                if math.isfinite(float(topology["skel_prob_mean"])):
+                    collected["topology_skel_prob_mean_values"].append(
+                        topology["skel_prob_mean"]
+                    )
+                if math.isfinite(float(topology["skel_prob_p95"])):
+                    collected["topology_skel_prob_p95_values"].append(
+                        topology["skel_prob_p95"]
+                    )
+                if math.isfinite(float(topology["skel_pred_pos_rate"])):
+                    collected["topology_skel_pred_pos_rate_values"].append(
+                        topology["skel_pred_pos_rate"]
+                    )
                 collected["topology_pred_components"].append(
                     topology["pred_components"]
                 )
@@ -572,6 +625,12 @@ def _metrics_from_collected(collected: dict[str, list[Any]]) -> dict[str, float]
         "xai_lora_ratio_interior_mean": "lora_region_interior",
         "xai_lora_ratio_background_mean": "lora_region_background",
         "xai_topology_cldice_proxy": "topology_cldice_values",
+        "xai_topology_skel_precision": "topology_skel_precision_values",
+        "xai_topology_skel_recall": "topology_skel_recall_values",
+        "xai_topology_skel_f1": "topology_skel_f1_values",
+        "xai_topology_skel_prob_mean": "topology_skel_prob_mean_values",
+        "xai_topology_skel_prob_p95": "topology_skel_prob_p95_values",
+        "xai_topology_skel_pred_pos_rate": "topology_skel_pred_pos_rate_values",
         "xai_topology_skel_components_pred": "topology_pred_components",
         "xai_topology_skel_components_gt": "topology_gt_components",
         "xai_topology_skel_component_delta": "topology_delta_components",
@@ -678,7 +737,6 @@ def _update_trend_history_and_artifacts(
         ),
         "module_lora_trends.png": (
             {
-                "rho_mean": history.get("xai_lora_ratio_mean", []),
                 "rho_boundary": history.get("xai_lora_ratio_boundary_mean", []),
                 "rho_interior": history.get("xai_lora_ratio_interior_mean", []),
             },
@@ -687,11 +745,29 @@ def _update_trend_history_and_artifacts(
         ),
         "module_topology_trends.png": (
             {
-                "cldice_proxy": history.get("xai_topology_cldice_proxy", []),
-                "component_delta": history.get("xai_topology_skel_component_delta", []),
+                "mask_support_proxy": history.get("xai_topology_cldice_proxy", []),
+                "skeleton_f1": history.get("xai_topology_skel_f1", []),
             },
             "Topology trends",
+            "Score",
+        ),
+        "module_topology_branch_health.png": (
+            {
+                "pred_pos_rate": history.get("xai_topology_skel_pred_pos_rate", []),
+                "prob_mean": history.get("xai_topology_skel_prob_mean", []),
+                "prob_p95": history.get("xai_topology_skel_prob_p95", []),
+            },
+            "Skeleton branch health",
             "Value",
+        ),
+        "module_topology_components.png": (
+            {
+                "pred_components": history.get("xai_topology_skel_components_pred", []),
+                "gt_components": history.get("xai_topology_skel_components_gt", []),
+                "component_delta": history.get("xai_topology_skel_component_delta", []),
+            },
+            "Skeleton component trends",
+            "Count",
         ),
     }
     for filename, (series, title, ylabel) in trend_specs.items():

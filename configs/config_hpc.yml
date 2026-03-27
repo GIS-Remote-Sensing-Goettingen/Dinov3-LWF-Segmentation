@@ -335,6 +335,8 @@ train:
   topology:
     # Skeleton BCE weight for topology-aware heads.
     skeleton_weight: 0.1
+    # Positive-class weight for the sparse skeleton BCE term.
+    skeleton_pos_weight: 1.0
     # Soft-clDice topology weight.
     weight: 0.15
     # Foreground class index used for binary topology extraction.

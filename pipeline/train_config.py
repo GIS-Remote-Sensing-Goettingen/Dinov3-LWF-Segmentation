@@ -22,6 +22,7 @@ class ResolvedLossConfig:
     boundary_weight: float
     boundary_kernel_size: int
     skeleton_weight: float
+    skeleton_pos_weight: float
     topology_weight: float
     topology_class_index: int
     topology_iters: int
@@ -84,11 +85,21 @@ def parse_train_loss_config(
         ...         "main": {"ce_weight": 1.0, "dice_weight": 1.0},
         ...         "focal": {"weight": 0.0, "gamma": 2.0},
         ...     },
-        ...     "topology": {"weight": 0.2, "skeleton_weight": 0.1},
+        ...     "topology": {
+        ...         "weight": 0.2,
+        ...         "skeleton_weight": 0.1,
+        ...         "skeleton_pos_weight": 12.0,
+        ...     },
         ... }
         >>> out = parse_train_loss_config(cfg, dataset_ignore_index=255)
-        >>> (out.ce_weight, out.focal_weight, out.topology_weight, out.ignore_index)
-        (1.0, 0.0, 0.2, 255)
+        >>> (
+        ...     out.ce_weight,
+        ...     out.focal_weight,
+        ...     out.topology_weight,
+        ...     out.skeleton_pos_weight,
+        ...     out.ignore_index,
+        ... )
+        (1.0, 0.0, 0.2, 12.0, 255)
     """
 
     loss_cfg = train_cfg.get("loss", {})
@@ -150,6 +161,15 @@ def parse_train_loss_config(
         ),
         skeleton_weight=float(
             topology_cfg.get("skeleton_weight", loss_cfg.get("skeleton_weight", 0.0))
+        ),
+        skeleton_pos_weight=max(
+            1.0,
+            float(
+                topology_cfg.get(
+                    "skeleton_pos_weight",
+                    loss_cfg.get("skeleton_pos_weight", 1.0),
+                )
+            ),
         ),
         topology_weight=float(
             topology_cfg.get("weight", loss_cfg.get("topology_weight", 0.0))

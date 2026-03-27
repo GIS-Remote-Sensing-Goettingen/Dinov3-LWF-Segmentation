@@ -412,8 +412,28 @@ def _save_lora_panel(
 
     import matplotlib.pyplot as plt
 
+    finite_ratio_values = np.asarray(ratio_values, dtype=np.float32)
+    finite_ratio_values = finite_ratio_values[np.isfinite(finite_ratio_values)]
+    vmin: float | None = None
+    vmax: float | None = None
+    if finite_ratio_values.size > 0:
+        vmin = float(np.percentile(finite_ratio_values, 5.0))
+        vmax = float(np.percentile(finite_ratio_values, 95.0))
+        if not math.isfinite(vmin) or not math.isfinite(vmax) or vmax <= vmin:
+            vmin = None
+            vmax = None
+
     fig, axes = plt.subplots(1, 3, figsize=(14.0, 4.6))
-    axes[0].imshow(overlay_heatmap(rgb, ratio_map, cmap="plasma", alpha=0.45))
+    axes[0].imshow(
+        overlay_heatmap(
+            rgb,
+            ratio_map,
+            cmap="viridis",
+            alpha=0.6,
+            vmin=vmin,
+            vmax=vmax,
+        )
+    )
     axes[0].set_title("LoRA ratio map")
     axes[0].axis("off")
 
@@ -446,8 +466,10 @@ def _save_topology_panel(
     rgb: np.ndarray,
     gt_mask: np.ndarray,
     pred_mask: np.ndarray,
+    pred_skel_prob: np.ndarray,
     pred_skel: np.ndarray,
     gt_skel: np.ndarray,
+    threshold: float,
     metrics: dict[str, float],
 ) -> None:
     """Save topology panel with skeleton overlays and metrics.
@@ -457,14 +479,16 @@ def _save_topology_panel(
         rgb (np.ndarray): RGB image.
         gt_mask (np.ndarray): Ground-truth mask.
         pred_mask (np.ndarray): Predicted mask.
+        pred_skel_prob (np.ndarray): Predicted skeleton probability map.
         pred_skel (np.ndarray): Predicted skeleton mask.
         gt_skel (np.ndarray): Ground-truth skeleton mask.
+        threshold (float): Threshold used to binarize the predicted skeleton.
         metrics (dict[str, float]): Topology metrics to show in the panel.
     """
 
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(2, 3, figsize=(13.0, 8.0))
+    fig, axes = plt.subplots(2, 4, figsize=(16.5, 8.0))
     ax = axes.ravel()
     ax[0].imshow(rgb)
     ax[0].set_title("RGB")
@@ -475,23 +499,60 @@ def _save_topology_panel(
     ax[2].imshow(pred_mask, cmap="tab20")
     ax[2].set_title("Pred mask")
     ax[2].axis("off")
-    ax[3].imshow(pred_skel, cmap="gray")
-    ax[3].set_title("Pred skeleton")
     ax[3].axis("off")
-    ax[4].imshow(gt_skel, cmap="gray")
-    ax[4].set_title("GT skeleton")
-    ax[4].axis("off")
-    ax[5].axis("off")
     table_text = "\n".join(
         [
-            f"clDice proxy: {float(metrics.get('cldice_proxy', float('nan'))):.3f}",
-            f"pred comps: {int(metrics.get('pred_components', 0))}",
-            f"gt comps: {int(metrics.get('gt_components', 0))}",
-            f"delta comps: {float(metrics.get('component_delta', float('nan'))):.2f}",
+            (
+                "Mask-support clDice proxy: "
+                f"{float(metrics.get('cldice_proxy', float('nan'))):.3f}"
+            ),
+            f"Explicit skel F1: {float(metrics.get('skel_f1', float('nan'))):.3f}",
+            (
+                "Explicit skel recall: "
+                f"{float(metrics.get('skel_recall', float('nan'))):.3f}"
+            ),
+            (
+                "Explicit skel precision: "
+                f"{float(metrics.get('skel_precision', float('nan'))):.3f}"
+            ),
+            (
+                "Pred skel prob mean: "
+                f"{float(metrics.get('skel_prob_mean', float('nan'))):.3f}"
+            ),
+            (
+                "Pred skel prob p95: "
+                f"{float(metrics.get('skel_prob_p95', float('nan'))):.3f}"
+            ),
+            (
+                "Pred skel pos rate: "
+                f"{float(metrics.get('skel_pred_pos_rate', float('nan'))):.4f}"
+            ),
+            f"Pred comps: {int(metrics.get('pred_components', 0))}",
+            f"GT comps: {int(metrics.get('gt_components', 0))}",
+            f"Delta comps: {float(metrics.get('component_delta', float('nan'))):.2f}",
         ]
     )
-    ax[5].text(0.02, 0.95, table_text, va="top", ha="left", fontsize=11)
-    ax[5].set_title("Topology summary")
+    ax[3].text(0.02, 0.98, table_text, va="top", ha="left", fontsize=10)
+    ax[3].set_title("Topology summary")
+    ax[4].imshow(pred_skel_prob, cmap="magma", vmin=0.0, vmax=1.0)
+    ax[4].set_title("Pred skel prob")
+    ax[4].axis("off")
+    ax[5].imshow(pred_skel, cmap="gray")
+    ax[5].set_title(f"Pred skel @ {threshold:.2f}")
+    ax[5].axis("off")
+    ax[6].imshow(gt_skel, cmap="gray")
+    ax[6].set_title("GT skeleton")
+    ax[6].axis("off")
+    overlap = np.zeros((*pred_skel.shape, 3), dtype=np.uint8)
+    true_pos = np.logical_and(pred_skel, gt_skel)
+    false_pos = np.logical_and(pred_skel, np.logical_not(gt_skel))
+    false_neg = np.logical_and(np.logical_not(pred_skel), gt_skel)
+    overlap[true_pos] = np.array([255, 255, 255], dtype=np.uint8)
+    overlap[false_pos] = np.array([220, 70, 70], dtype=np.uint8)
+    overlap[false_neg] = np.array([70, 200, 255], dtype=np.uint8)
+    ax[7].imshow(overlap)
+    ax[7].set_title("Skel overlap TP/FP/FN")
+    ax[7].axis("off")
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)

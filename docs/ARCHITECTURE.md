@@ -62,6 +62,9 @@ MLflow-compatible artifacts for research workflows.
 - **Training config schema:** `train.plots` now groups all epoch/XAI plotting options,
   `train.loss` groups main/focal/boundary loss terms, and `train.topology` groups
   skeleton/clDice settings so class indices and weights are not mixed in one block.
+  The topology block also carries `skeleton_pos_weight`, which upweights the
+  sparse positive skeleton pixels inside the skeleton BCE term without changing
+  the main mask supervision.
   A nested `train.plots.paper` profile can additionally emit curated
   publication-oriented copies of the training/XAI figures without disabling
   the full diagnostic artifacts.
@@ -165,7 +168,11 @@ MLflow-compatible artifacts for research workflows.
   artifacts (bar/trend/heatmap + JSON summaries). A module-specific XAI bundle
   can additionally log layer-fusion alpha diagnostics, boundary-gate ROC/effect
   maps, LoRA ratio distributions, and topology/skeleton connectivity summaries
-  under `artifacts/plots/xai/module`.
+  under `artifacts/plots/xai/module`. The topology diagnostics now distinguish
+  the existing mask-support `clDice` proxy from explicit skeleton-branch
+  precision, recall, F1, probability, and positive-rate metrics, and the
+  qualitative topology panel shows both the raw skeleton probability map and
+  the thresholded skeleton mask.
 - Plot artifacts are grouped per run under `artifacts/plots/metrics`,
   `artifacts/plots/xai`, and `artifacts/plots/inference` to reduce clutter.
 - When `train.plots.paper.enable` is on, training also emits a compact

@@ -164,9 +164,34 @@ def test_train_parsers_accept_all_configs() -> None:
         resolved_plot = parse_train_plot_config(train_cfg)
         assert resolved_loss.dice_weight >= 0.0
         assert resolved_loss.ce_weight >= 0.0
+        assert resolved_loss.skeleton_pos_weight >= 1.0
         assert resolved_plot.pairs >= 1
         assert resolved_plot.paper_pairs >= 1
         assert resolved_plot.paper_xai_topk_channels >= 1
+
+
+def test_parse_train_loss_config_reads_skeleton_pos_weight() -> None:
+    """Topology config should expose the sparse-positive skeleton weighting.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    resolved = parse_train_loss_config(
+        {
+            "loss": {"main": {"ce_weight": 1.0, "dice_weight": 1.0}},
+            "topology": {
+                "skeleton_weight": 0.5,
+                "skeleton_pos_weight": 25.0,
+                "weight": 0.15,
+            },
+        },
+        dataset_ignore_index=255,
+    )
+
+    assert resolved.skeleton_weight == 0.5
+    assert resolved.skeleton_pos_weight == 25.0
 
 
 def test_core_model_values_are_viable() -> None:

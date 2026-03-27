@@ -5,6 +5,33 @@
 
 ## [Unreleased]
 ### Changed
+- Exclude the aggregate `rho_mean` series from the LoRA module-XAI trend plot
+  so `module_lora_trends.png` focuses on the boundary/interior ratios that are
+  actually compared in the report, while keeping the underlying scalar metric
+  logging unchanged (`pipeline/xai/module_xai_epoch.py`).
+- Increase the paper readability of the LoRA module-XAI panel by stretching
+  the ratio-map overlay contrast with robust percentile bounds and switching to
+  a stronger `viridis` overlay so track/background differences are easier to
+  inspect in exported figures (`pipeline/inference_utils.py`,
+  `pipeline/xai/module_xai.py`, `test/test_inference_outputs.py`).
+- Add sparse-positive skeleton weighting to the topology loss config and
+  update topology XAI to separate the existing mask-support clDice proxy from
+  explicit skeleton-branch precision/recall/F1, probability, and positive-rate
+  diagnostics; topology panels now show the raw skeleton probability map
+  alongside the thresholded skeleton view, and the trend artifacts split branch
+  health from connected-component counts (`configs/config*.yml`,
+  `pipeline/train_config.py`, `pipeline/phases/train.py`, `utils/losses.py`,
+  `pipeline/xai/module_xai.py`, `pipeline/xai/module_xai_epoch.py`,
+  `test/test_config_integrity.py`, `test/test_train_utils_safety.py`,
+  `test/test_module_xai_epoch.py`).
+- Add `scripts/render_unet_topo_fusion_schema.py`, a small matplotlib-backed
+  CLI that renders a thesis-ready schematic of the `unet_topo_fusion` decoder
+  head to SVG/PDF/PNG so the architecture figure can be regenerated and
+  iterated from code while matching the hand-authored visual style used in the
+  example plots and the actual decoder structure of the topology-fusion head;
+  refine the layout through render-review iterations so the RGB prior labels,
+  supervision branches, the image-to-prior routing, and the final refinement
+  stage read more cleanly at paper scale.
 - Ignore local downloader smoke-test outputs and temporary checkpoint files so
   ad hoc recovery/download experiments under `utility/test/download_*`,
   `utility/test/md_dop_date_distribution/`, and local `tmp*.pth` files stop
@@ -93,16 +120,22 @@
   (`scripts/launch_batched_inference.py`, `scripts/merge_folder_prediction_tifs.py`,
   `scripts/rasterize_vector_labels.py`, `scripts/export_metrics_csv.py`).
 - Fix the temporary folder-coverage overlay helper so its prediction scan uses
-  a `WarpedVRT`-based 1 km max-resampling path instead of unsupported direct
-  `read(..., resampling=Resampling.max)`, while also keeping visible `tqdm`
-  progress for the folder scan and Desktop prediction raster loop
-  (`utility/test/temp.py`, `test/test_md_dop_date_distribution.py`). Add
-  covered/uncovered tile CSV exports so the helper can list `folder_1` tiles
-  with and without positive prediction labels. Keep the large Desktop
-  prediction TIFF scan sequential and expose a GDAL cache limit so the helper
-  stays memory-safe instead of trying to process multiple rasters at once.
-  Ignore the generated `utility/test/folder_1_coverage/` output directory so
-  local map renders do not appear as untracked files (`.gitignore`).
+  a count-based `WarpedVRT` path on the shared 1 km folder grid so it can
+  compare per-tile positive-pixel counts from the combined non-merged
+  `predictions*.tif` rasters against `planet_labels_2022.tif`, color tiles
+  with the requested `violet > orange > blue` priority, apply the strict
+  `prediction_count > 0.6 * planet_count` violet threshold, emit a larger map
+  with legend, write covered/uncovered/violet CSV exports plus expanded
+  summary metrics, and add a second histogram-style output showing the
+  prediction-vs-Planet positive-pixel ratio distribution from `0%` up to the
+  observed maximum. Keep the large Desktop prediction TIFF scan sequential and
+  expose a GDAL cache limit so the helper stays memory-safe instead of trying
+  to process multiple rasters at once. Fix the Planet-label comparison path so
+  rasters such as the `EPSG:3857` Planet label mosaic are reprojected into the
+  shared `folder_1` tile CRS before per-tile counts are computed. Ignore the generated
+  `utility/test/folder_1_coverage/` output directory so local map renders do
+  not appear as untracked files (`utility/test/temp.py`,
+  `test/test_md_dop_date_distribution.py`, `.gitignore`).
 - Point the shipped HPC inference template at `patches_mt/folder_4` so the
   default batch-launch workflow now scans `folder_4`
   (`configs/config_hpc.yml`).

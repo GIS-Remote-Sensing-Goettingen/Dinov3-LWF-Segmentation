@@ -641,6 +641,7 @@ class TrainPhase(Phase):
             focal_alpha=resolved_loss.focal_alpha,
             boundary_weight=resolved_loss.boundary_weight,
             skeleton_weight=resolved_loss.skeleton_weight,
+            skeleton_pos_weight=resolved_loss.skeleton_pos_weight,
             topology_weight=resolved_loss.topology_weight,
             topology_class_index=resolved_loss.topology_class_index,
             topology_iters=resolved_loss.topology_iters,

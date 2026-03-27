@@ -134,6 +134,56 @@ def test_evaluate_supports_image_only_unet_without_backbone() -> None:
     assert "miou" in metrics
 
 
+def test_skeleton_pos_weight_increases_sparse_positive_penalty() -> None:
+    """Skeleton BCE should grow when positive pixels are upweighted.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    logits = torch.zeros(1, 2, 8, 8)
+    targets = torch.zeros(1, 8, 8, dtype=torch.long)
+    targets[:, 4, 1:7] = 1
+    skeleton_logits = torch.zeros(1, 1, 8, 8)
+
+    base_loss = SegmentationLoss(
+        num_classes=2,
+        ce_weight=0.0,
+        dice_weight=0.0,
+        aux_weight=0.0,
+        skeleton_weight=1.0,
+        skeleton_pos_weight=1.0,
+    )
+    boosted_loss = SegmentationLoss(
+        num_classes=2,
+        ce_weight=0.0,
+        dice_weight=0.0,
+        aux_weight=0.0,
+        skeleton_weight=1.0,
+        skeleton_pos_weight=20.0,
+    )
+
+    base_components = base_loss.compute_components(
+        logits,
+        targets,
+        skeleton_logits=skeleton_logits,
+    )
+    boosted_components = boosted_loss.compute_components(
+        logits,
+        targets,
+        skeleton_logits=skeleton_logits,
+    )
+
+    assert (
+        boosted_components["loss_skeleton_bce"] > base_components["loss_skeleton_bce"]
+    )
+    assert (
+        boosted_components["loss_weighted_skeleton"]
+        > base_components["loss_weighted_skeleton"]
+    )
+
+
 def test_align_logits_to_labels_downsamples_to_native_label_grid() -> None:
     """Supervised logits should be resized down to the label grid.
 

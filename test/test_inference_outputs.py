@@ -37,10 +37,39 @@ from pipeline.inference_utils import (  # noqa: E402
     ensure_cumulative_prediction_raster,
     extract_prediction_features,
     overlay_binary_mask,
+    overlay_heatmap,
     write_prediction_to_cumulative_raster,
 )
 from pipeline.phases.inference import InferencePhase  # noqa: E402
 from pipeline.tracking import HookManager  # noqa: E402
+
+
+def test_overlay_heatmap_supports_explicit_value_stretch() -> None:
+    """Heatmap overlay should honor optional normalization bounds.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+    heatmap = np.array([[0.0, 10.0], [20.0, 30.0]], dtype=np.float32)
+
+    raw = overlay_heatmap(rgb, heatmap, cmap="viridis", alpha=1.0)
+    stretched = overlay_heatmap(
+        rgb,
+        heatmap,
+        cmap="viridis",
+        alpha=1.0,
+        vmin=10.0,
+        vmax=20.0,
+    )
+
+    assert raw.shape == (2, 2, 3)
+    assert stretched.shape == (2, 2, 3)
+    assert np.array_equal(stretched[0, 0], stretched[0, 1])
+    assert np.array_equal(stretched[1, 1], stretched[1, 0])
+    assert not np.array_equal(raw, stretched)
 
 
 def _write_test_geotiff(

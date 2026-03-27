@@ -26,6 +26,9 @@ LOSS_COMPONENT_KEYS: tuple[str, ...] = (
     "loss_weighted_edge",
     "loss_weighted_skeleton",
     "loss_weighted_topology",
+    "skeleton_prob_mean",
+    "skeleton_prob_p95",
+    "skeleton_pred_pos_rate",
 )
 
 
@@ -290,6 +293,7 @@ class SegmentationLoss(nn.Module):
         focal_alpha: Optional[float] = None,
         boundary_weight: float = 0.0,
         skeleton_weight: float = 0.0,
+        skeleton_pos_weight: float = 1.0,
         topology_weight: float = 0.0,
         topology_class_index: int = 1,
         topology_iters: int = 10,
@@ -312,6 +316,8 @@ class SegmentationLoss(nn.Module):
             focal_alpha (Optional[float]): Optional focal alpha weight in [0, 1].
             boundary_weight (float): Weight for boundary BCE supervision.
             skeleton_weight (float): Weight for skeleton BCE supervision.
+            skeleton_pos_weight (float): Positive-class weight for the skeleton
+                BCE term to counter the extreme sparsity of 1-pixel skeletons.
             topology_weight (float): Weight for soft-clDice topology supervision.
             topology_class_index (int): Foreground class index for topology loss.
             topology_iters (int): Soft skeletonization iteration count.
@@ -336,6 +342,7 @@ class SegmentationLoss(nn.Module):
             self.ce_weight = 0.0
         self.boundary_weight = max(float(boundary_weight), 0.0)
         self.skeleton_weight = max(float(skeleton_weight), 0.0)
+        self.skeleton_pos_weight = max(float(skeleton_pos_weight), 1.0)
         self.topology_weight = max(float(topology_weight), 0.0)
         self.topology_class_index = max(0, int(topology_class_index))
         self.topology_iters = max(1, int(topology_iters))
@@ -473,6 +480,9 @@ class SegmentationLoss(nn.Module):
         edge_bce = zero
         skeleton_bce = zero
         topology_cldice = zero
+        skeleton_prob_mean = zero
+        skeleton_prob_p95 = zero
+        skeleton_pred_pos_rate = zero
 
         if self.ce_weight > 0:
             main_ce = self._ce_loss(logits, targets)
@@ -555,6 +565,16 @@ class SegmentationLoss(nn.Module):
                 iters=self.topology_iters,
             )
 
+        if skeleton_logits is not None:
+            with torch.no_grad():
+                skel_prob_metrics = torch.sigmoid(skeleton_logits.detach().float())
+                if skel_prob_metrics.numel() > 0:
+                    skeleton_prob_mean = skel_prob_metrics.mean()
+                    skeleton_prob_p95 = torch.quantile(
+                        skel_prob_metrics.reshape(-1), 0.95
+                    )
+                    skeleton_pred_pos_rate = (skel_prob_metrics >= 0.5).float().mean()
+
         if skeleton_logits is not None and self.skeleton_weight > 0:
             target_for_skeleton = targets
             if target_for_skeleton.ndim == 2:
@@ -583,6 +603,12 @@ class SegmentationLoss(nn.Module):
             skel_bce_map = F.binary_cross_entropy_with_logits(
                 skeleton_logits,
                 skeleton_target,
+                pos_weight=torch.full(
+                    (1,),
+                    self.skeleton_pos_weight,
+                    dtype=skeleton_logits.dtype,
+                    device=skeleton_logits.device,
+                ),
                 reduction="none",
             )
             skel_mask = valid_skel.unsqueeze(1).float()
@@ -626,4 +652,7 @@ class SegmentationLoss(nn.Module):
             "loss_weighted_edge": weighted_edge,
             "loss_weighted_skeleton": weighted_skeleton,
             "loss_weighted_topology": weighted_topology,
+            "skeleton_prob_mean": skeleton_prob_mean,
+            "skeleton_prob_p95": skeleton_prob_p95,
+            "skeleton_pred_pos_rate": skeleton_pred_pos_rate,
         }
