@@ -36,6 +36,7 @@ from ..train_utils import (
     evaluate,
     head_supports_aux_logits,
     head_uses_backbone_features,
+    head_uses_native_loss,
     resolve_lr_metrics,
     resolve_model_patch_size,
     split_params_for_muon,
@@ -243,6 +244,7 @@ def _resolve_epoch_validation_state(
     early_stopping: EarlyStopping,
     requires_backbone_features: bool = True,
     require_aux_logits: bool = False,
+    uses_native_loss: bool = False,
 ) -> tuple[dict[str, Any], Any, Any]:
     """Run rank-0 validation and broadcast the epoch summary to all ranks.
 
@@ -262,6 +264,8 @@ def _resolve_epoch_validation_state(
         cache_features (bool): Whether cached DINO features are available.
         requires_backbone_features (bool): Whether the head needs DINO features.
         require_aux_logits (bool): Whether aux logits must be present.
+        uses_native_loss (bool): Whether validation should use a head-provided
+            native loss instead of the shared CE/Dice loss.
         backbone (Any): Cached backbone handle for on-the-fly features.
         processor (Any): Cached processor handle for on-the-fly features.
         ps (int): Backbone patch size.
@@ -305,6 +309,7 @@ def _resolve_epoch_validation_state(
             boundary_kernel_size=boundary_kernel_size,
             requires_backbone_features=requires_backbone_features,
             require_aux_logits=require_aux_logits,
+            uses_native_loss=uses_native_loss,
         )
         validation_duration = time.time() - validation_started_at
         context.logger.info(
@@ -651,10 +656,16 @@ class TrainPhase(Phase):
         require_aux_logits = float(
             resolved_loss.aux_weight
         ) > 0.0 and head_supports_aux_logits(model_cfg["head"])
+        uses_native_loss = head_uses_native_loss(model_cfg["head"])
         if float(resolved_loss.aux_weight) > 0.0 and not require_aux_logits:
             context.logger.info(
                 "Head '%s' does not expose auxiliary logits; aux supervision is ignored."
                 % model_cfg["head"]
+            )
+        if uses_native_loss:
+            context.logger.info(
+                "Head '%s' uses its native training loss; shared CE/Dice loss "
+                "components remain zeroed except for loss_total." % model_cfg["head"]
             )
 
         stability = context.stability
@@ -751,6 +762,7 @@ class TrainPhase(Phase):
                         scaler=scaler,
                         requires_backbone_features=requires_backbone_features,
                         require_aux_logits=require_aux_logits,
+                        uses_native_loss=uses_native_loss,
                         grad_accum=grad_accum,
                         stability=stability,
                         boundary_kernel_size=boundary_kernel_size,
@@ -780,6 +792,7 @@ class TrainPhase(Phase):
                             cache_features=cache_features,
                             requires_backbone_features=requires_backbone_features,
                             require_aux_logits=require_aux_logits,
+                            uses_native_loss=uses_native_loss,
                             backbone=backbone,
                             processor=processor,
                             ps=ps,

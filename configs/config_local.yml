@@ -121,8 +121,9 @@ model:
   # Transformer block ids extracted from the backbone and passed to the head.
   layers: [5, 11, 17, 23]
   # Segmentation head architecture: `deeplabv3`, `dino_dense_probe`,
-  # `dino_segdino_light`, `maskformer`, `unet`, `unet_v2`, `unet_lite`, `unet_lite_plus`,
-  # `unet_nano`, `unet_nano_fapm`, or `unet_topo_fusion`.
+  # `dino_segdino_light`, `mask2former_semantic`, `maskformer`, `unet`,
+  # `unet_v2`, `unet_lite`, `unet_lite_plus`, `unet_nano`,
+  # `unet_nano_fapm`, or `unet_topo_fusion`.
   head: unet_lite
   # Number of semantic output classes.
   num_classes: 2
@@ -133,6 +134,14 @@ model:
     norm_type: batchnorm
     # Group count used only when `norm_type: groupnorm`.
     groupnorm_groups: 32
+  mask2former:
+    # Local staged Hugging Face checkpoint/config directory used by
+    # `mask2former_semantic`.
+    model_name_or_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/hf/facebook/mask2former-swin-base-ade-semantic
+    # Optional local processor directory; defaults to `model_name_or_path`.
+    preprocessor_name_or_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/hf/facebook/mask2former-swin-base-ade-semantic
+    # Load pretrained local weights (`true`) or initialize from the local config (`false`).
+    use_pretrained: true
   fusion:
     # Enable learned multi-layer fusion for compatible heads: `true` or `false`.
     enable: true

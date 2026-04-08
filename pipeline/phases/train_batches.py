@@ -20,6 +20,7 @@ from ..train_utils import (
     ModelEMA,
     align_logits_to_labels,
     build_boundary_targets,
+    build_native_loss_components,
     count_nonfinite_parameters,
     extract_multiscale_features_batch,
     forward_with_optional_extras,
@@ -292,6 +293,7 @@ def run_train_epoch_batches(
     scaler: Any,
     requires_backbone_features: bool,
     require_aux_logits: bool,
+    uses_native_loss: bool,
     grad_accum: int,
     stability: Any,
     boundary_kernel_size: int,
@@ -322,6 +324,8 @@ def run_train_epoch_batches(
         scaler (Any): Optional gradient scaler.
         requires_backbone_features (bool): Whether the head needs DINO features.
         require_aux_logits (bool): Whether aux logits must be present.
+        uses_native_loss (bool): Whether the active head returns its own native
+            loss through the normalized payload.
         grad_accum (int): Gradient accumulation steps.
         stability (Any): Stability configuration object.
         boundary_kernel_size (int): Boundary-target morphology kernel size.
@@ -431,12 +435,14 @@ def run_train_epoch_batches(
             stage_name = "forward_loss"
             stage_started_at = time.time()
             with autocast:
-                logits, aux_logits, edge_logits, skeleton_logits, _ = (
+                logits, aux_logits, edge_logits, skeleton_logits, payload = (
                     forward_with_optional_extras(
                         model_call,
                         img,
                         feats,
                         require_aux_logits=require_aux_logits,
+                        labels=y if uses_native_loss else None,
+                        ignore_index=loss_fn.ignore_index,
                     )
                 )
                 logits = cast(torch.Tensor, align_logits_to_labels(logits, y))
@@ -444,39 +450,49 @@ def run_train_epoch_batches(
                 edge_logits = align_logits_to_labels(edge_logits, y)
                 skeleton_logits = align_logits_to_labels(skeleton_logits, y)
                 target_main = y if y.ndim == 3 else y.unsqueeze(0)
-                target_aux = target_main if aux_logits is not None else None
-                edge_targets, edge_mask = build_boundary_targets(
-                    labels=y,
-                    edge_logits=edge_logits,
-                    num_classes=loss_fn.num_classes,
-                    ignore_index=loss_fn.ignore_index,
-                    kernel_size=boundary_kernel_size,
-                )
-                logits_for_loss = logits.float() if stability.loss_fp32 else logits
-                aux_for_loss = (
-                    aux_logits.float()
-                    if aux_logits is not None and stability.loss_fp32
-                    else aux_logits
-                )
-                edge_for_loss = (
-                    edge_logits.float()
-                    if edge_logits is not None and stability.loss_fp32
-                    else edge_logits
-                )
-                loss_components = loss_fn.compute_components(
-                    logits_for_loss,
-                    target_main,
-                    aux_logits=aux_for_loss,
-                    aux_targets=target_aux,
-                    edge_logits=edge_for_loss,
-                    edge_targets=edge_targets,
-                    edge_mask=edge_mask,
-                    skeleton_logits=(
-                        skeleton_logits.float()
-                        if skeleton_logits is not None and stability.loss_fp32
-                        else skeleton_logits
-                    ),
-                )
+                native_loss = payload.get("native_loss")
+                if uses_native_loss:
+                    if native_loss is None:
+                        raise RuntimeError(
+                            "Native-loss head did not return payload['native_loss']."
+                        )
+                    loss_components = build_native_loss_components(
+                        torch.as_tensor(native_loss)
+                    )
+                else:
+                    target_aux = target_main if aux_logits is not None else None
+                    edge_targets, edge_mask = build_boundary_targets(
+                        labels=y,
+                        edge_logits=edge_logits,
+                        num_classes=loss_fn.num_classes,
+                        ignore_index=loss_fn.ignore_index,
+                        kernel_size=boundary_kernel_size,
+                    )
+                    logits_for_loss = logits.float() if stability.loss_fp32 else logits
+                    aux_for_loss = (
+                        aux_logits.float()
+                        if aux_logits is not None and stability.loss_fp32
+                        else aux_logits
+                    )
+                    edge_for_loss = (
+                        edge_logits.float()
+                        if edge_logits is not None and stability.loss_fp32
+                        else edge_logits
+                    )
+                    loss_components = loss_fn.compute_components(
+                        logits_for_loss,
+                        target_main,
+                        aux_logits=aux_for_loss,
+                        aux_targets=target_aux,
+                        edge_logits=edge_for_loss,
+                        edge_targets=edge_targets,
+                        edge_mask=edge_mask,
+                        skeleton_logits=(
+                            skeleton_logits.float()
+                            if skeleton_logits is not None and stability.loss_fp32
+                            else skeleton_logits
+                        ),
+                    )
                 loss = loss_components["loss_total"] / grad_accum
             forward_duration = time.time() - stage_started_at
             _log_distributed_batch_stage(

@@ -26,6 +26,7 @@ from pipeline.train_utils import (  # noqa: E402
     forward_with_optional_extras,
     head_supports_aux_logits,
     head_uses_backbone_features,
+    head_uses_native_loss,
     require_patch_grid_compatible,
     resolve_lr_metrics,
     resolve_model_patch_size,
@@ -49,6 +50,7 @@ def test_use_adamw_only_for_baseline_heads() -> None:
     assert use_adamw_only_for_head("deeplabv3")
     assert use_adamw_only_for_head("dino_dense_probe")
     assert use_adamw_only_for_head("dino_segdino_light")
+    assert use_adamw_only_for_head("mask2former_semantic")
     assert use_adamw_only_for_head("unet")
     assert not use_adamw_only_for_head("unet_lite")
 
@@ -82,6 +84,26 @@ def test_deeplabv3_is_image_only_and_exposes_aux_logits() -> None:
         resolve_model_patch_size(
             "facebook/dinov3-vitl16-pretrain-sat493m",
             "deeplabv3",
+        )
+        == 1
+    )
+
+
+def test_mask2former_semantic_is_image_only_and_uses_native_loss() -> None:
+    """Mask2Former semantic should bypass DINO and shared aux supervision.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    assert not head_uses_backbone_features("mask2former_semantic")
+    assert not head_supports_aux_logits("mask2former_semantic")
+    assert head_uses_native_loss("mask2former_semantic")
+    assert (
+        resolve_model_patch_size(
+            "facebook/dinov3-vitl16-pretrain-sat493m",
+            "mask2former_semantic",
         )
         == 1
     )
@@ -151,6 +173,96 @@ def test_evaluate_supports_image_only_unet_without_backbone() -> None:
     )
 
     assert isinstance(loss, float)
+    assert "miou" in metrics
+
+
+def test_evaluate_supports_native_loss_heads_without_backbone() -> None:
+    """Validation should support native-loss RGB heads without DINO features.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    class DummyNativeLossHead(torch.nn.Module):
+        def forward(
+            self,
+            image: torch.Tensor,
+            features: list[torch.Tensor],
+        ) -> dict[str, torch.Tensor]:
+            """Return a simple semantic-logit payload for validation.
+
+            Args:
+                image (torch.Tensor): Input image batch.
+                features (list[torch.Tensor]): Ignored feature list.
+
+            Returns:
+                dict[str, torch.Tensor]: Logit payload on the image grid.
+            """
+
+            _ = features
+            logits = image.new_zeros((image.shape[0], 2, *image.shape[-2:]))
+            logits[:, 0] = 1.0
+            return {"logits": logits}
+
+        def forward_with_native_loss(
+            self,
+            image: torch.Tensor,
+            features: list[torch.Tensor],
+            labels: torch.Tensor,
+            *,
+            ignore_index: int | None = None,
+        ) -> dict[str, torch.Tensor]:
+            """Return semantic logits plus one fake native loss.
+
+            Args:
+                image (torch.Tensor): Input image batch.
+                features (list[torch.Tensor]): Ignored feature list.
+                labels (torch.Tensor): Semantic labels on the label grid.
+                ignore_index (int | None): Optional ignored label id.
+
+            Returns:
+                dict[str, torch.Tensor]: Semantic logits and native loss.
+            """
+
+            _ = features
+            _ = ignore_index
+            logits = image.new_zeros((image.shape[0], 2, *image.shape[-2:]))
+            logits[:, 1] = 0.5
+            upsampled = torch.nn.functional.interpolate(
+                labels.unsqueeze(1).float(),
+                size=image.shape[-2:],
+                mode="nearest",
+            ).squeeze(1)
+            logits[:, 0] += (upsampled == 0).float()
+            logits[:, 1] += (upsampled == 1).float()
+            return {"logits": logits, "native_loss": image.mean().abs() + 1.0}
+
+    loader = [
+        (
+            torch.randn(1, 3, 32, 32),
+            [],
+            torch.tensor([[[0, 1], [1, 0]]], dtype=torch.long),
+        )
+    ]
+    loss_fn = SegmentationLoss(num_classes=2, aux_weight=0.4)
+
+    loss, metrics = evaluate(
+        DummyNativeLossHead(),
+        loader,
+        loss_fn,
+        torch.device("cpu"),
+        use_amp=False,
+        num_classes=2,
+        cache_features=False,
+        requires_backbone_features=False,
+        require_aux_logits=False,
+        uses_native_loss=True,
+        ps=1,
+    )
+
+    assert loss >= 1.0
+    assert metrics["loss_total"] >= 1.0
     assert "miou" in metrics
 
 

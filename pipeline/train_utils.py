@@ -20,9 +20,17 @@ from .context import StabilityConfig
 
 _PATCH_CROP_WARNED: set[tuple[int, int, int]] = set()
 _ADAMW_ONLY_HEADS: frozenset[str] = frozenset(
-    {"deeplabv3", "dino_dense_probe", "dino_segdino_light", "unet"}
+    {
+        "deeplabv3",
+        "dino_dense_probe",
+        "dino_segdino_light",
+        "mask2former_semantic",
+        "unet",
+    }
 )
-_IMAGE_ONLY_HEADS: frozenset[str] = frozenset({"deeplabv3", "unet"})
+_IMAGE_ONLY_HEADS: frozenset[str] = frozenset(
+    {"deeplabv3", "mask2former_semantic", "unet"}
+)
 _AUX_LOGIT_HEADS: frozenset[str] = frozenset(
     {
         "deeplabv3",
@@ -34,6 +42,7 @@ _AUX_LOGIT_HEADS: frozenset[str] = frozenset(
         "unet_topo_fusion",
     }
 )
+_NATIVE_LOSS_HEADS: frozenset[str] = frozenset({"mask2former_semantic"})
 
 
 class ModelEMA:
@@ -122,12 +131,19 @@ class NormalizedForwardAdapter(nn.Module):
         self,
         image: torch.Tensor,
         features: list[torch.Tensor],
+        *,
+        labels: torch.Tensor | None = None,
+        ignore_index: int | None = None,
     ) -> dict[str, Any]:
         """Run the wrapped head and normalize outputs into one payload.
 
         Args:
             image (torch.Tensor): Input image tensor.
             features (list[torch.Tensor]): Multiscale feature tensors.
+            labels (torch.Tensor | None): Optional semantic labels used only by
+                native-loss heads.
+            ignore_index (int | None): Optional ignore label passed through to
+                native-loss heads.
 
         Returns:
             dict[str, Any]: Normalized payload containing logits and optional
@@ -144,7 +160,14 @@ class NormalizedForwardAdapter(nn.Module):
             True
         """
 
-        if hasattr(self.head, "forward_with_extras"):
+        if labels is not None and hasattr(self.head, "forward_with_native_loss"):
+            raw_output = cast(Any, self.head).forward_with_native_loss(
+                image,
+                features,
+                labels,
+                ignore_index=ignore_index,
+            )
+        elif hasattr(self.head, "forward_with_extras"):
             raw_output = cast(Any, self.head).forward_with_extras(image, features)
         elif hasattr(self.head, "forward_with_aux"):
             logits, aux_logits = cast(Any, self.head).forward_with_aux(image, features)
@@ -427,6 +450,8 @@ def forward_with_optional_extras(
     image: torch.Tensor,
     features: list[torch.Tensor],
     require_aux_logits: bool = False,
+    labels: torch.Tensor | None = None,
+    ignore_index: int | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor | None,
@@ -441,6 +466,9 @@ def forward_with_optional_extras(
         image (torch.Tensor): Input image tensor.
         features (list[torch.Tensor]): Multiscale feature tensors.
         require_aux_logits (bool): Whether aux logits must be present.
+        labels (torch.Tensor | None): Optional semantic labels for native-loss
+            heads.
+        ignore_index (int | None): Optional ignore label for native-loss heads.
 
     Returns:
         tuple[
@@ -468,12 +496,27 @@ def forward_with_optional_extras(
         True
     """
 
-    if hasattr(model_call, "forward_with_extras"):
+    if labels is not None and hasattr(model_call, "forward_with_native_loss"):
+        raw_output = cast(Any, model_call).forward_with_native_loss(
+            image,
+            features,
+            labels,
+            ignore_index=ignore_index,
+        )
+    elif hasattr(model_call, "forward_with_extras"):
         raw_output = cast(Any, model_call).forward_with_extras(image, features)
     elif hasattr(model_call, "forward_with_aux"):
         raw_output = cast(Any, model_call).forward_with_aux(image, features)
     else:
-        raw_output = cast(Any, model_call)(image, features)
+        if labels is None and ignore_index is None:
+            raw_output = cast(Any, model_call)(image, features)
+        else:
+            raw_output = cast(Any, model_call)(
+                image,
+                features,
+                labels=labels,
+                ignore_index=ignore_index,
+            )
     payload = normalize_forward_output(raw_output)
     logits = cast(torch.Tensor, payload["logits"])
     aux_logits = cast(torch.Tensor | None, payload.get("aux_logits"))
@@ -621,6 +664,25 @@ def head_supports_aux_logits(head_name: str) -> bool:
     return str(head_name).strip().lower() in _AUX_LOGIT_HEADS
 
 
+def head_uses_native_loss(head_name: str) -> bool:
+    """Return whether a head optimizes through its own native objective.
+
+    Args:
+        head_name (str): Model head registry key.
+
+    Returns:
+        bool: ``True`` when the shared CE/Dice loss should be bypassed.
+
+    Examples:
+        >>> head_uses_native_loss("mask2former_semantic")
+        True
+        >>> head_uses_native_loss("deeplabv3")
+        False
+    """
+
+    return str(head_name).strip().lower() in _NATIVE_LOSS_HEADS
+
+
 def resolve_model_patch_size(backbone_name: str, head_name: str) -> int:
     """Return the spatial compatibility multiple required by the active head.
 
@@ -665,6 +727,29 @@ def should_warn_high_logit(batch_max_abs_logit: float, threshold: float) -> bool
     return math.isfinite(batch_max_abs_logit) and (
         batch_max_abs_logit > float(threshold)
     )
+
+
+def build_native_loss_components(loss: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Wrap one native head loss into the shared component dictionary.
+
+    Args:
+        loss (torch.Tensor): Scalar native-loss tensor.
+
+    Returns:
+        dict[str, torch.Tensor]: Component mapping compatible with the rest of
+        the training/validation logging code.
+
+    Examples:
+        >>> comps = build_native_loss_components(torch.tensor(2.5))
+        >>> float(comps["loss_total"]), float(comps["loss_weighted_main"])
+        (2.5, 2.5)
+    """
+
+    zero = torch.zeros_like(loss)
+    components = {key: zero.clone() for key in LOSS_COMPONENT_KEYS}
+    components["loss_total"] = loss
+    components["loss_weighted_main"] = loss
+    return components
 
 
 def resolve_lr_metrics(
@@ -763,6 +848,7 @@ def evaluate(
     boundary_kernel_size: int = 3,
     requires_backbone_features: bool = True,
     require_aux_logits: bool = False,
+    uses_native_loss: bool = False,
 ) -> tuple[float, dict[str, Any]]:
     """Evaluate the model on the validation set.
 
@@ -783,6 +869,8 @@ def evaluate(
         boundary_kernel_size (int): Kernel size for boundary target extraction.
         requires_backbone_features (bool): Whether the head needs DINO features.
         require_aux_logits (bool): Whether aux logits must be present.
+        uses_native_loss (bool): Whether to optimize through a head-provided
+            native objective instead of the shared CE/Dice loss.
 
     Returns:
         tuple[float, dict[str, Any]]: Average loss and metrics summary.
@@ -853,6 +941,8 @@ def evaluate(
                         img,
                         feats,
                         require_aux_logits=require_aux_logits,
+                        labels=y if uses_native_loss else None,
+                        ignore_index=loss_fn.ignore_index,
                     )
                 )
                 logits = cast(torch.Tensor, align_logits_to_labels(logits, y))
@@ -860,41 +950,52 @@ def evaluate(
                 edge_logits = align_logits_to_labels(edge_logits, y)
                 skeleton_logits = align_logits_to_labels(skeleton_logits, y)
                 target_main = y if y.ndim == 3 else y.unsqueeze(0)
-                target_aux = target_main if aux_logits is not None else None
-                edge_targets, edge_mask = build_boundary_targets(
-                    labels=y,
-                    edge_logits=edge_logits,
-                    num_classes=loss_fn.num_classes,
-                    ignore_index=loss_fn.ignore_index,
-                    kernel_size=boundary_kernel_size,
-                )
-                logits_for_loss = logits.float() if stability_cfg.loss_fp32 else logits
-                aux_for_loss = (
-                    aux_logits.float()
-                    if aux_logits is not None and stability_cfg.loss_fp32
-                    else aux_logits
-                )
-                edge_for_loss = (
-                    edge_logits.float()
-                    if edge_logits is not None and stability_cfg.loss_fp32
-                    else edge_logits
-                )
-                skeleton_for_loss = (
-                    skeleton_logits.float()
-                    if skeleton_logits is not None and stability_cfg.loss_fp32
-                    else skeleton_logits
-                )
-                components = loss_fn.compute_components(
-                    logits_for_loss,
-                    target_main,
-                    aux_logits=aux_for_loss,
-                    aux_targets=target_aux,
-                    edge_logits=edge_for_loss,
-                    edge_targets=edge_targets,
-                    edge_mask=edge_mask,
-                    skeleton_logits=skeleton_for_loss,
-                )
-                loss = components["loss_total"]
+                native_loss = payload.get("native_loss")
+                if uses_native_loss:
+                    if native_loss is None:
+                        raise RuntimeError(
+                            "Native-loss head did not return payload['native_loss']."
+                        )
+                    loss = torch.as_tensor(native_loss)
+                    components = build_native_loss_components(loss)
+                else:
+                    target_aux = target_main if aux_logits is not None else None
+                    edge_targets, edge_mask = build_boundary_targets(
+                        labels=y,
+                        edge_logits=edge_logits,
+                        num_classes=loss_fn.num_classes,
+                        ignore_index=loss_fn.ignore_index,
+                        kernel_size=boundary_kernel_size,
+                    )
+                    logits_for_loss = (
+                        logits.float() if stability_cfg.loss_fp32 else logits
+                    )
+                    aux_for_loss = (
+                        aux_logits.float()
+                        if aux_logits is not None and stability_cfg.loss_fp32
+                        else aux_logits
+                    )
+                    edge_for_loss = (
+                        edge_logits.float()
+                        if edge_logits is not None and stability_cfg.loss_fp32
+                        else edge_logits
+                    )
+                    skeleton_for_loss = (
+                        skeleton_logits.float()
+                        if skeleton_logits is not None and stability_cfg.loss_fp32
+                        else skeleton_logits
+                    )
+                    components = loss_fn.compute_components(
+                        logits_for_loss,
+                        target_main,
+                        aux_logits=aux_for_loss,
+                        aux_targets=target_aux,
+                        edge_logits=edge_for_loss,
+                        edge_targets=edge_targets,
+                        edge_mask=edge_mask,
+                        skeleton_logits=skeleton_for_loss,
+                    )
+                    loss = components["loss_total"]
             gate_mean = payload.get("gate_mean")
             gate_std = payload.get("gate_std")
             if gate_mean is not None and gate_std is not None:

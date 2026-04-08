@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 ### Changed
+- Add a real Hugging Face `mask2former_semantic` RGB-only baseline around
+  local staged `Mask2FormerForUniversalSegmentation` checkpoints, including
+  native-loss training/evaluation support, semantic-logit projection on the
+  repo label grid, config/docs/test coverage, and a thesis rerun config
+  `R13_mask2former_semantic_split_s1337.yml` so the experiment pack can
+  compare the existing RGB baselines against a standard Mask2Former semantic
+  model without relying on internet access inside cluster jobs
+  (`models/mask2former_semantic.py`, `models/__init__.py`,
+  `pipeline/train_utils.py`, `pipeline/phases/train.py`,
+  `pipeline/phases/train_batches.py`, `test/test_dino_baselines.py`,
+  `test/test_train_utils_safety.py`, `configs/thesis_runs/R13_mask2former_semantic_split_s1337.yml`,
+  `configs/thesis_runs/README.md`, `README.md`, `docs/ARCHITECTURE.md`,
+  `configs/config*.yml`).
 - Add an official torchvision `deeplabv3` RGB-only baseline head around
   `deeplabv3_resnet50` with ImageNet-pretrained backbone weights, aux-logit
   support, AdamW-only optimizer routing, registry/test coverage, and a thesis

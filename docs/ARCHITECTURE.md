@@ -160,12 +160,15 @@ MLflow-compatible artifacts for research workflows.
   cache directories suffixed with `_labelgrid`, and cache metadata records the
   supervision-grid mode so older image-grid caches are rejected instead of
   being mixed into new runs.
-- **Image-only baseline policy:** `model.head: unet` and
-  `model.head: deeplabv3` are RGB-only baselines. They ignore `model.layers`,
-  bypass cached/on-the-fly DINO feature extraction, and train directly on
-  image/label tiles; `deeplabv3` still exposes auxiliary logits through the
-  shared normalized-forward payload so the standard aux-supervision path stays
-  available.
+- **Image-only baseline policy:** `model.head: unet`,
+  `model.head: deeplabv3`, and `model.head: mask2former_semantic` are RGB-only
+  baselines. They ignore `model.layers`, bypass cached/on-the-fly DINO feature
+  extraction, and train directly on image/label tiles. `deeplabv3` still
+  exposes auxiliary logits through the shared normalized-forward payload so the
+  standard aux-supervision path stays available, while
+  `mask2former_semantic` uses the staged local Hugging Face checkpoint and its
+  own native mask-classification loss while still reporting semantic mIoU/mDice
+  on the repo's native label grid.
 
 ## Tracking & Artifacts
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.
@@ -195,7 +198,8 @@ MLflow-compatible artifacts for research workflows.
 - When MLflow is active, plots are written directly into these run subfolders;
   local plot directories are used only as a fallback when MLflow logging is disabled.
 - Decoder family includes lightweight baselines and compact variants
-  (`deeplabv3`, `dino_dense_probe`, `dino_segdino_light`, `unet`,
+  (`deeplabv3`, `dino_dense_probe`, `dino_segdino_light`,
+  `mask2former_semantic`, `unet`,
   `unet_lite`, `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`,
   `unet_topo_fusion`) so users can trade compute for quality without changing
   pipeline wiring. `unet` is the standard image-only U-Net baseline with a
@@ -203,7 +207,11 @@ MLflow-compatible artifacts for research workflows.
   transpose-convolution decoder, while `deeplabv3` is the official
   torchvision DeepLabV3-ResNet50 baseline with ImageNet-pretrained backbone
   weights and an auxiliary classifier enabled for standard DeepLab-style
-  supervision.
+  supervision. `mask2former_semantic` is the real Hugging Face
+  Mask2Former-Swin-Base semantic baseline: it keeps the repo's RGB-only
+  contract, normalizes inputs with the staged local image processor, trains
+  with native query-mask loss, and projects query outputs back to semantic
+  logits for the standard metric path.
   `dino_dense_probe` is the minimal dense-probe head over last-layer DINO
   tokens, and `dino_segdino_light` is a fixed paper-like lightweight SegDINO
   decoder that reforms selected DINO layers, concatenates them on one token
@@ -228,8 +236,9 @@ MLflow-compatible artifacts for research workflows.
    configured target labels are cached. Under the default native label-grid
    policy, cached image tensors stay on the image grid while cached labels stay
    on the coarser native label raster grid for the same map footprint. For the
-   standard `unet` and `deeplabv3` baselines, this phase caches only
-   image/label pairs and skips DINO feature generation entirely.
+   standard `unet`, `deeplabv3`, and `mask2former_semantic` baselines, this
+   phase caches only image/label pairs and skips DINO feature generation
+   entirely.
 2. Verify cached tiles (readability + semantic checks) (optional)
 3. Train segmentation head with per-epoch validation visualization panels (optional),
    including optional XAI dashboards (DINO attention, Grad-CAM, PCA feature maps,

@@ -1,6 +1,6 @@
 # DINOv3Seg Experiments
 
-This repository provides a research-grade segmentation pipeline for segmentation experiments with both frozen-**DINOv3** decoder heads and RGB-only baselines including a standard U-Net and official torchvision DeepLabV3. The pipeline now runs entirely from a YAML configuration file, supports structured verbosity with timestamps, and records durations for every major phase.
+This repository provides a research-grade segmentation pipeline for segmentation experiments with both frozen-**DINOv3** decoder heads and RGB-only baselines including a standard U-Net, official torchvision DeepLabV3, and a real Hugging Face Mask2Former semantic head. The pipeline now runs entirely from a YAML configuration file, supports structured verbosity with timestamps, and records durations for every major phase.
 
 ## Quick Start
 
@@ -38,9 +38,9 @@ Important cache semantics:
 - `dataset.cache_features` and `prepare.cache_features` control whether cached
   `.pt` tiles include precomputed DINO features. They do not disable tile
   caching itself.
-- `head: unet` and `head: deeplabv3` are image-only: they ignore
-  `model.layers`, skip DINO feature caching/extraction, and train directly
-  from RGB tiles.
+- `head: unet`, `head: deeplabv3`, and `head: mask2former_semantic` are
+  image-only: they ignore `model.layers`, skip DINO feature caching/extraction,
+  and train directly from RGB tiles.
 - `paths.label_path` is read during `prepare` when tiles are built. Training
   usually reads cached `.pt` tiles from `processed_dir`, not the label TIFF
   directly.
@@ -126,13 +126,17 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_v2          # deeplabv3 | dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
-                         # `unet` and `deeplabv3` are image-only RGB baselines and ignore `model.layers`
+  head: unet_v2          # deeplabv3 | dino_dense_probe | dino_segdino_light | mask2former_semantic | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
+                         # `unet`, `deeplabv3`, and `mask2former_semantic` are image-only RGB baselines and ignore `model.layers`
   num_classes: 2
   dino_channels: 1024
   dense_probe:
     norm_type: batchnorm # batchnorm | syncbn | groupnorm | none
     groupnorm_groups: 32
+  mask2former:
+    model_name_or_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/hf/facebook/mask2former-swin-base-ade-semantic
+    preprocessor_name_or_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/hf/facebook/mask2former-swin-base-ade-semantic
+    use_pretrained: true
   fusion:
     enable: true
     hidden: 64
@@ -331,6 +335,7 @@ The `model.head` key selects one of the decoders registered under `models/`:
 | `deeplabv3` | `models/deeplabv3.py` | Official torchvision DeepLabV3-ResNet50 baseline with ImageNet-pretrained backbone weights and auxiliary logits enabled. |
 | `dino_dense_probe` | `models/dino_dense_probe.py` | Dense linear-probe baseline on last-layer DINO tokens (`norm -> 1x1 conv -> upsample`). |
 | `dino_segdino_light` | `models/dino_segdino_light.py` | Fixed paper-like lightweight SegDINO decoder (`reform -> align -> concat -> MLP`). |
+| `mask2former_semantic` | `models/mask2former_semantic.py` | Real Hugging Face Mask2Former semantic baseline (Swin-Base) with local staged weights, native mask-classification loss, and semantic-logit reporting on the repo label grid. |
 | `unet`      | `models/unet.py` | Standard image-only U-Net baseline (64/128/256/512 encoder, 1024 bottleneck, transpose-conv decoder); ignores `model.layers`. |
 | `unet_v2`   | `models/unet_v2.py` | Adds Spatial Prior Module + Fidelity-Aware projections + deep supervision. |
 | `unet_lite` | `models/UnetLite.py` | Lightweight DinoUNet variant with reduced channels for faster training/inference. |

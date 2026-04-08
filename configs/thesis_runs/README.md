@@ -20,6 +20,10 @@ Important runtime note:
 - `holdout.txt` is staged for a later geographic holdout. It is not on the
   critical path for the current thesis rerun pack because every `R1` to `R11`
   config keeps `inference.enable: false`.
+- `R13_mask2former_semantic_split_s1337.yml` expects one manually staged local
+  Hugging Face checkpoint under
+  `/user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/hf/facebook/mask2former-swin-base-ade-semantic`
+  containing `config.json`, `preprocessor_config.json`, and model weights.
 - The coarse-supervision baseline `C1_topo_coarse_split_s1337.yml` points
   `paths.label_path` at
   `/mnt/vast-standard/home/davide.mattioli/u20330/planet_labels_2022.tif`,
@@ -34,15 +38,16 @@ Recommended submission order:
 2. `R2_nanofapm_split_s1337.yml`
 3. `R3_unet_split_s1337.yml`
 4. `R12_deeplabv3_split_s1337.yml`
-5. `R4_maskformer_split_s1337.yml`
-6. `R6_topo_split_s2027.yml`
-7. `R7_topo_split_s3407.yml`
-8. `R8_nanofapm_split_s2027.yml`
-9. `R9_nanofapm_split_s3407.yml`
-10. `R5_denseprobe_split_s1337.yml`
-11. `R10_topo_no_boundary_s1337.yml`
-12. `R11_topo_no_topology_s1337.yml`
-13. `C1_topo_coarse_split_s1337.yml` (coarse-label supervision baseline)
+5. `R13_mask2former_semantic_split_s1337.yml`
+6. `R4_maskformer_split_s1337.yml`
+7. `R6_topo_split_s2027.yml`
+8. `R7_topo_split_s3407.yml`
+9. `R8_nanofapm_split_s2027.yml`
+10. `R9_nanofapm_split_s3407.yml`
+11. `R5_denseprobe_split_s1337.yml`
+12. `R10_topo_no_boundary_s1337.yml`
+13. `R11_topo_no_topology_s1337.yml`
+14. `C1_topo_coarse_split_s1337.yml` (coarse-label supervision baseline)
 
 Submission commands:
 
@@ -51,6 +56,7 @@ sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R1_topo_split_s1337.yml segm
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R2_nanofapm_split_s1337.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R3_unet_split_s1337.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R12_deeplabv3_split_s1337.yml segmentation.sh
+sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R13_mask2former_semantic_split_s1337.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R4_maskformer_split_s1337.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R6_topo_split_s2027.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R7_topo_split_s3407.yml segmentation.sh

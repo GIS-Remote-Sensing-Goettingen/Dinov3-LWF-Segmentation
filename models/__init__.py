@@ -13,6 +13,7 @@ from .base import SegmentationHead
 from .deeplabv3 import DeepLabV3Head
 from .dino_dense_probe import DinoDenseProbeHead
 from .dino_segdino_light import DinoSegDinoLightHead
+from .mask2former_semantic import Mask2FormerSemanticHead
 from .maskformer import DinoMaskFormerHead
 from .unet import DinoUNetHead
 from .unet_lite_plus import DinoUNetLitePlusHead
@@ -51,6 +52,7 @@ def available_heads() -> Dict[str, HeadBuilder]:
     ...     "deeplabv3",
     ...     "dino_dense_probe",
     ...     "dino_segdino_light",
+    ...     "mask2former_semantic",
     ...     "maskformer",
     ...     "unet",
     ...     "unet_lite",
@@ -67,6 +69,7 @@ def available_heads() -> Dict[str, HeadBuilder]:
         "deeplabv3": DeepLabV3Head,
         "dino_dense_probe": DinoDenseProbeHead,
         "dino_segdino_light": DinoSegDinoLightHead,
+        "mask2former_semantic": Mask2FormerSemanticHead,
         "unet": DinoUNetHead,
         "unet_v2": DinoUNetV2Head,
         "maskformer": DinoMaskFormerHead,
@@ -129,6 +132,35 @@ def build_head(
             num_classes=num_classes,
             dino_channels=dino_channels,
             num_layers=int(len(layers)),
+        )
+    if name == "mask2former_semantic":
+        mask2former_cfg = _subcfg(cfg, "mask2former")
+        return Mask2FormerSemanticHead(
+            num_classes=num_classes,
+            dino_channels=dino_channels,
+            model_name_or_path=str(
+                mask2former_cfg.get(
+                    "model_name_or_path",
+                    (
+                        "/user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/"
+                        "weights/hf/facebook/mask2former-swin-base-ade-semantic"
+                    ),
+                )
+            ),
+            preprocessor_name_or_path=str(
+                mask2former_cfg.get(
+                    "preprocessor_name_or_path",
+                    mask2former_cfg.get(
+                        "model_name_or_path",
+                        (
+                            "/user/davide.mattioli/u20330/"
+                            "Dinov3-LWF-Segmentation/weights/hf/facebook/"
+                            "mask2former-swin-base-ade-semantic"
+                        ),
+                    ),
+                )
+            ),
+            use_pretrained=bool(mask2former_cfg.get("use_pretrained", True)),
         )
     if name == "unet_topo_fusion":
         fusion_cfg = _subcfg(cfg, "fusion")
