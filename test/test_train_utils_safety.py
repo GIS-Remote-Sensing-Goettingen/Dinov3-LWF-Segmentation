@@ -540,6 +540,59 @@ def test_forward_with_optional_extras_requires_aux_when_configured() -> None:
         )
 
 
+def test_forward_with_optional_extras_does_not_pass_label_kwargs_to_plain_heads() -> (
+    None
+):
+    """Plain heads should still run when labels are present for the batch.
+
+    This guards the DeepLab-style path where the training batch includes labels
+    but the head itself does not implement any native-loss signature.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    class ForwardOnly(torch.nn.Module):
+        """Minimal forward-only module that rejects extra kwargs implicitly.
+
+        The regression target is the plain `forward(image, features)` contract
+        used by non-native-loss image-only heads such as DeepLabV3.
+        """
+
+        def forward(
+            self,
+            image: torch.Tensor,
+            features: list[torch.Tensor],
+        ) -> torch.Tensor:
+            """Return one deterministic main-logit tensor.
+
+            Args:
+                image (torch.Tensor): Input image tensor.
+                features (list[torch.Tensor]): Feature tensors.
+
+            Returns:
+                torch.Tensor: Main logits for one two-class prediction head.
+            """
+
+            _ = image
+            return features[0]
+
+    labels = torch.zeros(1, 4, 4, dtype=torch.long)
+    logits, aux_logits, edge_logits, skeleton_logits, _ = forward_with_optional_extras(
+        ForwardOnly(),
+        torch.randn(1, 3, 4, 4),
+        [torch.randn(1, 2, 4, 4)],
+        labels=labels,
+        ignore_index=255,
+    )
+
+    assert tuple(logits.shape) == (1, 2, 4, 4)
+    assert aux_logits is None
+    assert edge_logits is None
+    assert skeleton_logits is None
+
+
 def test_forward_adapter_restores_ds_head_gradients() -> None:
     """Ensure aux-head parameters receive gradients through the adapter path.
 

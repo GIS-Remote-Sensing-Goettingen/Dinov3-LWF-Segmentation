@@ -508,15 +508,7 @@ def forward_with_optional_extras(
     elif hasattr(model_call, "forward_with_aux"):
         raw_output = cast(Any, model_call).forward_with_aux(image, features)
     else:
-        if labels is None and ignore_index is None:
-            raw_output = cast(Any, model_call)(image, features)
-        else:
-            raw_output = cast(Any, model_call)(
-                image,
-                features,
-                labels=labels,
-                ignore_index=ignore_index,
-            )
+        raw_output = cast(Any, model_call)(image, features)
     payload = normalize_forward_output(raw_output)
     logits = cast(torch.Tensor, payload["logits"])
     aux_logits = cast(torch.Tensor | None, payload.get("aux_logits"))
