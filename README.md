@@ -284,7 +284,11 @@ Model options for topology-fusion heads are grouped under `model.fusion`, `model
 
 Inference input selection:
 - Set exactly one source: `inference.input_tif` or `inference.input_dir`.
-- `inference.input_paths_file` is an optional newline-delimited manifest for directory mode; when it is set, inference processes exactly those files in listed order instead of scanning `input_dir`.
+- `inference.input_paths_file` is an optional manifest for directory mode; it
+  may be a newline-delimited file list or a YAML/JSON scene-stem manifest such
+  as `splits/thesis_geo_v1/val.yml`. When scene stems are used, inference
+  resolves them against `input_dir` and processes exactly those files in
+  manifest order instead of scanning the whole directory.
 - `input_dir` now runs each file through the same sliding-window tiled inference + merge path used by `input_tif`, but updates one cumulative GeoTIFF at `inference.output_tif` (or `artifacts/rasters/inference/predictions.tif` when `output_tif` is blank).
 - Directory inference requires `label_path`, but only as a grid template for CRS, pixel size, and alignment.
 - The shared directory-mode output extent is built from the union of the input image footprints, snapped to the `label_path` grid, so scenes outside the label raster extent still write correctly.

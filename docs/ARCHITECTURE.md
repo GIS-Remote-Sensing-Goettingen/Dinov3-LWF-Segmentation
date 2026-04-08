@@ -259,7 +259,13 @@ MLflow-compatible artifacts for research workflows.
    written on the label-grid resolution rather than the finer source-image
    grid. Directory inference can also consume an explicit
    `inference.input_paths_file` manifest so batch orchestrators can hand one
-   fixed file list to each worker instead of rescanning the full folder.
+   fixed file list to each worker instead of rescanning the full folder. That
+   manifest may be either a literal newline-delimited file list or a YAML/JSON
+   scene-stem manifest such as `splits/thesis_geo_v1/val.yml`, in which case
+   the listed stems are resolved back to raw GeoTIFFs via `inference.input_dir`.
+   Likewise, when `prepare.enable: true` and explicit split manifests are
+   configured, prepare restricts new cache creation to the union of those
+   split-listed source scenes instead of tiling unrelated raw images.
 5. Launch batched folder inference on Slurm (optional)
    `scripts/launch_batched_inference.py` treats `configs/config_hpc.yml` as a
    read-only template, scans `inference.input_dir`, splits the discovered files

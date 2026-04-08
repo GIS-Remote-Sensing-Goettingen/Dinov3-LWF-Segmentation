@@ -27,6 +27,7 @@ from utils.data.core import (
 
 from ..constants import DEFAULT_DEVICE
 from ..context import InferenceError, PhaseOutcome, RunContext
+from ..data_splits import _read_name_list
 from ..inference_checkpoint import (
     extract_checkpoint_state_dict,
     resolve_inference_checkpoint,
@@ -58,6 +59,119 @@ from ..train_utils import (
     resolve_model_patch_size,
 )
 from ..utils import get_model_config, resolve_path
+
+
+def _read_input_manifest_entries(path: Path) -> list[str]:
+    """Read one directory-inference manifest into ordered non-comment entries.
+
+    Text manifests keep their historical behavior of ignoring blank/comment
+    lines, while YAML/JSON manifests reuse the nested list flattening from the
+    split-loader helper.
+
+    Args:
+        path (Path): Manifest path.
+
+    Returns:
+        list[str]: Ordered manifest entries.
+    """
+
+    if path.suffix.lower() in {".yml", ".yaml", ".json"}:
+        return [entry for entry in _read_name_list(str(path)) if str(entry).strip()]
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def _resolve_directory_input_paths(
+    *,
+    manifest_path: Path,
+    input_dir: str | None,
+    glob_pattern: str,
+) -> list[str]:
+    """Resolve one directory-mode manifest into concrete GeoTIFF paths.
+
+    Entries may be literal absolute/relative file paths or source-scene stems
+    such as ``dop20_592000_5982000_1km_20cm`` that should be matched against
+    files inside ``input_dir``.
+
+    Args:
+        manifest_path (Path): Manifest path on disk.
+        input_dir (str | None): Optional source-image directory.
+        glob_pattern (str): File-discovery glob used when matching scene stems.
+
+    Returns:
+        list[str]: Ordered, deduplicated input raster paths.
+
+    Raises:
+        InferenceError: If one or more manifest entries cannot be resolved.
+    """
+
+    entries = _read_input_manifest_entries(manifest_path)
+    if not entries:
+        return []
+
+    input_root = Path(input_dir).expanduser() if input_dir else None
+    available_by_stem: dict[str, list[str]] = {}
+    available_by_name: dict[str, list[str]] = {}
+    if input_root is not None:
+        for candidate in sorted(glob.glob(str(input_root / glob_pattern))):
+            resolved = str(Path(candidate).resolve())
+            available_by_stem.setdefault(Path(candidate).stem, []).append(resolved)
+            available_by_name.setdefault(Path(candidate).name, []).append(resolved)
+
+    resolved_paths: list[str] = []
+    seen: set[str] = set()
+    unresolved: list[str] = []
+    ambiguous: list[str] = []
+    for entry in entries:
+        raw_entry = str(entry).strip()
+        if not raw_entry:
+            continue
+        direct_candidate = Path(raw_entry).expanduser()
+        manifest_relative = (manifest_path.parent / raw_entry).resolve()
+        input_relative = (
+            (input_root / raw_entry).resolve() if input_root is not None else None
+        )
+        matches: list[str] = []
+        if direct_candidate.is_absolute():
+            if direct_candidate.exists():
+                matches = [str(direct_candidate.resolve())]
+        elif manifest_relative.exists():
+            matches = [str(manifest_relative)]
+        elif input_relative is not None and input_relative.exists():
+            matches = [str(input_relative)]
+        else:
+            entry_name = Path(raw_entry).name
+            entry_stem = Path(raw_entry).stem if Path(raw_entry).suffix else entry_name
+            matches = list(available_by_name.get(entry_name, []))
+            if not matches:
+                matches = list(available_by_stem.get(entry_stem, []))
+        if len(matches) > 1:
+            ambiguous.append(raw_entry)
+            continue
+        if not matches:
+            unresolved.append(raw_entry)
+            continue
+        resolved = matches[0]
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        resolved_paths.append(resolved)
+    if ambiguous or unresolved:
+        problems: list[str] = []
+        if unresolved:
+            sample = ", ".join(unresolved[:3])
+            problems.append(f"unresolved entries: {sample}")
+        if ambiguous:
+            sample = ", ".join(ambiguous[:3])
+            problems.append(f"ambiguous entries: {sample}")
+        raise InferenceError(
+            "Failed to resolve inference.input_paths_file %s (%s)."
+            % (manifest_path, "; ".join(problems))
+        )
+    return resolved_paths
 
 
 class InferencePhase(Phase):
@@ -871,17 +985,11 @@ class InferencePhase(Phase):
                     raise InferenceError(
                         f"inference.input_paths_file not found: {manifest_path}"
                     )
-                tile_files = [
-                    str(
-                        (
-                            manifest_path.parent / line
-                            if not Path(line).expanduser().is_absolute()
-                            else Path(line).expanduser()
-                        ).resolve()
-                    )
-                    for line in manifest_path.read_text(encoding="utf-8").splitlines()
-                    if line.strip() and not line.lstrip().startswith("#")
-                ]
+                tile_files = _resolve_directory_input_paths(
+                    manifest_path=manifest_path,
+                    input_dir=input_dir,
+                    glob_pattern=glob_pattern,
+                )
             else:
                 tile_files = sorted(glob.glob(os.path.join(input_dir, glob_pattern)))
             if not tile_files:

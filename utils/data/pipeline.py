@@ -224,6 +224,7 @@ def prepare_data_tiles(
     patch_size: int | None = None,
     workers: int | None = None,
     max_tiles: int | None = None,
+    image_name_entries: Sequence[str] | None = None,
     logger: Optional["VerbosityLogger"] = None,
 ) -> None:
     """
@@ -243,6 +244,8 @@ def prepare_data_tiles(
             label-grid tiling. When unset, it is derived from the backbone.
         workers (int | None): Number of worker processes for tiling.
         max_tiles (int | None): Optional tile limit for preparation.
+        image_name_entries (Sequence[str] | None): Optional explicit source-image
+            names or paths used to restrict preparation to matching scenes.
         logger (Optional["VerbosityLogger"]): Logger instance.
 
     >>> # Light-touch doctest ensures function signature works by calling with
@@ -332,6 +335,25 @@ def prepare_data_tiles(
         processor = AutoImageProcessor.from_pretrained(model_name)
         model = AutoModel.from_pretrained(model_name).eval().to(device)
     image_paths = glob.glob(os.path.join(img_dir, "*.tif"))
+    if image_name_entries:
+        allowed_stems = {
+            os.path.splitext(os.path.basename(str(entry).strip()))[0]
+            for entry in image_name_entries
+            if str(entry).strip()
+        }
+        image_paths = [
+            path
+            for path in image_paths
+            if os.path.splitext(os.path.basename(path))[0] in allowed_stems
+        ]
+        _log_info(
+            "Restricting prepare to %s manifest-listed source images."
+            % len(image_paths)
+        )
+        if not image_paths:
+            raise ValueError(
+                "No input GeoTIFFs matched the explicit prepare scene list."
+            )
     if max_tiles is not None:
         random.shuffle(image_paths)
     ps = (

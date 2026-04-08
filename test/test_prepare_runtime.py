@@ -274,6 +274,58 @@ def test_prepare_phase_propagates_rank_zero_failure(
         phase.execute(ctx)
 
 
+def test_prepare_phase_passes_explicit_split_scene_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prepare should restrict new caches to the explicit split scene manifests.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Monkeypatch fixture.
+    """
+
+    phase = PreparePhase()
+    ctx = _prepare_context(
+        tmp_path, DistContext(enabled=False, rank=0, world_size=1, local_rank=0)
+    )
+    train_list = tmp_path / "train.yml"
+    val_list = tmp_path / "val.yml"
+    train_list.write_text("scenes:\n  - [scene_a, scene_b]\n", encoding="utf-8")
+    val_list.write_text("scenes:\n  - [scene_c]\n", encoding="utf-8")
+    ctx.config["dataset"]["splits"] = {
+        "train_list": str(train_list),
+        "val_list": str(val_list),
+    }
+    captured: dict[str, object] = {}
+
+    def fake_prepare_data_tiles(**kwargs: object) -> None:
+        """Capture one prepare invocation and create one stub tile.
+
+        Args:
+            **kwargs (object): Prepare call arguments passed by the phase.
+        """
+
+        captured.update(kwargs)
+        output_dir = Path(str(kwargs["output_dir"]))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        torch.save({"image": torch.zeros(1)}, output_dir / "tile.pt")
+
+    monkeypatch.setattr(prepare_module, "prepare_data_tiles", fake_prepare_data_tiles)
+    monkeypatch.setattr(
+        prepare_module,
+        "resolve_cache_dir_for_prepare",
+        lambda output_dir, *args, **kwargs: output_dir,
+    )
+    monkeypatch.setattr(
+        prepare_module, "broadcast_main_object", lambda dist_ctx, payload: payload
+    )
+
+    phase.execute(ctx)
+
+    assert captured["image_name_entries"] == ["scene_a", "scene_b", "scene_c"]
+
+
 def test_prepare_data_tiles_skips_when_no_feature_cache_satisfies_max_tiles(
     tmp_path: Path,
 ) -> None:
@@ -365,6 +417,51 @@ def test_prepare_data_tiles_counts_existing_no_feature_tiles_toward_top_up_limit
 
     assert len(list(output_dir.glob("*.pt"))) == 3
     assert any("Reached max tiles. Stopping tiling." in m for m in logger.info_messages)
+
+
+def test_prepare_data_tiles_filters_to_manifest_listed_source_images(
+    tmp_path: Path,
+) -> None:
+    """Prepare should tile only the source images listed by explicit scene names.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    logger = _RecordingLogger()
+    output_dir = tmp_path / "cache"
+    img_dir = tmp_path / "images"
+    img_dir.mkdir()
+    label_path = tmp_path / "labels.tif"
+    transform = from_origin(0.0, 64.0, 1.0, 1.0)
+    rgb_a = np.full((64, 64, 3), 255, dtype=np.uint8)
+    rgb_b = np.full((64, 64, 3), 200, dtype=np.uint8)
+    labels = np.ones((64, 64), dtype=np.uint8)
+    _write_test_geotiff(img_dir / "scene_a.tif", rgb_a, transform=transform)
+    _write_test_geotiff(img_dir / "scene_b.tif", rgb_b, transform=transform)
+    _write_test_geotiff(label_path, labels, transform=transform)
+
+    prepare_data_tiles(
+        img_dir=str(img_dir),
+        label_path=str(label_path),
+        output_dir=str(output_dir),
+        model_name="demo-backbone",
+        layers=[5],
+        device=torch.device("cpu"),
+        tile_size=32,
+        cache_features=False,
+        workers=1,
+        image_name_entries=["scene_b"],
+        logger=logger,
+    )
+
+    written = sorted(path.name for path in output_dir.glob("*.pt"))
+    assert written
+    assert all(name.startswith("scene_b_") for name in written)
+    assert any(
+        "Restricting prepare to 1 manifest-listed source images." in message
+        for message in logger.info_messages
+    )
 
 
 def test_prepare_phase_reports_zero_tiles_added_when_cache_already_satisfies_limit(

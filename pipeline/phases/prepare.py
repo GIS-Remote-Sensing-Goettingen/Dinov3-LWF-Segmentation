@@ -16,6 +16,7 @@ from ..constants import (
     DEFAULT_RAW_IMAGES_DIR,
 )
 from ..context import PhaseOutcome, RunContext
+from ..data_splits import _read_name_list
 from ..phase_runner import Phase
 from ..train_utils import head_uses_backbone_features, resolve_model_patch_size
 from ..utils import broadcast_main_object, get_model_config, resolve_path
@@ -82,6 +83,24 @@ class PreparePhase(Phase):
         )
         before_count = len(glob.glob(os.path.join(output_dir, "*.pt")))
         max_tiles = dataset_cfg.get("max_tiles")
+        split_cfg = dataset_cfg.get("splits", {})
+        image_name_entries: list[str] = []
+        for key in ("train_list", "val_list"):
+            split_path = str(split_cfg.get(key, "") or "").strip()
+            if not split_path:
+                continue
+            image_name_entries.extend(_read_name_list(split_path))
+        if image_name_entries:
+            context.logger.info(
+                "Prepare restricted to %s explicit split-listed source scenes."
+                % len(
+                    {
+                        str(name).strip()
+                        for name in image_name_entries
+                        if str(name).strip()
+                    }
+                )
+            )
         prepare_data_tiles(
             img_dir=img_dir,
             label_path=label_path,
@@ -95,6 +114,7 @@ class PreparePhase(Phase):
             patch_size=patch_size,
             workers=section.get("workers"),
             max_tiles=max_tiles,
+            image_name_entries=image_name_entries or None,
             logger=context.logger,
         )
         after_count = len(glob.glob(os.path.join(output_dir, "*.pt")))

@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Add one thesis-oriented coarse-vs-refined supervision baseline around the
+  existing topology-fusion head: directory inference manifests now accept the
+  same scene-stem YAML/JSON files used by split resolution, prepare can
+  restrict new cache creation to the union of explicit split-listed source
+  scenes, and `configs/thesis_runs/` now includes one coarse-label training
+  config plus refined/coarse validation-scene inference configs and runbook
+  commands for external scoring against `crf/final_labels_1m.tif`
+  (`pipeline/phases/inference.py`, `pipeline/phases/prepare.py`,
+  `utils/data/pipeline.py`, `test/test_inference_outputs.py`,
+  `test/test_prepare_runtime.py`, `configs/thesis_runs/*.yml`,
+  `configs/thesis_runs/README.md`, `README.md`, `docs/ARCHITECTURE.md`).
 - Add a thesis-focused HPC experiment pack under `configs/thesis_runs/` plus
   `splits/thesis_geo_v1/` manifest templates so the master-thesis comparison
   campaign can be rerun with explicit train/validation manifests, isolated
