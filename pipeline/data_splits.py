@@ -141,13 +141,13 @@ def _file_stem(path: str) -> str:
 
 
 def _normalize_name_entry(entry: str) -> str:
-    """Normalize a split-list entry to the canonical file stem.
+    """Normalize a split-list entry to the canonical split-entry stem.
 
     Args:
         entry (str): Raw list entry (stem, filename, or path).
 
     Returns:
-        str: Canonical stem value used for matching cached tiles.
+        str: Canonical stem value used for matching cached tiles or scenes.
 
     Examples:
         >>> _normalize_name_entry("tile_a.pt")
@@ -184,6 +184,33 @@ def _source_group(path: str) -> str:
             stem = stem[: -len(suffix)]
             break
     return stem or _file_stem(path)
+
+
+def _matches_split_entry(file_path: str, entries: set[str]) -> bool:
+    """Return true when one cached tile matches one explicit split entry.
+
+    Entries may be exact cached tile stems or source-scene stems such as
+    ``dop20_592000_5982000_1km_20cm``. Scene-level entries expand to every
+    cached tile belonging to that source group.
+
+    Args:
+        file_path (str): Cached tile path.
+        entries (set[str]): Normalized explicit split entries.
+
+    Returns:
+        bool: True when the tile stem or its source group matches an entry.
+
+    Examples:
+        >>> _matches_split_entry("/tmp/scene_a_y0_x0.pt", {"scene_a_y0_x0"})
+        True
+        >>> _matches_split_entry("/tmp/scene_a_y0_x0.pt", {"scene_a"})
+        True
+        >>> _matches_split_entry("/tmp/scene_a_y0_x0.pt", {"scene_b"})
+        False
+    """
+
+    tile_stem = _file_stem(file_path)
+    return tile_stem in entries or _source_group(file_path) in entries
 
 
 def _assert_split_disjoint(train_files: list[str], val_files: list[str]) -> None:
@@ -302,13 +329,13 @@ def resolve_dataset_splits(
             _normalize_name_entry(name)
             for name in _read_name_list(split_cfg["train_list"])
         }
-        train_files = [f for f in all_files if _file_stem(f) in train_names]
+        train_files = [f for f in all_files if _matches_split_entry(f, train_names)]
         if split_cfg.get("val_list"):
             val_names = {
                 _normalize_name_entry(name)
                 for name in _read_name_list(split_cfg["val_list"])
             }
-            val_files = [f for f in all_files if _file_stem(f) in val_names]
+            val_files = [f for f in all_files if _matches_split_entry(f, val_names)]
         else:
             val_files = [f for f in all_files if f not in train_files]
         if not train_files or not val_files:

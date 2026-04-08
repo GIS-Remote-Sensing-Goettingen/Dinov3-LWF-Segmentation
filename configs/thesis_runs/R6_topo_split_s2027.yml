@@ -1,0 +1,238 @@
+dataset:
+  augmentations:
+    allow_feature_mismatch: false
+    color_jitter:
+      brightness: 0.3
+      contrast: 0.3
+      enable: true
+      hue: 0.1
+      prob: 0.35
+      saturation: 0.3
+    cutout:
+      enable: true
+      fill: 0.0
+      max_frac: 0.3
+      min_frac: 0.1
+      num_holes: 2
+      prob: 0.25
+    enable: false
+    gridmask:
+      d_max: 128
+      d_min: 48
+      enable: false
+      fill: 0.0
+      prob: 0.2
+      ratio: 0.5
+      rotate: true
+    hflip: true
+    rotate90: true
+    vflip: true
+  cache_features: false
+  max_tiles: 8000
+  splits:
+    train_list: splits/thesis_geo_v1/train.yml
+    val_list: splits/thesis_geo_v1/val.yml
+  tile_filter:
+    enabled: true
+    foreground_labels:
+    - 1
+    mode: foreground_any
+  validation:
+    allowed_labels:
+    - 0
+    - 1
+    enabled: true
+    ignore_index: 255
+    out_of_range_policy: map_to_ignore
+    require_finite_features: true
+    require_finite_images: true
+inference:
+  checkpoint: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/unet_topo_fusion_best.pth
+  device: cuda
+  enable: false
+  explain:
+    class_index: 1
+    dashboard_layout: 2x2
+    enable: false
+    output_dir: plots
+    plot_every_n: 10
+    pred_overlay_alpha: 0.28
+    pred_overlay_color:
+    - 120
+    - 190
+    - 255
+    tile_debug_enable: false
+  glob: '*.tif'
+  input_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_1/
+  input_paths_file: splits/thesis_geo_v1/holdout.txt
+  input_tif: null
+  merge:
+    mode: center_weighted
+  output_dir: output/thesis_runs/R6_topo_split_s2027/inference
+  output_suffix: _pred.tif
+  output_tif: null
+  overlap: 0.25
+  tile_size: 960
+  tta:
+    horizontal_flip: false
+    vertical_flip: false
+  vector:
+    append: true
+    enable: false
+    foreground_class: 1
+    target_epsg: 4326
+logging:
+  file: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/logs/R6_topo_split_s2027.log
+  level: debug
+  per_run: true
+  timestamps: true
+model:
+  backbone: facebook/dinov3-vitl16-pretrain-sat493m
+  boundary_gate:
+    clamp: true
+    enable: true
+    scale: 0.1
+  dense_probe:
+    groupnorm_groups: 32
+    norm_type: batchnorm
+  dino_channels: 1024
+  fusion:
+    enable: true
+    hidden: 64
+    layer_hidden: 128
+    max_layers: 6
+    save_maps: false
+  head: unet_topo_fusion
+  layers:
+  - 7
+  - 13
+  - 19
+  - 24
+  lora:
+    alpha: 16.0
+    dropout: 0.0
+    enable: true
+    freeze_base: true
+    rank: 8
+  num_classes: 2
+paths:
+  label_path: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/crf/final_labels_1m.tif
+  processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_2_3/
+  raw_images_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/patches_mt/folder_1/
+prepare:
+  cache_features: false
+  device: cuda
+  enable: false
+  tile_size: 960
+  workers: 16
+resources:
+  ddp_find_unused_parameters: true
+  dist_backend: nccl
+  dist_timeout_minutes: 30
+  distributed: true
+  matmul_precision: high
+  omp_threads: 4
+  seed: 2027
+train:
+  adamw_lr: 0.0003
+  adamw_wd: 0.01
+  batch_size: 4
+  compile: false
+  device: cuda
+  ema_decay: 0.995
+  enable: true
+  epochs: 60
+  grad_accum_steps: 1
+  loss:
+    boundary:
+      kernel_size: 3
+      weight: 0.3
+    focal:
+      alpha: null
+      gamma: 2.0
+      weight: 1.0
+    main:
+      aux_weight: 0.4
+      ce_weight: 0.0
+      dice_weight: 1.0
+      label_smoothing: 0.08
+  momentum: 0.95
+  muon_adjust_lr_for_shape: true
+  muon_lr: 0.02
+  muon_update_scale: 0.2
+  muon_wd: null
+  num_workers: 4
+  patience: 30
+  plots:
+    epoch:
+      cmap: tab20
+      dir: output/plot
+      enable: false
+      metric_class_index: 1
+      pairs: 4
+      seed_offset: 1000
+    paper:
+      channel_top_n_stable: 6
+      enable: false
+      include_channel_heatmap: false
+      pairs: 3
+      render_attn_rollout: false
+      render_pca: false
+      xai_topk_channels: 2
+    xai:
+      branch_importance:
+        class_index: 1
+        enable: true
+        max_samples: 4
+      cam_layer_mode: last_requested_layer
+      channel_tracking:
+        enable: true
+        max_samples: 64
+        min_presence: 0.05
+        save_json: true
+        top_k_per_sample: 5
+        top_n_stable: 10
+      class_index: 1
+      enable: false
+      module:
+        boundary_band_px: 3
+        enable: true
+        enable_lora_ratio: true
+        enable_topology_panels: true
+        entropy_eps: 1.0e-08
+        every_n_epochs: 5
+        gate_threshold: 0.5
+        max_samples: 8
+        save_maps: true
+        strict: false
+      pca:
+        enable: true
+        layer_mode: same_as_cam
+      render_attn_rollout: true
+      topk_channels: 5
+  processed_dir: /mnt/ceph-hdd/projects/mthesis_davide_mattioli/processed/folder_2_2
+  stability:
+    amp:
+      dtype: bf16
+      enabled: auto
+    check_params_every_steps: 50
+    grad_clip_norm: 1.0
+    loss_fp32: true
+    max_abs_logit_warn: 80.0
+    nonfinite:
+      action: stop_run
+      max_consecutive_batches: 2
+      max_total_batches_per_epoch: 5
+      save_bad_batch_sample: true
+  topology:
+    class_index: 1
+    downsample: 1
+    iters: 10
+    on_aux: true
+    skeleton_weight: 0.1
+    weight: 0.15
+  val_fraction: 0.25
+  weights_dir: /user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/thesis_runs/R6_topo_split_s2027
+verify:
+  enable: true
+  workers: 8

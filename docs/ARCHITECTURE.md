@@ -9,6 +9,12 @@ MLflow-compatible artifacts for research workflows.
 - `merge_all_folders.sh`: Ready-made Slurm wrapper for merging the default
   folder-level inference mosaics into one final raster on the cluster.
 - `configs/`: Shipped YAML profiles for example, local, and HPC runs.
+- `configs/thesis_runs/`: Standalone thesis experiment YAMLs for the clean
+  split, multi-seed, and targeted-ablation rerun campaign.
+- `splits/thesis_geo_v1/`: Thesis manifest staging area with example files, a
+  deferred `holdout.txt` placeholder, and instructions for generating
+  leakage-safe train/validation manifests from the cluster-mounted cached-tile
+  inventory.
 - `docs/`: Supplemental documentation such as architecture notes, changelog,
   model notes, and style guidance.
 - `utility/`: Operational helper scripts that sit beside the main pipeline,
@@ -77,7 +83,10 @@ MLflow-compatible artifacts for research workflows.
   during prepare, reducing background-only training samples.
 - **Leakage-safe splitting:** train/validation partitioning now enforces both
   tile-level and source-group disjointness (derived from cached tile stems),
-  including hard-fail checks for explicit split-list overlap.
+  including hard-fail checks for explicit split-list overlap. Explicit
+  manifests may list exact cached tile stems or whole source-scene stems,
+  allowing geographically defined scene-level split files to expand to all
+  matching cached tiles.
 - **Baseline optimizer policy:** lightweight DINO baselines
   (`dino_dense_probe`, `dino_segdino_light`) use an AdamW-only optimization
   path by default, while heavier decoder heads keep the Muon+AdamW split path.
@@ -259,3 +268,7 @@ MLflow-compatible artifacts for research workflows.
    directory under `output/batches/<job_name>/runs/`, retries incomplete
    batches through a dependent controller job, and finally merges each batch
    `predictions.tif` into one final `output/batches/<job_name>/merged/predictions.tif`.
+   For ad hoc post-hoc evaluation outside the main phase runner,
+   `scripts/validate_prediction_rasters.py` can then score one or more
+   exported prediction GeoTIFFs against a gold-label raster over the exact
+   overlapping area on the label grid.

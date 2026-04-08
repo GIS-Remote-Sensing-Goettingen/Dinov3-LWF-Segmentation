@@ -124,6 +124,46 @@ def test_explicit_lists_reject_source_group_overlap(tmp_path: Path) -> None:
         )
 
 
+def test_explicit_scene_lists_expand_to_all_matching_tiles(tmp_path: Path) -> None:
+    """Scene-level manifest entries should match every tile from that scene.
+
+    Args:
+        tmp_path (Path): Temporary cache directory.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    for name in (
+        "scene_a_y0_x0.pt",
+        "scene_a_y512_x0.pt",
+        "scene_b_y0_x0.pt",
+        "scene_c_y0_x0.pt",
+    ):
+        (tmp_path / name).touch()
+    train_list = tmp_path / "train.txt"
+    val_list = tmp_path / "val.txt"
+    train_list.write_text("scene_a\n", encoding="utf-8")
+    val_list.write_text("scene_b\nscene_c\n", encoding="utf-8")
+    train_files, val_files = resolve_dataset_splits(
+        processed_dir=str(tmp_path),
+        split_cfg={"train_list": str(train_list), "val_list": str(val_list)},
+        val_fraction=0.2,
+        max_tiles=None,
+        logger=_NoopLogger(),
+    )
+
+    assert sorted(Path(path).stem for path in train_files) == [
+        "scene_a_y0_x0",
+        "scene_a_y512_x0",
+    ]
+    assert sorted(Path(path).stem for path in val_files) == [
+        "scene_b_y0_x0",
+        "scene_c_y0_x0",
+    ]
+
+
 def test_random_split_is_source_group_disjoint(tmp_path: Path) -> None:
     """Ensure random split partitions by source groups, not individual tiles.
 

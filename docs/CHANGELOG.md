@@ -5,6 +5,34 @@
 
 ## [Unreleased]
 ### Changed
+- Add a thesis-focused HPC experiment pack under `configs/thesis_runs/` plus
+  `splits/thesis_geo_v1/` manifest templates so the master-thesis comparison
+  campaign can be rerun with explicit train/validation manifests, isolated
+  per-run weights/logs, multi-seed top-model configs, targeted
+  boundary/topology ablations, exact `CONFIG_PATH=... sbatch segmentation.sh`
+  submission commands, and a deferred empty `holdout.txt` placeholder for the
+  later geographic-holdout phase (`configs/thesis_runs/*.yml`,
+  `configs/thesis_runs/README.md`, `splits/thesis_geo_v1/README.md`,
+  `splits/thesis_geo_v1/*.example.txt`, `splits/thesis_geo_v1/holdout.txt`,
+  `docs/ARCHITECTURE.md`).
+- Allow explicit train/validation split manifests to list either exact cached
+  tile stems or whole source-scene stems, so geographically defined split
+  files based on `dop20_<x>_<y>` scene coordinates expand automatically to all
+  matching cached tiles (`pipeline/data_splits.py`,
+  `test/test_data_splits_leakage.py`).
+- Add a small prediction-raster validation utility that scores one or more
+  exported GeoTIFF predictions against a gold-label raster over their
+  overlapping area using windowed reads and nearest-neighbor reprojection onto
+  the label grid, plus a thin `scripts/` compatibility wrapper and regression
+  coverage for overlap-only scoring and no-overlap handling
+  (`utility/validate_prediction_rasters.py`,
+  `scripts/validate_prediction_rasters.py`,
+  `test/test_validate_prediction_rasters.py`, `README.md`,
+  `docs/ARCHITECTURE.md`).
+- Point the shipped HPC profile at the handmade binary 1 m gold-label raster
+  `utility/test/golden_labels_gt_1m_mosaic_25832.tif` so directory inference
+  can align its shared prediction GeoTIFF to that label grid during manual
+  checkpoint testing (`configs/config_hpc.yml`).
 - Exclude the aggregate `rho_mean` series from the LoRA module-XAI trend plot
   so `module_lora_trends.png` focuses on the boundary/interior ratios that are
   actually compared in the report, while keeping the underlying scalar metric
