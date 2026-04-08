@@ -16,6 +16,7 @@ import pipeline.data_splits as data_splits_module  # noqa: E402
 from pipeline.context import DistContext  # noqa: E402
 from pipeline.data_splits import (  # noqa: E402
     _collate_variable_tiles,
+    _read_name_list,
     resolve_dataset_splits,
 )
 
@@ -162,6 +163,26 @@ def test_explicit_scene_lists_expand_to_all_matching_tiles(tmp_path: Path) -> No
         "scene_b_y0_x0",
         "scene_c_y0_x0",
     ]
+
+
+def test_read_name_list_flattens_nested_yaml_scene_lists(tmp_path: Path) -> None:
+    """Nested YAML scene batches should flatten into individual scene stems.
+
+    Args:
+        tmp_path (Path): Temporary directory.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    split_file = tmp_path / "train.yml"
+    split_file.write_text(
+        ("scenes:\n" "  - [scene_a, scene_b]\n" "  - [scene_c]\n"),
+        encoding="utf-8",
+    )
+
+    assert _read_name_list(str(split_file)) == ["scene_a", "scene_b", "scene_c"]
 
 
 def test_random_split_is_source_group_disjoint(tmp_path: Path) -> None:

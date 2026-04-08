@@ -268,6 +268,24 @@ def _read_name_list(path: str) -> list[str]:
         ['a', 'B']
     """
 
+    def _flatten_name_entries(value: object) -> list[str]:
+        """Flatten nested YAML/JSON list payloads into one string list.
+
+        Args:
+            value (object): Raw decoded YAML/JSON value.
+
+        Returns:
+            list[str]: Flattened non-empty string entries.
+        """
+
+        if isinstance(value, list):
+            flattened: list[str] = []
+            for item in value:
+                flattened.extend(_flatten_name_entries(item))
+            return flattened
+        text_value = str(value).strip()
+        return [text_value] if text_value else []
+
     if not os.path.exists(path):
         raise FileNotFoundError(f"Split list not found: {path}")
     with open(path, "r", encoding="utf-8") as handle:
@@ -280,11 +298,10 @@ def _read_name_list(path: str) -> list[str]:
         if isinstance(data, dict):
             combined = []
             for value in data.values():
-                if isinstance(value, list):
-                    combined.extend(value)
-            return [str(item).strip() for item in combined if str(item).strip()]
+                combined.extend(_flatten_name_entries(value))
+            return combined
         if isinstance(data, list):
-            return [str(item).strip() for item in data if str(item).strip()]
+            return _flatten_name_entries(data)
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 

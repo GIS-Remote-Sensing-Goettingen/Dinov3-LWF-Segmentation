@@ -26,6 +26,11 @@
   not yet record the later `drop_partial` edge-policy suffix
   (`configs/thesis_runs/*.yml`, `utils/data/core.py`,
   `test/test_prepare_runtime.py`).
+- Flatten nested YAML scene batches in explicit split manifests so the
+  thesis-run `train.yml` and `val.yml` files expand into individual
+  `dop20_<x>_<y>_1km_20cm` scene stems instead of being parsed as stringified
+  list literals, which previously produced empty train/validation subsets at
+  runtime (`pipeline/data_splits.py`, `test/test_data_splits_leakage.py`).
 - Add a small prediction-raster validation utility that scores one or more
   exported GeoTIFF predictions against a gold-label raster over their
   overlapping area using windowed reads and nearest-neighbor reprojection onto
