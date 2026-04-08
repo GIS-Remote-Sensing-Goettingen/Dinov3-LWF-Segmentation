@@ -288,6 +288,25 @@ def test_mask2former_target_builder_handles_ignore_and_empty_masks() -> None:
     assert class_labels[1].numel() == 0
 
 
+def test_topo_fusion_handles_odd_patch_grids_for_aux_outputs() -> None:
+    """Topo fusion should survive odd DINO grids produced by coarse labels.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    model = build_head("unet_topo_fusion", num_classes=2, dino_channels=8)
+    image = torch.randn(1, 3, 80, 80)
+    features = [torch.randn(1, 8, 5, 5) for _ in range(4)]
+
+    payload = model.forward_with_extras(image, features)
+
+    assert tuple(payload["logits"].shape) == (1, 2, 80, 80)
+    assert tuple(payload["aux_logits"].shape) == (1, 2, 10, 10)
+    assert tuple(payload["skeleton_logits"].shape) == (1, 1, 10, 10)
+
+
 def test_dense_probe_build_and_forward_shape() -> None:
     """Validate dense probe forward output shape.
 

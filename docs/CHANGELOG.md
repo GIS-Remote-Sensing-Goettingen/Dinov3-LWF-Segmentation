@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 ### Changed
+- Fix the two cluster rerun blockers uncovered by the new thesis baselines:
+  native-loss heads such as `mask2former_semantic` now keep receiving labels
+  even when training/evaluation goes through the normalized adapter or DDP
+  wrapper path, and `unet_topo_fusion` now resizes odd-grid auxiliary and
+  skeleton outputs instead of aborting when cross-CRS coarse-label tiling
+  produces compatible-but-odd DINO patch grids (for example 63x63 fused
+  features -> 126x126 aux supervision) (`pipeline/train_utils.py`,
+  `models/unet_topo_fusion.py`, `test/test_train_utils_safety.py`,
+  `test/test_dino_baselines.py`).
 - Fix the thesis coarse/eval rerun path after the first cluster failures:
   directory inference now resolves `inference.input_paths_file` against the
   repo root before falling back to the config directory so thesis eval configs

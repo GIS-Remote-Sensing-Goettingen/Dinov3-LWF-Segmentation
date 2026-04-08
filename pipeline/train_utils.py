@@ -496,11 +496,25 @@ def forward_with_optional_extras(
         True
     """
 
-    if labels is not None and hasattr(model_call, "forward_with_native_loss"):
-        raw_output = cast(Any, model_call).forward_with_native_loss(
+    native_loss_fn = getattr(model_call, "forward_with_native_loss", None)
+    wrapped_head = getattr(getattr(model_call, "module", model_call), "head", None)
+    wrapped_native_loss_fn = (
+        getattr(wrapped_head, "forward_with_native_loss", None)
+        if wrapped_head is not None
+        else None
+    )
+    if labels is not None and callable(native_loss_fn):
+        raw_output = cast(Any, native_loss_fn)(
             image,
             features,
             labels,
+            ignore_index=ignore_index,
+        )
+    elif labels is not None and callable(wrapped_native_loss_fn):
+        raw_output = cast(Any, model_call)(
+            image,
+            features,
+            labels=labels,
             ignore_index=ignore_index,
         )
     elif hasattr(model_call, "forward_with_extras"):

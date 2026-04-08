@@ -593,6 +593,84 @@ def test_forward_with_optional_extras_does_not_pass_label_kwargs_to_plain_heads(
     assert skeleton_logits is None
 
 
+def test_forward_with_optional_extras_routes_native_loss_through_adapter() -> None:
+    """Adapter-wrapped native-loss heads must still receive semantic targets.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    class NativeLossHead(torch.nn.Module):
+        """Tiny native-loss head for adapter path regression coverage."""
+
+        def forward(
+            self,
+            image: torch.Tensor,
+            features: list[torch.Tensor],
+        ) -> dict[str, torch.Tensor]:
+            """Return semantic logits without a native loss by default.
+
+            Args:
+                image (torch.Tensor): Input image tensor.
+                features (list[torch.Tensor]): Ignored feature tensors.
+
+            Returns:
+                dict[str, torch.Tensor]: Main semantic logits on the image grid.
+            """
+
+            _ = features
+            return {"logits": image.new_zeros((image.shape[0], 2, *image.shape[-2:]))}
+
+        def forward_with_native_loss(
+            self,
+            image: torch.Tensor,
+            features: list[torch.Tensor],
+            labels: torch.Tensor,
+            *,
+            ignore_index: int | None = None,
+        ) -> dict[str, torch.Tensor]:
+            """Return semantic logits plus a non-null native loss.
+
+            Args:
+                image (torch.Tensor): Input image tensor.
+                features (list[torch.Tensor]): Ignored feature tensors.
+                labels (torch.Tensor): Semantic labels for native supervision.
+                ignore_index (int | None): Optional ignored label id.
+
+            Returns:
+                dict[str, torch.Tensor]: Logits plus a scalar native loss.
+            """
+
+            _ = features
+            _ = ignore_index
+            logits = image.new_zeros((image.shape[0], 2, *image.shape[-2:]))
+            logits[:, 1] = 1.0
+            return {
+                "logits": logits,
+                "native_loss": labels.float().mean() + image.abs().mean(),
+            }
+
+    adapter = NormalizedForwardAdapter(NativeLossHead())
+    labels = torch.tensor([[[0, 1], [1, 0]]], dtype=torch.long)
+
+    logits, aux_logits, edge_logits, skeleton_logits, payload = (
+        forward_with_optional_extras(
+            adapter,
+            torch.randn(1, 3, 8, 8),
+            [],
+            labels=labels,
+            ignore_index=255,
+        )
+    )
+
+    assert tuple(logits.shape) == (1, 2, 8, 8)
+    assert payload["native_loss"] is not None
+    assert aux_logits is None
+    assert edge_logits is None
+    assert skeleton_logits is None
+
+
 def test_forward_adapter_restores_ds_head_gradients() -> None:
     """Ensure aux-head parameters receive gradients through the adapter path.
 

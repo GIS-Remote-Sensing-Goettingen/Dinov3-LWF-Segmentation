@@ -519,10 +519,17 @@ class DinoUNetTopoFusionHead(SegmentationHead):
         skeleton_logits = self.skeleton_head(x)
         expected_aux = (int(shallow.shape[-2]) * 2, int(shallow.shape[-1]) * 2)
         if tuple(aux_logits.shape[-2:]) != expected_aux:
-            raise RuntimeError(
-                "Aux resolution mismatch: expected "
-                f"{expected_aux}, got {tuple(aux_logits.shape[-2:])}. "
-                "Ensure DINO features and decoder taps share the same effective patch grid."
+            aux_logits = F.interpolate(
+                aux_logits,
+                size=expected_aux,
+                mode="bilinear",
+                align_corners=False,
+            )
+            skeleton_logits = F.interpolate(
+                skeleton_logits,
+                size=expected_aux,
+                mode="bilinear",
+                align_corners=False,
             )
 
         x = self.conv4(self._concat(self.up4(x), spm_h4))
