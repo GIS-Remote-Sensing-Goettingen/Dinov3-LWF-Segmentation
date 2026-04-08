@@ -242,6 +242,73 @@ def test_random_split_requires_two_source_groups(tmp_path: Path) -> None:
         )
 
 
+def test_explicit_lists_apply_max_tiles_after_split(tmp_path: Path) -> None:
+    """Explicit split manifests should still honor dataset.max_tiles.
+
+    Args:
+        tmp_path (Path): Temporary cache directory.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    for idx in range(8):
+        (tmp_path / f"scene_a_y{idx}_x0.pt").touch()
+        (tmp_path / f"scene_b_y{idx}_x0.pt").touch()
+    train_list = tmp_path / "train.txt"
+    val_list = tmp_path / "val.txt"
+    train_list.write_text("scene_a\n", encoding="utf-8")
+    val_list.write_text("scene_b\n", encoding="utf-8")
+
+    random.seed(13)
+    train_files, val_files = resolve_dataset_splits(
+        processed_dir=str(tmp_path),
+        split_cfg={"train_list": str(train_list), "val_list": str(val_list)},
+        val_fraction=0.2,
+        max_tiles=6,
+        logger=_NoopLogger(),
+    )
+
+    assert len(train_files) + len(val_files) == 6
+    assert train_files
+    assert val_files
+    assert all("scene_a" in Path(path).stem for path in train_files)
+    assert all("scene_b" in Path(path).stem for path in val_files)
+
+
+def test_random_split_apply_max_tiles_after_group_split(tmp_path: Path) -> None:
+    """Leakage-safe random splits should also honor dataset.max_tiles.
+
+    Args:
+        tmp_path (Path): Temporary cache directory.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    for scene in ("scene_a", "scene_b", "scene_c", "scene_d"):
+        for idx in range(5):
+            (tmp_path / f"{scene}_y{idx}_x0.pt").touch()
+
+    random.seed(17)
+    train_files, val_files = resolve_dataset_splits(
+        processed_dir=str(tmp_path),
+        split_cfg={},
+        val_fraction=0.25,
+        max_tiles=7,
+        logger=_NoopLogger(),
+    )
+
+    assert len(train_files) + len(val_files) == 7
+    assert train_files
+    assert val_files
+    assert {_group_name(path) for path in train_files}.isdisjoint(
+        {_group_name(path) for path in val_files}
+    )
+
+
 def test_resolve_rank_consistent_splits_uses_rank0_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

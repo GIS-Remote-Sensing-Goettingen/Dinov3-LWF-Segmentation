@@ -31,6 +31,11 @@
   `dop20_<x>_<y>_1km_20cm` scene stems instead of being parsed as stringified
   list literals, which previously produced empty train/validation subsets at
   runtime (`pipeline/data_splits.py`, `test/test_data_splits_leakage.py`).
+- Enforce `dataset.max_tiles` after split resolution as well, so explicit
+  train/validation manifests can still run a smaller thesis rerun subset
+  without editing the manifest files themselves; the cap now samples train and
+  validation subsets proportionally while keeping both non-empty
+  (`pipeline/data_splits.py`, `test/test_data_splits_leakage.py`).
 - Add a small prediction-raster validation utility that scores one or more
   exported GeoTIFF predictions against a gold-label raster over their
   overlapping area using windowed reads and nearest-neighbor reprojection onto

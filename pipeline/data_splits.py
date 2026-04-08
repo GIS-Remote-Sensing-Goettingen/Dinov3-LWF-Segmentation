@@ -247,6 +247,63 @@ def _assert_split_disjoint(train_files: list[str], val_files: list[str]) -> None
         )
 
 
+def _apply_max_tiles_cap(
+    train_files: list[str],
+    val_files: list[str],
+    max_tiles: int | None,
+    logger: VerbosityLogger,
+) -> tuple[list[str], list[str]]:
+    """Cap the total train/validation tiles while keeping both subsets non-empty.
+
+    Args:
+        train_files (list[str]): Candidate train tile paths.
+        val_files (list[str]): Candidate validation tile paths.
+        max_tiles (int | None): Optional total tile cap.
+        logger (VerbosityLogger): Logger for sampling details.
+
+    Returns:
+        tuple[list[str], list[str]]: Potentially sampled train/validation tiles.
+    """
+
+    if max_tiles is None or int(max_tiles) <= 0:
+        return train_files, val_files
+    max_tiles = int(max_tiles)
+    total_tiles = len(train_files) + len(val_files)
+    if total_tiles <= max_tiles:
+        return train_files, val_files
+
+    train_quota = max(
+        1, int(round(max_tiles * (len(train_files) / float(total_tiles))))
+    )
+    train_quota = min(train_quota, len(train_files), max_tiles - 1)
+    val_quota = max(1, min(len(val_files), max_tiles - train_quota))
+    if train_quota + val_quota > max_tiles:
+        overflow = (train_quota + val_quota) - max_tiles
+        reducible_train = max(0, train_quota - 1)
+        train_reduction = min(overflow, reducible_train)
+        train_quota -= train_reduction
+        overflow -= train_reduction
+        if overflow > 0:
+            reducible_val = max(0, val_quota - 1)
+            val_quota -= min(overflow, reducible_val)
+
+    logger.info(
+        "Applying dataset.max_tiles=%s after split resolution: "
+        "%s -> %s train tiles, %s -> %s validation tiles."
+        % (
+            max_tiles,
+            len(train_files),
+            train_quota,
+            len(val_files),
+            val_quota,
+        )
+    )
+    return (
+        random.sample(train_files, k=train_quota),
+        random.sample(val_files, k=val_quota),
+    )
+
+
 def _read_name_list(path: str) -> list[str]:
     """Read a list of names from a text or YAML/JSON file.
 
@@ -335,12 +392,6 @@ def resolve_dataset_splits(
     all_files = sorted(glob.glob(os.path.join(processed_dir, "*.pt")))
     if not all_files:
         raise ValueError(f"No cached tiles found in {processed_dir}")
-    if not split_cfg.get("train_list") and max_tiles and max_tiles > 0:
-        if len(all_files) > max_tiles:
-            logger.info(
-                f"Sampling {max_tiles} tiles from {len(all_files)} total cached tiles."
-            )
-            all_files = random.sample(all_files, k=max_tiles)
     if split_cfg.get("train_list"):
         train_names = {
             _normalize_name_entry(name)
@@ -358,6 +409,9 @@ def resolve_dataset_splits(
         if not train_files or not val_files:
             raise ValueError("Split lists produced empty train/val subsets.")
         _assert_split_disjoint(train_files, val_files)
+        train_files, val_files = _apply_max_tiles_cap(
+            train_files, val_files, max_tiles, logger
+        )
         return train_files, val_files
     group_to_files: dict[str, list[str]] = defaultdict(list)
     for file_path in all_files:
@@ -376,6 +430,9 @@ def resolve_dataset_splits(
     train_files = [path for group in train_groups for path in group_to_files[group]]
     val_files = [path for group in val_groups for path in group_to_files[group]]
     _assert_split_disjoint(train_files, val_files)
+    train_files, val_files = _apply_max_tiles_cap(
+        train_files, val_files, max_tiles, logger
+    )
     logger.info(
         "Using leakage-safe random split with "
         f"{len(train_files)} train tiles ({len(train_groups)} source groups) and "
