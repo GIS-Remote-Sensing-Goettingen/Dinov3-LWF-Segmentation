@@ -20,6 +20,12 @@
   files based on `dop20_<x>_<y>` scene coordinates expand automatically to all
   matching cached tiles (`pipeline/data_splits.py`,
   `test/test_data_splits_leakage.py`).
+- Align the thesis rerun configs with the cluster's `tiles_1024_*` cache
+  layout and keep image-only U-Net training compatible with the existing
+  legacy `tiles_1024_nofeat_labelgrid` cache when the old cache metadata does
+  not yet record the later `drop_partial` edge-policy suffix
+  (`configs/thesis_runs/*.yml`, `utils/data/core.py`,
+  `test/test_prepare_runtime.py`).
 - Add a small prediction-raster validation utility that scores one or more
   exported GeoTIFF predictions against a gold-label raster over their
   overlapping area using windowed reads and nearest-neighbor reprojection onto

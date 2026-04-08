@@ -123,7 +123,7 @@ prepare:
   cache_features: false
   device: cuda
   enable: false
-  tile_size: 960
+  tile_size: 1024
   workers: 16
 resources:
   ddp_find_unused_parameters: true

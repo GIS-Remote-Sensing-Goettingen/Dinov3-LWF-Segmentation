@@ -922,10 +922,18 @@ def _validate_cache_metadata(
             mismatches.append(
                 f"patch_size={cached_patch_size} expected {int(patch_size)}"
             )
-    if edge_policy is not None and meta.get("edge_policy") != edge_policy:
-        mismatches.append(
-            f"edge_policy={meta.get('edge_policy')} expected {edge_policy}"
+    cached_edge_policy = meta.get("edge_policy")
+    if (
+        edge_policy is not None
+        and cached_edge_policy != edge_policy
+        and not (
+            cached_edge_policy is None
+            and patch_size is not None
+            and int(patch_size) == 1
+            and str(edge_policy) == EDGE_POLICY_DROP_PARTIAL
         )
+    ):
+        mismatches.append(f"edge_policy={cached_edge_policy} expected {edge_policy}")
     if layers is not None:
         cached_layers = meta.get("layers")
         expected_layers = [int(layer_id) for layer_id in layers]
@@ -1112,6 +1120,16 @@ def resolve_cache_dir_for_train(
                 continue
             meta = _load_cache_metadata(entry.path)
             if meta is None:
+                if (
+                    not cache_features
+                    and tile_size is not None
+                    and expected_patch_size is not None
+                    and int(expected_patch_size) == 1
+                    and expected_edge_policy == EDGE_POLICY_DROP_PARTIAL
+                    and entry.name == _cache_subdir_name(int(tile_size), False)
+                    and glob.glob(os.path.join(entry.path, "*.pt"))
+                ):
+                    cache_dirs.append(entry.path)
                 continue
             try:
                 _validate_cache_metadata(

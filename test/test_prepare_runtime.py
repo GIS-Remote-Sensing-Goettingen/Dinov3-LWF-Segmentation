@@ -591,6 +591,81 @@ def test_resolve_cache_dir_for_train_rejects_legacy_no_feature_cache_without_pat
         )
 
 
+def test_resolve_cache_dir_for_train_accepts_legacy_image_only_cache_subdir(
+    tmp_path: Path,
+) -> None:
+    """Image-only heads may reuse the legacy no-feature labelgrid cache.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    base_dir = tmp_path / "cache"
+    legacy_dir = base_dir / "tiles_1024_nofeat_labelgrid"
+    legacy_dir.mkdir(parents=True)
+    torch.save(
+        {"image": torch.zeros(1), "label": torch.zeros(1)}, legacy_dir / "tile.pt"
+    )
+
+    resolved_train = resolve_cache_dir_for_train(
+        str(base_dir),
+        tile_size=1024,
+        cache_features=False,
+        patch_size=1,
+        edge_policy="drop_partial",
+    )
+
+    assert resolved_train == str(legacy_dir)
+
+
+def test_resolve_cache_dir_for_train_accepts_legacy_image_only_cache_metadata(
+    tmp_path: Path,
+) -> None:
+    """Legacy image-only metadata without edge policy remains compatible.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    base_dir = tmp_path / "cache"
+    cache_dir = base_dir / "tiles_1024_nofeat_labelgrid"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "cache_meta.json").write_text(
+        (
+            "{\n"
+            '  "cache_features": false,\n'
+            '  "layers": null,\n'
+            '  "model_name": null,\n'
+            '  "patch_size": 1,\n'
+            '  "supervision_grid_mode": "native_label_grid",\n'
+            '  "tile_size": 1024\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+    torch.save(
+        {"image": torch.zeros(1), "label": torch.zeros(1)}, cache_dir / "tile.pt"
+    )
+
+    resolved_train = resolve_cache_dir_for_train(
+        str(base_dir),
+        tile_size=1024,
+        cache_features=False,
+        patch_size=1,
+        edge_policy="drop_partial",
+    )
+
+    assert resolved_train == str(cache_dir)
+
+
 def test_precomputed_dataset_selects_requested_cached_layers(tmp_path: Path) -> None:
     """Dataset should load only the requested cached feature tensors.
 
