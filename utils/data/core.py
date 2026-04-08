@@ -90,6 +90,47 @@ def _pixel_size(transform: Affine) -> tuple[float, float]:
     return abs(float(transform.a)), abs(float(transform.e))
 
 
+def _image_footprint_in_label_crs(
+    src_img: rasterio.io.DatasetReader,
+    src_lab: rasterio.io.DatasetReader,
+) -> tuple[Window, tuple[float, float, float, float]]:
+    """Return the label-grid window covering one image footprint.
+
+    Args:
+        src_img (rasterio.io.DatasetReader): Open image dataset.
+        src_lab (rasterio.io.DatasetReader): Open label dataset.
+
+    Returns:
+        tuple[Window, tuple[float, float, float, float]]: Rounded label-grid
+        window plus the image footprint expressed in the label CRS.
+    """
+
+    if src_img.crs == src_lab.crs:
+        image_bounds_in_label = src_img.bounds
+    else:
+        image_bounds_in_label = transform_bounds(
+            src_img.crs,
+            src_lab.crs,
+            *src_img.bounds,
+            densify_pts=21,
+        )
+    label_window = (
+        from_bounds(
+            *image_bounds_in_label,
+            transform=src_lab.transform,
+        )
+        .round_offsets()
+        .round_lengths()
+    )
+    label_window = Window(
+        col_off=max(0, int(label_window.col_off)),
+        row_off=max(0, int(label_window.row_off)),
+        width=max(1, int(label_window.width)),
+        height=max(1, int(label_window.height)),
+    )
+    return label_window, image_bounds_in_label
+
+
 def build_tile_grid_layout(
     image_path: str,
     label_path: str,
@@ -125,13 +166,30 @@ def build_tile_grid_layout(
     """
 
     with rasterio.open(image_path) as src_img, rasterio.open(label_path) as src_lab:
-        if src_img.crs != src_lab.crs:
-            raise ValueError(
-                "Native label-grid supervision currently requires imagery and "
-                "labels to share one CRS."
-            )
         img_res_x, img_res_y = _pixel_size(src_img.transform)
         lab_res_x, lab_res_y = _pixel_size(src_lab.transform)
+        if src_img.crs != src_lab.crs:
+            label_window, _ = _image_footprint_in_label_crs(src_img, src_lab)
+            scale_x = float(src_img.width) / float(label_window.width)
+            scale_y = float(src_img.height) / float(label_window.height)
+            if not math.isclose(scale_x, scale_y, rel_tol=1e-2, abs_tol=1e-2):
+                raise ValueError(
+                    "Label-grid supervision requires a consistent image-to-label "
+                    "scale factor across both axes."
+                )
+            rounded_scale = int(round((scale_x + scale_y) / 2.0))
+            if rounded_scale < 1 or not math.isclose(
+                (scale_x + scale_y) / 2.0,
+                rounded_scale,
+                rel_tol=5e-2,
+                abs_tol=5e-2,
+            ):
+                raise ValueError(
+                    "Label-grid supervision requires label resolution to be an "
+                    "integer multiple of image resolution."
+                )
+            lab_res_x = img_res_x * rounded_scale
+            lab_res_y = img_res_y * rounded_scale
     if not math.isclose(img_res_x, img_res_y, rel_tol=1e-6, abs_tol=1e-9):
         raise ValueError("Image raster must have square pixels for label-grid tiling.")
     if not math.isclose(lab_res_x, lab_res_y, rel_tol=1e-6, abs_tol=1e-9):
@@ -272,29 +330,7 @@ def read_label_window_for_image_bounds(
     """
 
     with rasterio.open(image_path) as src_img, rasterio.open(label_path) as src_lab:
-        if src_img.crs == src_lab.crs:
-            image_bounds_in_label = src_img.bounds
-        else:
-            image_bounds_in_label = transform_bounds(
-                src_img.crs,
-                src_lab.crs,
-                *src_img.bounds,
-                densify_pts=21,
-            )
-        label_window = (
-            from_bounds(
-                *image_bounds_in_label,
-                transform=src_lab.transform,
-            )
-            .round_offsets()
-            .round_lengths()
-        )
-        label_window = Window(
-            col_off=max(0, int(label_window.col_off)),
-            row_off=max(0, int(label_window.row_off)),
-            width=max(1, int(label_window.width)),
-            height=max(1, int(label_window.height)),
-        )
+        label_window, _ = _image_footprint_in_label_crs(src_img, src_lab)
         label_array = src_lab.read(1, window=label_window, boundless=True, fill_value=0)
         transform = rasterio.windows.transform(label_window, src_lab.transform)
         bounds = window_bounds(label_window, src_lab.transform)
@@ -1342,20 +1378,7 @@ def process_image_tiles_no_features(
         edge_policy=EDGE_POLICY_DROP_PARTIAL,
     )
     with rasterio.open(img_path) as src_img, rasterio.open(label_path) as src_lab:
-        if src_img.crs != src_lab.crs:
-            return {
-                "status": "error",
-                "error_type": "label_alignment_error",
-                "error": "native label-grid supervision requires one shared CRS",
-            }
-        label_window = (
-            from_bounds(
-                *src_img.bounds,
-                transform=src_lab.transform,
-            )
-            .round_offsets()
-            .round_lengths()
-        )
+        label_window, _ = _image_footprint_in_label_crs(src_img, src_lab)
         row_positions = full_fit_window_positions(
             int(label_window.height),
             layout.label_tile_size,
@@ -1394,6 +1417,13 @@ def process_image_tiles_no_features(
                     height=layout.label_tile_size,
                 )
                 tile_bounds = window_bounds(tile_window, src_lab.transform)
+                if src_lab.crs != src_img.crs:
+                    tile_bounds = transform_bounds(
+                        src_lab.crs,
+                        src_img.crs,
+                        *tile_bounds,
+                        densify_pts=21,
+                    )
                 tile_name = (
                     f"{Path(img_path).stem}_y{int(tile_window.row_off)}_x"
                     f"{int(tile_window.col_off)}.pt"

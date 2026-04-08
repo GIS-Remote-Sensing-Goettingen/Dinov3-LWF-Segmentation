@@ -23,7 +23,9 @@ Important runtime note:
 - `R13_mask2former_semantic_split_s1337.yml` expects one manually staged local
   Hugging Face checkpoint under
   `/user/davide.mattioli/u20330/Dinov3-LWF-Segmentation/weights/hf/facebook/mask2former-swin-base-ade-semantic`
-  containing `config.json`, `preprocessor_config.json`, and model weights.
+  containing `config.json`, `preprocessor_config.json`, and model weights. The
+  cluster checkout can populate that directory from an `inet` shell with:
+  `bash scripts/download_mask2former_semantic_weights.sh`.
 - The coarse-supervision baseline `C1_topo_coarse_split_s1337.yml` points
   `paths.label_path` at
   `/mnt/vast-standard/home/davide.mattioli/u20330/planet_labels_2022.tif`,

@@ -1037,6 +1037,88 @@ def test_directory_inference_honors_scene_stem_yaml_manifest(
     assert outcome.metrics["cumulative_updates"] == 1.0
 
 
+def test_directory_inference_resolves_repo_relative_manifest_before_config_relative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repo-root-relative manifests should work even when config lives below configs/.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+        monkeypatch (pytest.MonkeyPatch): Pytest monkeypatch fixture.
+    """
+
+    image_dir = tmp_path / "images"
+    image_path = image_dir / "scene_a.tif"
+    repo_manifest = tmp_path / "splits" / "thesis_geo_v1" / "val.yml"
+    config_dir = tmp_path / "configs" / "thesis_runs"
+    config_path = config_dir / "E1.yml"
+    label_path = tmp_path / "labels.tif"
+    checkpoint_path = tmp_path / "checkpoint.pth"
+    output_tif = tmp_path / "shared_predictions.tif"
+
+    _write_test_geotiff(
+        label_path,
+        np.zeros((4, 4), dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    _write_test_geotiff(
+        image_path,
+        np.full((2, 2, 3), 255, dtype=np.uint8),
+        transform=from_origin(0.0, 4.0, 1.0, 1.0),
+    )
+    repo_manifest.parent.mkdir(parents=True, exist_ok=True)
+    repo_manifest.write_text("scenes:\n  - [scene_a]\n", encoding="utf-8")
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("# placeholder\n", encoding="utf-8")
+    torch.save({}, checkpoint_path)
+    _patch_inference_phase_dependencies(monkeypatch, checkpoint_path)
+
+    context = _make_inference_context(
+        tmp_path,
+        {
+            "model": {
+                "head": "unet",
+                "num_classes": 2,
+                "dino_channels": 1,
+                "backbone": "stub",
+                "layers": [1],
+            },
+            "paths": {"label_path": str(label_path)},
+            "inference": {
+                "enable": True,
+                "device": "cpu",
+                "input_dir": str(image_dir),
+                "input_paths_file": "splits/thesis_geo_v1/val.yml",
+                "input_tif": "",
+                "output_tif": str(output_tif),
+                "output_dir": "",
+                "glob": "*.tif",
+                "checkpoint": str(checkpoint_path),
+                "tile_size": 8,
+                "overlap": 0.0,
+                "merge": {"mode": "uniform"},
+                "tta": {
+                    "horizontal_flip": False,
+                    "vertical_flip": False,
+                },
+                "explain": {"enable": False},
+                "vector": {"enable": False},
+            },
+        },
+    )
+    context.config_path = str(config_path)
+
+    monkeypatch.chdir(tmp_path)
+
+    outcome = InferencePhase().execute(context)
+
+    with rasterio.open(output_tif) as src:
+        data = src.read(1)
+    assert data.tolist() == [[1, 1], [1, 1]]
+    assert outcome.metrics["files_total"] == 1.0
+
+
 def test_directory_inference_overwrites_overlapping_scene_footprints(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

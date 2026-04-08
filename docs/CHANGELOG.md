@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Fix the thesis coarse/eval rerun path after the first cluster failures:
+  directory inference now resolves `inference.input_paths_file` against the
+  repo root before falling back to the config directory so thesis eval configs
+  can keep repo-relative split manifests, and native label-grid tiling now
+  supports cross-CRS imagery/label pairs by deriving the image-to-label scale
+  factor from the shared scene footprint and reprojecting label-tile bounds
+  back into image CRS during tile reads; this unblocks the `C1` coarse-label
+  baseline against `planet_labels_2022.tif` and the `E1`/`E2` validation-scene
+  eval jobs (`utils/data/core.py`, `utils/data/pipeline.py`,
+  `pipeline/phases/inference.py`, `test/test_prepare_runtime.py`,
+  `test/test_inference_outputs.py`).
 - Add a real Hugging Face `mask2former_semantic` RGB-only baseline around
   local staged `Mask2FormerForUniversalSegmentation` checkpoints, including
   native-loss training/evaluation support, semantic-logit projection on the
@@ -17,7 +28,7 @@
   `pipeline/phases/train_batches.py`, `test/test_dino_baselines.py`,
   `test/test_train_utils_safety.py`, `configs/thesis_runs/R13_mask2former_semantic_split_s1337.yml`,
   `configs/thesis_runs/README.md`, `README.md`, `docs/ARCHITECTURE.md`,
-  `configs/config*.yml`).
+  `configs/config*.yml`, `scripts/download_mask2former_semantic_weights.sh`).
 - Add an official torchvision `deeplabv3` RGB-only baseline head around
   `deeplabv3_resnet50` with ImageNet-pretrained backbone weights, aux-logit
   support, AdamW-only optimizer routing, registry/test coverage, and a thesis

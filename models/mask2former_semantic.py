@@ -62,11 +62,15 @@ def build_mask2former_targets(
         labels = labels.unsqueeze(0)
     label_tensor = labels.long()
     if image_size is not None and label_tensor.shape[-2:] != tuple(image_size):
-        label_tensor = F.interpolate(
-            label_tensor.unsqueeze(1).float(),
-            size=image_size,
-            mode="nearest",
-        ).squeeze(1).long()
+        label_tensor = (
+            F.interpolate(
+                label_tensor.unsqueeze(1).float(),
+                size=image_size,
+                mode="nearest",
+            )
+            .squeeze(1)
+            .long()
+        )
 
     mask_labels: list[torch.Tensor] = []
     class_labels: list[torch.Tensor] = []

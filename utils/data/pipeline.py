@@ -24,6 +24,7 @@ from .core import (
     _apply_color_jitter,
     _apply_cutout,
     _apply_gridmask,
+    _image_footprint_in_label_crs,
     _label_validity_mask,
     _normalize_dataset_validation_cfg,
     _normalize_tile_filter_cfg,
@@ -565,20 +566,7 @@ def prepare_data_tiles(
             edge_policy="drop_partial",
         )
         with rasterio.open(img_path) as src_img, rasterio.open(label_path) as src_lab:
-            if src_img.crs != src_lab.crs:
-                _log_debug(
-                    f"Skipping label alignment failure for {basename}: "
-                    "native label-grid supervision requires one shared CRS"
-                )
-                continue
-            label_window = (
-                rasterio.windows.from_bounds(
-                    *src_img.bounds,
-                    transform=src_lab.transform,
-                )
-                .round_offsets()
-                .round_lengths()
-            )
+            label_window, _ = _image_footprint_in_label_crs(src_img, src_lab)
             row_positions = full_fit_window_positions(
                 int(label_window.height),
                 layout.label_tile_size,
@@ -611,6 +599,13 @@ def prepare_data_tiles(
                     tile_bounds = rasterio.windows.bounds(
                         tile_window, src_lab.transform
                     )
+                    if src_lab.crs != src_img.crs:
+                        tile_bounds = rasterio.warp.transform_bounds(
+                            src_lab.crs,
+                            src_img.crs,
+                            *tile_bounds,
+                            densify_pts=21,
+                        )
                     tile_name = (
                         f"{basename}_y{int(tile_window.row_off)}_x"
                         f"{int(tile_window.col_off)}.pt"

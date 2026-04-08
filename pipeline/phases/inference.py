@@ -975,12 +975,16 @@ class InferencePhase(Phase):
             if input_paths_file:
                 manifest_path = Path(input_paths_file).expanduser()
                 if not manifest_path.is_absolute():
-                    config_root = (
-                        Path(context.config_path).resolve().parent
-                        if context.config_path
-                        else Path.cwd()
-                    )
-                    manifest_path = config_root / manifest_path
+                    cwd_candidate = (Path.cwd() / manifest_path).resolve()
+                    if cwd_candidate.exists():
+                        manifest_path = cwd_candidate
+                    else:
+                        config_root = (
+                            Path(context.config_path).resolve().parent
+                            if context.config_path
+                            else Path.cwd()
+                        )
+                        manifest_path = (config_root / manifest_path).resolve()
                 if not manifest_path.exists():
                     raise InferenceError(
                         f"inference.input_paths_file not found: {manifest_path}"

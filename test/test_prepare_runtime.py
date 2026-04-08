@@ -17,6 +17,7 @@ import pytest
 import rasterio
 import torch
 from rasterio.transform import from_origin
+from rasterio.warp import transform_bounds
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -1074,6 +1075,113 @@ def test_process_image_tiles_no_features_drops_partial_edge_tiles(
     saved = sorted(output_dir.glob("*.pt"))
     assert len(saved) == 4
     assert all("_y6_" not in path.name and "_x6" not in path.name for path in saved)
+
+
+def test_build_tile_grid_layout_supports_cross_crs_scene_footprints(
+    tmp_path: Path,
+) -> None:
+    """Cross-CRS scene pairs should still derive a compatible scale factor.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    image_path = tmp_path / "image_wgs84.tif"
+    label_path = tmp_path / "labels_mercator.tif"
+    image_transform = from_origin(10.0, 50.02, 0.001, 0.001)
+    _write_test_geotiff(
+        image_path,
+        np.zeros((20, 20, 3), dtype=np.uint8),
+        transform=image_transform,
+        crs="EPSG:4326",
+    )
+    label_bounds = transform_bounds(
+        "EPSG:4326",
+        "EPSG:3857",
+        10.0,
+        50.0,
+        10.02,
+        50.02,
+        densify_pts=21,
+    )
+    label_transform = from_origin(
+        label_bounds[0],
+        label_bounds[3],
+        (label_bounds[2] - label_bounds[0]) / 4.0,
+        (label_bounds[3] - label_bounds[1]) / 4.0,
+    )
+    _write_test_geotiff(
+        label_path,
+        np.ones((4, 4), dtype=np.uint8),
+        transform=label_transform,
+        crs="EPSG:3857",
+    )
+
+    layout = build_tile_grid_layout(
+        str(image_path),
+        str(label_path),
+        requested_tile_size=20,
+        patch_size=5,
+    )
+
+    assert layout.image_tile_size == 20
+    assert layout.label_tile_size == 4
+    assert layout.scale_factor == 5
+
+
+def test_process_image_tiles_no_features_supports_cross_crs_labels(
+    tmp_path: Path,
+) -> None:
+    """Prepare should tile coarse labels even when imagery and labels use different CRSs.
+
+    Args:
+        tmp_path (Path): Temporary directory provided by pytest.
+    """
+
+    image_path = tmp_path / "image_wgs84.tif"
+    label_path = tmp_path / "labels_mercator.tif"
+    output_dir = tmp_path / "cache"
+    _write_test_geotiff(
+        image_path,
+        np.full((20, 20, 3), 10, dtype=np.uint8),
+        transform=from_origin(10.0, 50.02, 0.001, 0.001),
+        crs="EPSG:4326",
+    )
+    label_bounds = transform_bounds(
+        "EPSG:4326",
+        "EPSG:3857",
+        10.0,
+        50.0,
+        10.02,
+        50.02,
+        densify_pts=21,
+    )
+    _write_test_geotiff(
+        label_path,
+        np.ones((4, 4), dtype=np.uint8),
+        transform=from_origin(
+            label_bounds[0],
+            label_bounds[3],
+            (label_bounds[2] - label_bounds[0]) / 4.0,
+            (label_bounds[3] - label_bounds[1]) / 4.0,
+        ),
+        crs="EPSG:3857",
+    )
+
+    result = process_image_tiles_no_features(
+        str(image_path),
+        str(label_path),
+        str(output_dir),
+        tile_size=20,
+        patch_size=5,
+    )
+
+    assert result["status"] == "ok"
+    saved = sorted(output_dir.glob("*.pt"))
+    assert len(saved) == 1
+    payload = torch.load(saved[0], weights_only=False, map_location="cpu")
+    assert tuple(payload["image"].shape) == (20, 20, 3)
+    assert np.asarray(payload["label"]).shape == (4, 4)
 
 
 def test_precomputed_dataset_rejects_legacy_dino_tile_without_geometry_metadata(
