@@ -33,15 +33,16 @@ Recommended submission order:
 1. `R1_topo_split_s1337.yml`
 2. `R2_nanofapm_split_s1337.yml`
 3. `R3_unet_split_s1337.yml`
-4. `R4_maskformer_split_s1337.yml`
-5. `R6_topo_split_s2027.yml`
-6. `R7_topo_split_s3407.yml`
-7. `R8_nanofapm_split_s2027.yml`
-8. `R9_nanofapm_split_s3407.yml`
-9. `R5_denseprobe_split_s1337.yml`
-10. `R10_topo_no_boundary_s1337.yml`
-11. `R11_topo_no_topology_s1337.yml`
-12. `C1_topo_coarse_split_s1337.yml` (coarse-label supervision baseline)
+4. `R12_deeplabv3_split_s1337.yml`
+5. `R4_maskformer_split_s1337.yml`
+6. `R6_topo_split_s2027.yml`
+7. `R7_topo_split_s3407.yml`
+8. `R8_nanofapm_split_s2027.yml`
+9. `R9_nanofapm_split_s3407.yml`
+10. `R5_denseprobe_split_s1337.yml`
+11. `R10_topo_no_boundary_s1337.yml`
+12. `R11_topo_no_topology_s1337.yml`
+13. `C1_topo_coarse_split_s1337.yml` (coarse-label supervision baseline)
 
 Submission commands:
 
@@ -49,6 +50,7 @@ Submission commands:
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R1_topo_split_s1337.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R2_nanofapm_split_s1337.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R3_unet_split_s1337.yml segmentation.sh
+sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R12_deeplabv3_split_s1337.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R4_maskformer_split_s1337.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R6_topo_split_s2027.yml segmentation.sh
 sbatch --export=ALL,CONFIG_PATH=configs/thesis_runs/R7_topo_split_s3407.yml segmentation.sh

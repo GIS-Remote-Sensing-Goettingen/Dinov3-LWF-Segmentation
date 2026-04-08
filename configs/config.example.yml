@@ -120,8 +120,8 @@ model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   # Transformer block ids extracted from the backbone and passed to the head.
   layers: [5, 11, 17, 23]
-  # Segmentation head architecture: `dino_dense_probe`, `dino_segdino_light`,
-  # `maskformer`, `unet`, `unet_v2`, `unet_lite`, `unet_lite_plus`,
+  # Segmentation head architecture: `deeplabv3`, `dino_dense_probe`,
+  # `dino_segdino_light`, `maskformer`, `unet`, `unet_v2`, `unet_lite`, `unet_lite_plus`,
   # `unet_nano`, `unet_nano_fapm`, or `unet_topo_fusion`.
   head: unet_v2
   # Number of semantic output classes.

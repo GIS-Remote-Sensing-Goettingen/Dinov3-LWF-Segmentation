@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 ### Changed
+- Add an official torchvision `deeplabv3` RGB-only baseline head around
+  `deeplabv3_resnet50` with ImageNet-pretrained backbone weights, aux-logit
+  support, AdamW-only optimizer routing, registry/test coverage, and a thesis
+  rerun config `R12_deeplabv3_split_s1337.yml` so the experiment pack can
+  compare the existing image-only U-Net baseline against a widely recognized
+  DeepLabV3 baseline without adding a new third-party dependency
+  (`models/deeplabv3.py`, `models/__init__.py`, `pipeline/train_utils.py`,
+  `test/test_dino_baselines.py`, `test/test_train_utils_safety.py`,
+  `configs/thesis_runs/R12_deeplabv3_split_s1337.yml`,
+  `configs/thesis_runs/README.md`, `README.md`, `docs/ARCHITECTURE.md`,
+  `configs/config*.yml`).
 - Add one thesis-oriented coarse-vs-refined supervision baseline around the
   existing topology-fusion head: directory inference manifests now accept the
   same scene-stem YAML/JSON files used by split resolution, prepare can

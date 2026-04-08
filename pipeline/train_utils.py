@@ -20,11 +20,12 @@ from .context import StabilityConfig
 
 _PATCH_CROP_WARNED: set[tuple[int, int, int]] = set()
 _ADAMW_ONLY_HEADS: frozenset[str] = frozenset(
-    {"dino_dense_probe", "dino_segdino_light", "unet"}
+    {"deeplabv3", "dino_dense_probe", "dino_segdino_light", "unet"}
 )
-_IMAGE_ONLY_HEADS: frozenset[str] = frozenset({"unet"})
+_IMAGE_ONLY_HEADS: frozenset[str] = frozenset({"deeplabv3", "unet"})
 _AUX_LOGIT_HEADS: frozenset[str] = frozenset(
     {
+        "deeplabv3",
         "unet_v2",
         "unet_lite",
         "unet_lite_plus",

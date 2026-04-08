@@ -1,6 +1,6 @@
 # DINOv3Seg Experiments
 
-This repository provides a research-grade segmentation pipeline for segmentation experiments with both frozen-**DINOv3** decoder heads and an image-only standard U-Net baseline. The pipeline now runs entirely from a YAML configuration file, supports structured verbosity with timestamps, and records durations for every major phase.
+This repository provides a research-grade segmentation pipeline for segmentation experiments with both frozen-**DINOv3** decoder heads and RGB-only baselines including a standard U-Net and official torchvision DeepLabV3. The pipeline now runs entirely from a YAML configuration file, supports structured verbosity with timestamps, and records durations for every major phase.
 
 ## Quick Start
 
@@ -38,8 +38,9 @@ Important cache semantics:
 - `dataset.cache_features` and `prepare.cache_features` control whether cached
   `.pt` tiles include precomputed DINO features. They do not disable tile
   caching itself.
-- `head: unet` is image-only: it ignores `model.layers`, skips DINO feature
-  caching/extraction, and trains directly from RGB tiles.
+- `head: unet` and `head: deeplabv3` are image-only: they ignore
+  `model.layers`, skip DINO feature caching/extraction, and train directly
+  from RGB tiles.
 - `paths.label_path` is read during `prepare` when tiles are built. Training
   usually reads cached `.pt` tiles from `processed_dir`, not the label TIFF
   directly.
@@ -125,8 +126,8 @@ dataset:
 model:
   backbone: facebook/dinov3-vitl16-pretrain-sat493m
   layers: [5, 11, 17, 23]
-  head: unet_v2          # dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
-                         # `unet` is the image-only standard U-Net baseline and ignores `model.layers`
+  head: unet_v2          # deeplabv3 | dino_dense_probe | dino_segdino_light | unet | unet_v2 | unet_lite | unet_lite_plus | unet_nano | unet_nano_fapm | unet_topo_fusion | maskformer
+                         # `unet` and `deeplabv3` are image-only RGB baselines and ignore `model.layers`
   num_classes: 2
   dino_channels: 1024
   dense_probe:
@@ -327,6 +328,7 @@ The `model.head` key selects one of the decoders registered under `models/`:
 
 | Head        | File             | Highlights                                                        |
 |-------------|------------------|-------------------------------------------------------------------|
+| `deeplabv3` | `models/deeplabv3.py` | Official torchvision DeepLabV3-ResNet50 baseline with ImageNet-pretrained backbone weights and auxiliary logits enabled. |
 | `dino_dense_probe` | `models/dino_dense_probe.py` | Dense linear-probe baseline on last-layer DINO tokens (`norm -> 1x1 conv -> upsample`). |
 | `dino_segdino_light` | `models/dino_segdino_light.py` | Fixed paper-like lightweight SegDINO decoder (`reform -> align -> concat -> MLP`). |
 | `unet`      | `models/unet.py` | Standard image-only U-Net baseline (64/128/256/512 encoder, 1024 bottleneck, transpose-conv decoder); ignores `model.layers`. |

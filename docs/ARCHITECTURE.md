@@ -87,12 +87,12 @@ MLflow-compatible artifacts for research workflows.
   manifests may list exact cached tile stems or whole source-scene stems,
   allowing geographically defined scene-level split files to expand to all
   matching cached tiles.
-- **Baseline optimizer policy:** lightweight DINO baselines
-  (`dino_dense_probe`, `dino_segdino_light`) use an AdamW-only optimization
-  path by default, while heavier decoder heads keep the Muon+AdamW split path.
-  In the split path, embeddings and 1D parameters stay on AdamW, while Muon
-  applies decoupled weight decay plus paper-style shape-aware update scaling to
-  matrix-like parameters.
+- **Baseline optimizer policy:** lightweight/image-only baselines
+  (`deeplabv3`, `dino_dense_probe`, `dino_segdino_light`, `unet`) use an
+  AdamW-only optimization path by default, while heavier decoder heads keep
+  the Muon+AdamW split path. In the split path, embeddings and 1D parameters
+  stay on AdamW, while Muon applies decoupled weight decay plus paper-style
+  shape-aware update scaling to matrix-like parameters.
 - **Distributed forward policy:** train-time forwards wrap the selected head in
   a small normalized adapter before DDP so custom aux/boundary/skeleton outputs
   remain visible to the loss code even when the wrapper only exposes
@@ -160,10 +160,12 @@ MLflow-compatible artifacts for research workflows.
   cache directories suffixed with `_labelgrid`, and cache metadata records the
   supervision-grid mode so older image-grid caches are rejected instead of
   being mixed into new runs.
-- **Image-only baseline policy:** `model.head: unet` is a standard image-only
-  U-Net baseline. It ignores `model.layers`, bypasses cached/on-the-fly DINO
-  feature extraction, and skips auxiliary-logit expectations that apply to the
-  DINO-aware decoder family.
+- **Image-only baseline policy:** `model.head: unet` and
+  `model.head: deeplabv3` are RGB-only baselines. They ignore `model.layers`,
+  bypass cached/on-the-fly DINO feature extraction, and train directly on
+  image/label tiles; `deeplabv3` still exposes auxiliary logits through the
+  shared normalized-forward payload so the standard aux-supervision path stays
+  available.
 
 ## Tracking & Artifacts
 - MLflow-compatible file layout under `mlruns/<experiment_id>/<run_id>/`.
@@ -193,12 +195,15 @@ MLflow-compatible artifacts for research workflows.
 - When MLflow is active, plots are written directly into these run subfolders;
   local plot directories are used only as a fallback when MLflow logging is disabled.
 - Decoder family includes lightweight baselines and compact variants
-  (`dino_dense_probe`, `dino_segdino_light`, `unet`, `unet_lite`,
-  `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`, `unet_topo_fusion`) so
-  users can trade compute for quality without changing pipeline wiring.
-  `unet` is the standard image-only U-Net baseline with a
+  (`deeplabv3`, `dino_dense_probe`, `dino_segdino_light`, `unet`,
+  `unet_lite`, `unet_lite_plus`, `unet_nano`, `unet_nano_fapm`,
+  `unet_topo_fusion`) so users can trade compute for quality without changing
+  pipeline wiring. `unet` is the standard image-only U-Net baseline with a
   64/128/256/512-contracting path, 1024-channel bottleneck, and symmetric
-  transpose-convolution decoder.
+  transpose-convolution decoder, while `deeplabv3` is the official
+  torchvision DeepLabV3-ResNet50 baseline with ImageNet-pretrained backbone
+  weights and an auxiliary classifier enabled for standard DeepLab-style
+  supervision.
   `dino_dense_probe` is the minimal dense-probe head over last-layer DINO
   tokens, and `dino_segdino_light` is a fixed paper-like lightweight SegDINO
   decoder that reforms selected DINO layers, concatenates them on one token
@@ -223,8 +228,8 @@ MLflow-compatible artifacts for research workflows.
    configured target labels are cached. Under the default native label-grid
    policy, cached image tensors stay on the image grid while cached labels stay
    on the coarser native label raster grid for the same map footprint. For the
-   standard `unet` baseline, this phase caches only image/label pairs and skips
-   DINO feature generation entirely.
+   standard `unet` and `deeplabv3` baselines, this phase caches only
+   image/label pairs and skips DINO feature generation entirely.
 2. Verify cached tiles (readability + semantic checks) (optional)
 3. Train segmentation head with per-epoch validation visualization panels (optional),
    including optional XAI dashboards (DINO attention, Grad-CAM, PCA feature maps,

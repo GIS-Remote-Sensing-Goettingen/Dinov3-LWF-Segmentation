@@ -10,6 +10,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import models.deeplabv3 as deeplabv3_module  # noqa: E402
 from models import available_heads, build_head  # noqa: E402
 
 
@@ -24,8 +25,58 @@ def test_registry_contains_new_baseline_heads() -> None:
     """
 
     names = set(available_heads().keys())
+    assert "deeplabv3" in names
     assert "dino_dense_probe" in names
     assert "dino_segdino_light" in names
+
+
+def test_deeplabv3_build_and_forward_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validate the torchvision DeepLabV3 adapter payload shape.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Fixture used to stub the torchvision
+            factory and avoid network-bound weight downloads during tests.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    class DummyDeepLab(torch.nn.Module):
+        def forward(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
+            """Return torchvision-like DeepLab outputs for one RGB batch.
+
+            Args:
+                image (torch.Tensor): Input image tensor.
+
+            Returns:
+                dict[str, torch.Tensor]: Main and auxiliary logits keyed like
+                    torchvision segmentation models.
+            """
+
+            batch, _, height, width = image.shape
+            logits = torch.randn(batch, 2, height, width)
+            aux_logits = torch.randn(batch, 2, height, width)
+            return {"out": logits, "aux": aux_logits}
+
+    def fake_factory(**_: object) -> torch.nn.Module:
+        """Build a deterministic no-download DeepLab stub for tests.
+
+        Args:
+            **_ (object): Ignored torchvision factory keyword arguments.
+
+        Returns:
+            torch.nn.Module: Stub DeepLab module with torchvision-like outputs.
+        """
+
+        return DummyDeepLab()
+
+    monkeypatch.setattr(deeplabv3_module, "deeplabv3_resnet50", fake_factory)
+    model = build_head("deeplabv3", num_classes=2, dino_channels=64)
+    payload = model(torch.randn(2, 3, 128, 128), [])
+
+    assert tuple(payload["logits"].shape) == (2, 2, 128, 128)
+    assert tuple(payload["aux_logits"].shape) == (2, 2, 128, 128)
 
 
 def test_dense_probe_build_and_forward_shape() -> None:

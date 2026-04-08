@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, cast
 
 from .base import SegmentationHead
+from .deeplabv3 import DeepLabV3Head
 from .dino_dense_probe import DinoDenseProbeHead
 from .dino_segdino_light import DinoSegDinoLightHead
 from .maskformer import DinoMaskFormerHead
@@ -47,6 +48,7 @@ def available_heads() -> Dict[str, HeadBuilder]:
         Dict[str, HeadBuilder]: Mapping of head names to builders.
 
     >>> sorted(available_heads().keys()) == [
+    ...     "deeplabv3",
     ...     "dino_dense_probe",
     ...     "dino_segdino_light",
     ...     "maskformer",
@@ -62,6 +64,7 @@ def available_heads() -> Dict[str, HeadBuilder]:
     """
 
     return {
+        "deeplabv3": DeepLabV3Head,
         "dino_dense_probe": DinoDenseProbeHead,
         "dino_segdino_light": DinoSegDinoLightHead,
         "unet": DinoUNetHead,

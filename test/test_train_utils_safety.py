@@ -46,6 +46,7 @@ def test_use_adamw_only_for_baseline_heads() -> None:
         True
     """
 
+    assert use_adamw_only_for_head("deeplabv3")
     assert use_adamw_only_for_head("dino_dense_probe")
     assert use_adamw_only_for_head("dino_segdino_light")
     assert use_adamw_only_for_head("unet")
@@ -64,6 +65,25 @@ def test_standard_unet_is_image_only_and_has_no_aux_logits() -> None:
     assert not head_supports_aux_logits("unet")
     assert (
         resolve_model_patch_size("facebook/dinov3-vitl16-pretrain-sat493m", "unet") == 1
+    )
+
+
+def test_deeplabv3_is_image_only_and_exposes_aux_logits() -> None:
+    """DeepLabV3 should be routed as an aux-capable RGB-only baseline.
+
+    Examples:
+        >>> True
+        True
+    """
+
+    assert not head_uses_backbone_features("deeplabv3")
+    assert head_supports_aux_logits("deeplabv3")
+    assert (
+        resolve_model_patch_size(
+            "facebook/dinov3-vitl16-pretrain-sat493m",
+            "deeplabv3",
+        )
+        == 1
     )
 
 
